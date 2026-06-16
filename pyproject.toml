@@ -15,3 +15,13 @@ pythonpath = ["src"]
 
 [tool.coverage.run]
 source = ["grandplan"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+grandplan = "grandplan.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
