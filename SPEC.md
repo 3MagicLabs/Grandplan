@@ -235,3 +235,69 @@ flow runs with **networking disabled**.
 ## 10. Alternatives considered
 See `RESEARCH.md` (web UI vs native; custom graph vs Obsidian; embeddings-only vs hybrid LLM;
 sqlite-vec vs faiss/chroma) — each with the rationale for the choice made here.
+
+## 11. Planning model, knowledge evolution & extensibility
+
+**Unifying principle:** *one append-only knowledge graph; every output — notes, plans, the masterplan,
+domain analyses, presentations — is a deterministic **projection** over a selected subset.* Inputs flow
+through a **Reconciler** that maintains consistency without ever destroying an original.
+
+### 11.1 Horizons (long ↔ short term)
+Each node has a `horizon`: **Masterplan → Goal → Project → Next-Action** (GTD Horizons / OKRs). The
+masterplan is the top of the projection hierarchy (`part_of` edges), recomputed as the graph changes.
+
+### 11.2 Knowledge evolution & consistency — US-10
+*As a user, I want a new note related to an existing thread reconciled with it — building on, refining,
+or flagging contradictions — so my knowledge stays consistent, not duplicated or stale.*
+The Reconciler classifies a new note vs the most-similar existing note(s): `duplicate`→merge (US-6);
+`builds_on`/`enhances`→link (+ optional append); `refines`/`supersedes`→new is current, old kept
+(append-only) + `supersedes` edge; `contradicts`→**never auto-resolved**: keep both, add a `contradicts`
+edge, set `status: needs-review`, surface in the review queue.
+```
+Given an existing organized thread and a new related note,
+When  it is captured and classified,
+Then  the system proposes the relationship (build-on / refine / supersede / contradict) and, on approval,
+      links/updates accordingly while preserving every original verbatim.
+```
+
+### 11.3 Workspaces & pluggable capabilities — US-11
+*As a user, I want to focus a subset of notes into its own organized space with capabilities suited to
+its domain (people/company graphs, image networks, records, …), so different subjects are analyzed their
+own way — not all forced into one undifferentiated vault.*
+A **Workspace/Collection** = a named subset (membership/query) with its own organization + enabled
+**Capability modules**; a note may belong to several. A workspace can be a **virtual view** or be
+**materialized as its own Obsidian vault**. **Capability modules** are plugins behind a `Capability` port
+(Strategy): `people-graph`, `org/company-graph`, `image-network`, `records/table`, `timeline`, … added
+without core changes.
+```
+Given notes tagged into a workspace,
+When  I focus that workspace,
+Then  I see only its notes, organized with its enabled capabilities, optionally as its own vault.
+```
+
+### 11.4 Render to other mediums — US-12
+*As a user, I want to turn a group of notes/subjects into other frameworks (a presentation/PowerPoint, a
+document, …), so my knowledge becomes deliverables.*
+The `Planner` generalizes to a family of **Renderers** (Strategy): graph-subset (+ template) → target
+medium. Built-in: Markdown note, JSON graph, `Plan.md`/`Masterplan.md`. Later: PPTX/slides, documents,
+etc. — each a Renderer behind a port; no core change to add one.
+```
+Given a selected workspace or query and a chosen template,
+When  I render,
+Then  grandplan produces the deliverable (e.g. a presentation) projected from those notes.
+```
+
+### 11.5 Schema additions (cheap, forward-safe — committed NOW)
+So nothing above is precluded later, extend the model now (implementation phased):
+- node: add `horizon`, `context[]`, `due`, `requirements[]`, `collections[]` (workspace membership),
+  `status` (now incl. `needs-review`, `superseded`); node type `entity` (person/org) is first-class.
+- edges: add `waiting_on`, `involves` (→ Entity), `builds_on`, `refines`, `supersedes`, `contradicts`,
+  `part_of` (with existing `depends_on`/`blocks`/`next`/`relates`).
+
+### 11.6 MVP slice vs deferred (scope discipline)
+- **MVP now:** the schema above; Reconciler with **duplicate + build-on + supersede + contradict-flag**
+  (LLM-proposed, human-approved); `Planner` = **hierarchy + a "now" list**; **single default vault**;
+  Renderers = Markdown + JSON graph + basic `Plan.md`.
+- **Deferred (phased, additive — no re-modeling):** multiple/materialized vaults; domain Capability
+  plugins (people/company/image graphs, records); critical-path scheduling; parallel-batch detection;
+  OKR roll-ups; PPTX/other-medium Renderers; automated review.
