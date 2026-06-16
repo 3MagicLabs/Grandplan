@@ -53,15 +53,15 @@ python -m grandplan organize your-notes.txt -o my-vault
 
 Open `my-vault` as an Obsidian vault to see the graph; `Plan.md` is the generated plan.
 
-Using the **real** local AI today is programmatic (the CLI defaults to the offline baselines):
+Use the **real** local AI from the CLI:
 
-```python
-from grandplan.adapters.ollama_organizer import OllamaOrganizer
-from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
-# pass these into grandplan.core.pipeline.propose/assess instead of the baselines
+```cmd
+python -m grandplan organize your-notes.txt -o my-vault --llm --embeddings
 ```
 
-*(Want `--llm` / `--embeddings` flags on the CLI? It's a small, gateable change — just ask.)*
+- `--llm` organizes with a local Ollama model (falls back to the offline baseline if Ollama isn't running).
+- `--embeddings` uses local sentence-transformer embeddings (needs the `embeddings` extra installed).
+- `--model NAME` selects the Ollama model (default `llama3.2:3b`).
 
 ## 5. Building the remaining adapters (design is ready)
 

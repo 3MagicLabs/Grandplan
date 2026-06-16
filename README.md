@@ -57,8 +57,8 @@ grandplan organize notes.txt -o my-vault
 
 It splits the file into notes, organizes each (title/type/tags), links related ones, skips
 near-duplicates, and writes `my-vault/*.md` + `graph.json` + `Plan.md`. Fully offline; no LLM
-required (a local-LLM organizer is a later drop-in). The Windows global-capture / GUI adapters
-are separate (see SPEC §6 / ADR-0003).
+required. Add `--llm` / `--embeddings` to use a local Ollama model + local embeddings where
+installed. The Windows global-capture / GUI adapters are separate (see SPEC §6 / ADR-0003).
 
 **On Windows** (real local AI + building the capture/GUI adapters): see [docs/WINDOWS.md](./docs/WINDOWS.md).
 
