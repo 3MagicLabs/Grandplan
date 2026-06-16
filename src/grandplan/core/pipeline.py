@@ -1,10 +1,13 @@
-"""Capture pipeline: propose → (human approves) → commit.
+"""Capture pipeline: propose → assess → (human approves) → commit.
 
-`propose` captures the original verbatim into the capture log (inbox) immediately — so a
-capture is never lost (US-2) — and returns an Organizer proposal. `commit` runs only on
-approval: it creates the Note, embeds it, stores it in the index, and writes the vault file.
-Discarding means simply not calling `commit`: nothing lands in the index or vault (US-4),
-while the raw capture is retained.
+- `propose`: capture the original verbatim into the inbox (never lost, US-2) and return an
+  Organizer proposal.
+- `assess`: embed the proposal and reconcile it against existing notes — surfacing related
+  notes to link and likely duplicates to review (US-5/US-6/US-10) *before* anything is written.
+- `commit`: on approval, index the note (with its embedding), record the approved RELATES
+  links, and write the vault file.
+- Discarding = simply not calling `commit`: nothing enters the index or vault (US-4), while
+  the raw capture stays in the inbox.
 """
 
 from __future__ import annotations
@@ -12,9 +15,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from grandplan.core.models import Edge, Note, Original, ProposedNote, Source
+from grandplan.core.models import Edge, EdgeKind, Note, Original, ProposedNote, Source
 from grandplan.core.ports import Embedder, NoteRepository, Organizer, VaultWriter
+from grandplan.core.reconcile import Reconciler, ReconcileProposal
 from grandplan.core.store import OriginalStore
+
+
+@dataclass(frozen=True)
+class Assessment:
+    """A proposal's embedding plus how it reconciles against existing notes."""
+
+    embedding: tuple[float, ...]
+    proposal: ReconcileProposal
 
 
 @dataclass(frozen=True)
@@ -24,6 +36,7 @@ class CaptureResult:
     original: Original
     note: Note
     path: Path
+    links: tuple[Edge, ...]
 
 
 def propose(
@@ -40,17 +53,32 @@ def propose(
     return original, organizer.organize(original)
 
 
-def commit(
-    original: Original,
+def assess(
     proposed: ProposedNote,
     *,
     embedder: Embedder,
     repo: NoteRepository,
+    reconciler: Reconciler,
+) -> Assessment:
+    """Embed the proposal and reconcile it against existing notes (US-5/US-6)."""
+    embedding = embedder.embed(f"{proposed.title}\n{proposed.body}")
+    return Assessment(embedding=embedding, proposal=reconciler.reconcile(embedding, repo))
+
+
+def commit(
+    original: Original,
+    proposed: ProposedNote,
+    assessment: Assessment,
+    *,
+    repo: NoteRepository,
     vault: VaultWriter,
-    links: tuple[Edge, ...] = (),
+    link_to: tuple[Note, ...] = (),
 ) -> CaptureResult:
-    """Approve a proposal: index the note (with its embedding) and write the vault file."""
+    """Approve: index the note, record approved RELATES links, write the vault file."""
     note = Note.from_proposed(proposed)
-    repo.add_note(note, embedder.embed(f"{note.title}\n{note.body}"))
-    path = vault.write(note, original, links)
-    return CaptureResult(original=original, note=note, path=path)
+    repo.add_note(note, assessment.embedding)
+    edges = tuple(Edge(note.id, target.id, EdgeKind.RELATES) for target in link_to)
+    for edge in edges:
+        repo.add_edge(edge)
+    path = vault.write(note, original, edges)
+    return CaptureResult(original=original, note=note, path=path, links=edges)
