@@ -80,3 +80,17 @@ def test_jsonl_persists_across_reopen(tmp_path: Path) -> None:
     got = JsonlOriginalStore(path).get(original.id)
     assert got is not None
     assert got.text == text
+
+
+def test_jsonl_creates_missing_parent_dirs(tmp_path: Path) -> None:
+    # Regression: the GUI points the store at `<vault>/.grandplan/inbox.jsonl`,
+    # but `.grandplan/` did not exist yet — `add()` must create it, not crash
+    # with FileNotFoundError (observed on Windows when capturing into a fresh vault).
+    path = tmp_path / "vault" / ".grandplan" / "inbox.jsonl"
+    original = Original.capture("first capture", Source(app="Notepad"), "2026-06-15T00:00:00Z")
+    store = JsonlOriginalStore(path)
+    store.add(original)
+    assert path.exists()
+    got = JsonlOriginalStore(path).get(original.id)
+    assert got is not None
+    assert got.text == "first capture"

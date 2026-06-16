@@ -91,6 +91,7 @@ class JsonlOriginalStore:
             },
             "created": original.created,
         }
+        self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
         self._items[original.id] = original

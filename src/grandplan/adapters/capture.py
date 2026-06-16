@@ -78,7 +78,10 @@ def _uia_selection() -> str | None:  # pragma: no cover - needs Windows UI Autom
         return None
     try:
         control = auto.GetFocusedControl()
-        pattern = control.GetTextPattern() if control else None
+        # uiautomation generates pattern accessors dynamically; getattr sidesteps an
+        # incomplete type stub while staying behaviour-identical at runtime.
+        get_text_pattern = getattr(control, "GetTextPattern", None) if control else None
+        pattern = get_text_pattern() if get_text_pattern else None
         if pattern is None:
             return None
         ranges = pattern.GetSelection()

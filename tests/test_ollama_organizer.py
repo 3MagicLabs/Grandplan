@@ -55,3 +55,13 @@ def test_organizer_falls_back_on_client_failure() -> None:
 
     note = OllamaOrganizer(chat=boom).organize(_original("Buy milk and eggs"))
     assert note.title == "Buy milk and eggs"  # HeuristicOrganizer fallback
+
+
+def test_organizer_falls_back_on_connection_error() -> None:
+    # Regression: Ollama installed but no server running raises ConnectionError (not in the
+    # old catch list) — the pipeline must still degrade to the baseline, never crash.
+    def refused(model: str, prompt: str) -> str:
+        raise ConnectionError("connection refused: localhost:11434")
+
+    note = OllamaOrganizer(chat=refused).organize(_original("Buy milk and eggs"))
+    assert note.title == "Buy milk and eggs"  # HeuristicOrganizer fallback

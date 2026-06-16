@@ -90,5 +90,7 @@ class OllamaOrganizer:
         try:
             raw = self._chat(self._model, build_prompt(original.text))
             return parse_proposed(raw, original)
-        except (ValueError, KeyError, TypeError, RuntimeError):
+        except Exception:  # noqa: BLE001 - never break the pipeline; fall back to the baseline
+            # Any model/parse/transport failure (bad JSON, model not pulled, Ollama not
+            # running -> ConnectionError) degrades to the deterministic HeuristicOrganizer.
             return self._fallback.organize(original)

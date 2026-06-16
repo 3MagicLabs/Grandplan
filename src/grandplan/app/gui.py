@@ -79,7 +79,9 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         if fired:
             do_capture()
 
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    app = QtWidgets.QApplication.instance()
+    if not isinstance(app, QtWidgets.QApplication):
+        app = QtWidgets.QApplication([])
     app.setQuitOnLastWindowClosed(False)
 
     icon = app.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MessageBoxInformation)
