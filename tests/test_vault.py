@@ -49,11 +49,41 @@ def test_render_includes_links_section() -> None:
     edge = Edge("abc123", "target9", EdgeKind.DEPENDS_ON)
     md = render_markdown(_note(), _original(), (edge,))
     assert "## Links" in md
+    # Without a resolved target, fall back to a bare-id link (still resolvable via alias).
     assert "depends_on [[target9]]" in md
+
+
+def _target() -> Note:
+    return Note(
+        id="target9",
+        original_id="o2",
+        title="Build resume",
+        body="...",
+        type=NoteType.PROJECT,
+    )
+
+
+def test_render_resolves_links_to_filename_with_title() -> None:
+    edge = Edge("abc123", "target9", EdgeKind.DEPENDS_ON)
+    md = render_markdown(_note(), _original(), (edge,), targets={"target9": _target()})
+    assert "## Links" in md
+    # Resolvable wikilink: points at the real filename stem, displays the title.
+    assert "depends_on [[build-resume-target9|Build resume]]" in md
+
+
+def test_render_flattens_source_and_adds_alias() -> None:
+    md = render_markdown(_note(), _original(), ())
+    frontmatter = md.split("\n---", 1)[0]
+    assert 'aliases: ["abc123"]' in frontmatter  # bare-id links resolve via alias
+    assert 'source_app: "Notepad"' in frontmatter
+    assert 'source_title: "n.txt"' in frontmatter
+    assert "source: {" not in frontmatter  # no malformed nested object (the Obsidian bug)
+    assert '"app"' not in frontmatter
 
 
 def test_writer_creates_file_with_verbatim_original(tmp_path: Path) -> None:
     path = MarkdownVaultWriter(tmp_path / "vault").write(_note(), _original(), ())
     assert path.exists()
     assert path.suffix == ".md"
+    assert path.name == "project-kickoff-abc123.md"  # slug + content id
     assert "verbatim original text" in path.read_text(encoding="utf-8")

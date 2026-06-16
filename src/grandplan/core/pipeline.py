@@ -80,5 +80,6 @@ def commit(
     edges = tuple(Edge(note.id, target.id, EdgeKind.RELATES) for target in link_to)
     for edge in edges:
         repo.add_edge(edge)
-    path = vault.write(note, original, edges)
+    targets = {target.id: target for target in link_to}
+    path = vault.write(note, original, edges, targets=targets)
     return CaptureResult(original=original, note=note, path=path, links=edges)

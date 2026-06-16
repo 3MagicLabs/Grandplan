@@ -23,10 +23,10 @@ from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
 from grandplan.app.review import ReviewState, approve, discard, start_review
 from grandplan.core.embed import HashingEmbedder
 from grandplan.core.models import Source
+from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.ports import Embedder, Organizer
 from grandplan.core.reconcile import SimilarityReconciler
-from grandplan.core.repository import InMemoryNoteRepository
 from grandplan.core.store import JsonlOriginalStore
 from grandplan.core.vault import MarkdownVaultWriter
 
@@ -46,7 +46,9 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     organizer: Organizer = OllamaOrganizer(model=model) if use_llm else HeuristicOrganizer()
     embedder: Embedder = SentenceTransformerEmbedder() if use_embeddings else HashingEmbedder()
     reconciler = SimilarityReconciler()
-    repo = InMemoryNoteRepository()
+    # Persistent index: rehydrates prior notes/embeddings/edges so a new capture links against
+    # the whole vault history, not just this session (SPEC US-5).
+    repo = JsonlNoteRepository(vault_dir / ".grandplan" / "index.jsonl")
     originals = JsonlOriginalStore(vault_dir / ".grandplan" / "inbox.jsonl")
     vault = MarkdownVaultWriter(vault_dir)
     capturer = make_windows_capturer()

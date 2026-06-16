@@ -5,6 +5,7 @@ Adapters implement these; the core never imports concrete Windows/LLM/IO code di
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -42,9 +43,20 @@ class NoteRepository(Protocol):
 
 
 class VaultWriter(Protocol):
-    """Write an approved note (with its links) into a vault; return the file path."""
+    """Write an approved note (with its links) into a vault; return the file path.
 
-    def write(self, note: Note, original: Original, links: tuple[Edge, ...]) -> Path: ...
+    `targets` maps each link's target_id to the target Note so links can render as resolvable
+    `[[filename|title]]` wikilinks (SPEC US-5: no broken links).
+    """
+
+    def write(
+        self,
+        note: Note,
+        original: Original,
+        links: tuple[Edge, ...],
+        *,
+        targets: Mapping[str, Note] | None = None,
+    ) -> Path: ...
 
 
 class Capturer(Protocol):
