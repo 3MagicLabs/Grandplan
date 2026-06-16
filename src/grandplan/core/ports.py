@@ -45,3 +45,9 @@ class VaultWriter(Protocol):
     """Write an approved note (with its links) into a vault; return the file path."""
 
     def write(self, note: Note, original: Original, links: tuple[Edge, ...]) -> Path: ...
+
+
+class Capturer(Protocol):
+    """Capture the user's current text selection from any app (None if nothing selectable)."""
+
+    def capture(self) -> str | None: ...

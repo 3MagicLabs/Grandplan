@@ -29,7 +29,17 @@ where = ["src"]
 [project.optional-dependencies]
 llm = ["ollama>=0.3"]
 embeddings = ["sentence-transformers>=2.2"]
+windows = ["pynput>=1.7", "pyperclip>=1.8", "uiautomation>=2.0"]
 
 [[tool.mypy.overrides]]
-module = ["ollama", "ollama.*", "sentence_transformers", "sentence_transformers.*"]
+module = [
+  "ollama",
+  "ollama.*",
+  "sentence_transformers",
+  "sentence_transformers.*",
+  "pynput",
+  "pynput.*",
+  "pyperclip",
+  "uiautomation",
+]
 ignore_missing_imports = true
