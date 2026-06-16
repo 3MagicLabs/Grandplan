@@ -60,6 +60,8 @@ near-duplicates, and writes `my-vault/*.md` + `graph.json` + `Plan.md`. Fully of
 required (a local-LLM organizer is a later drop-in). The Windows global-capture / GUI adapters
 are separate (see SPEC §6 / ADR-0003).
 
+**On Windows** (real local AI + building the capture/GUI adapters): see [docs/WINDOWS.md](./docs/WINDOWS.md).
+
 ## Development
 
 - Dev/test the **core** in this Linux/WSL2 environment (Python + ruff/mypy/pytest/bandit).
