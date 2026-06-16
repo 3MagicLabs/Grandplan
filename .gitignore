@@ -1,0 +1,40 @@
+# --- borromeo runtime (regenerated each gate run) ---
+.meta-harness/
+.borromeo-coverage-baseline
+
+# --- local tooling config (machine-specific; regenerate with borromeo init.sh) ---
+.claude/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# --- tool caches ---
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.json
+
+# --- local models / vault / data (never commit personal data or large models) ---
+*.gguf
+models/
+vault/
+*.sqlite
+*.db
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

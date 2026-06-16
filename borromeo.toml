@@ -1,0 +1,28 @@
+[project]
+language = "python"    # selects the per-language check set (borromeo #39 / ADR-0015)
+package = ""           # importable package name (optional; "" skips the import check)
+src_dir = "src"
+tests_dir = "tests"
+
+[checks]
+required = ["00_build", "05_hygiene", "10_format", "20_lint", "30_typecheck", "40_test", "50_security"]
+
+[context]
+account = ""
+value_priorities = ["correctness", "security", "maintainability", "performance"]
+
+[prompt_rewriting]
+enabled = true
+
+[hygiene]
+# Engineering-surround the gate enforces now that the project has shape.
+requires = [
+  "README.md",
+  "LICENSE",
+  "SPEC.md",
+  "RESEARCH.md",
+  "CONTRIBUTING.md",
+  "CHANGELOG.md",
+  "Dockerfile",
+  ".github/workflows/ci.yml",
+]

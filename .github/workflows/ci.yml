@@ -1,0 +1,38 @@
+name: gate
+
+# Mirrors the borromeo quality gate (build · format · lint · typecheck · test+coverage · security).
+# Greenfield-tolerant: vacuous-passes the source-dependent checks until application code exists,
+# matching borromeo's own greenfield behavior.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install quality tools (pinned to match borromeo)
+        run: pip install ruff==0.15.8 mypy==1.19.1 pytest==8.3.3 pytest-cov==7.0.0 bandit==1.9.4
+
+      - name: borromeo-mirror gate
+        run: |
+          set -euo pipefail
+          echo "== format ==";  ruff format --check .
+          echo "== lint ==";    ruff check .
+          if [ -n "$(find src -name '*.py' -print -quit 2>/dev/null)" ]; then
+            echo "== build ==";     python -m compileall -q src
+            echo "== typecheck =="; mypy src
+            echo "== security =="; bandit -q -r src
+            echo "== test ==";     pytest -q --cov
+          else
+            echo "greenfield: no python source yet — build/typecheck/test/security skipped"
+          fi

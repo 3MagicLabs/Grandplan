@@ -1,0 +1,15 @@
+# Normalize line endings: repo stores LF; Git checks out native on Windows.
+# Important because the core is developed on Linux/WSL2 but the app runs on Windows.
+* text=auto eol=lf
+
+# Windows-specific scripts should keep CRLF when present
+*.ahk text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets (never normalize)
+*.png binary
+*.jpg binary
+*.gguf binary
+*.sqlite binary
+*.db binary
