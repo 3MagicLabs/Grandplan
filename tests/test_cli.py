@@ -133,3 +133,21 @@ def test_main_gui_without_pyside_reports_missing_dependency(
     code = main(["gui", "-o", str(tmp_path / "vault")])
     assert code == 1
     assert "PySide6" in capsys.readouterr().err
+
+
+def test_main_gui_embeddings_without_dep_fails_fast(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # --embeddings without sentence-transformers must fail fast at startup with install
+    # guidance, never launch Qt and crash on the first capture (the Windows traceback).
+    import importlib.util as ilu
+
+    real_find_spec = ilu.find_spec
+    monkeypatch.setattr(
+        ilu,
+        "find_spec",
+        lambda name, *a, **k: None if name == "sentence_transformers" else real_find_spec(name),
+    )
+    code = main(["gui", "-o", str(tmp_path / "vault"), "--embeddings"])
+    assert code == 1
+    assert "sentence-transformers" in capsys.readouterr().err

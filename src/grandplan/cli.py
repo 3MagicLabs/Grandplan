@@ -11,6 +11,7 @@ local Ollama model and local embeddings (graceful fallback / clear error if unav
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import re
 import sys
 from dataclasses import dataclass
@@ -127,7 +128,27 @@ def _run_organize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _missing_gui_dependency(args: argparse.Namespace) -> str | None:
+    """A user-facing error if a requested optional backend isn't installed (else None).
+
+    `--embeddings` is a hard requirement (the GUI has no fallback embedder once selected), so we
+    fail fast at startup with install guidance instead of crashing on the first capture. `--llm`
+    needs no check: OllamaOrganizer degrades to the offline baseline if Ollama is unavailable.
+    """
+    if args.embeddings and importlib.util.find_spec("sentence_transformers") is None:
+        return (
+            "error: --embeddings needs sentence-transformers — "
+            "`pip install grandplan[embeddings]` "
+            "(or drop --embeddings to use the offline baseline embedder)"
+        )
+    return None
+
+
 def _run_gui(args: argparse.Namespace) -> int:
+    missing = _missing_gui_dependency(args)
+    if missing:
+        print(missing, file=sys.stderr)
+        return 1
     try:
         from grandplan.app.gui import run_app
 

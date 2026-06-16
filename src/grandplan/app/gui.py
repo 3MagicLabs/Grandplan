@@ -53,23 +53,26 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     triggers: queue.Queue[None] = queue.Queue()
 
     def do_capture() -> None:
-        text = capturer.capture()
-        if not text:
-            return
-        pending = start_review(
-            text,
-            created=datetime.now(timezone.utc).isoformat(),
-            source=Source(app="grandplan", title="capture"),
-            organizer=organizer,
-            embedder=embedder,
-            reconciler=reconciler,
-            repo=repo,
-            originals=originals,
-        )
-        if _show_review(pending.state):
-            approve(pending, repo=repo, vault=vault)
-        else:
-            discard(pending)
+        try:
+            text = capturer.capture()
+            if not text:
+                return
+            pending = start_review(
+                text,
+                created=datetime.now(timezone.utc).isoformat(),
+                source=Source(app="grandplan", title="capture"),
+                organizer=organizer,
+                embedder=embedder,
+                reconciler=reconciler,
+                repo=repo,
+                originals=originals,
+            )
+            if _show_review(pending.state):
+                approve(pending, repo=repo, vault=vault)
+            else:
+                discard(pending)
+        except Exception as exc:  # noqa: BLE001 - one failed capture must not kill the tray app
+            tray.showMessage("grandplan — capture failed", str(exc))
 
     def drain() -> None:
         fired = False
