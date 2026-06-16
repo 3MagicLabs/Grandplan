@@ -1,6 +1,6 @@
 [project]
 language = "python"    # selects the per-language check set (borromeo #39 / ADR-0015)
-package = ""           # importable package name (optional; "" skips the import check)
+package = "grandplan"  # importable package name (optional; "" skips the import check)
 src_dir = "src"
 tests_dir = "tests"
 

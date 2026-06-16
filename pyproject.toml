@@ -1,0 +1,17 @@
+[project]
+name = "grandplan"
+version = "0.0.0"
+description = "Offline-first personal knowledge organizer — gated core."
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+strict = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["grandplan"]
