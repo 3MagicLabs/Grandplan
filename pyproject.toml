@@ -25,3 +25,11 @@ grandplan = "grandplan.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.optional-dependencies]
+llm = ["ollama>=0.3"]
+embeddings = ["sentence-transformers>=2.2"]
+
+[[tool.mypy.overrides]]
+module = ["ollama", "ollama.*", "sentence_transformers", "sentence_transformers.*"]
+ignore_missing_imports = true
