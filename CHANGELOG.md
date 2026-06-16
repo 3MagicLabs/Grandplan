@@ -21,8 +21,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - Local-AI adapters (optional extras `grandplan[llm]` / `grandplan[embeddings]`): `OllamaOrganizer`
   (local-LLM metadata, verbatim body, heuristic fallback) and `SentenceTransformerEmbedder` — drop-in
   behind the ports; real model calls integration-verified on Windows/Ollama.
+- CLI `--llm` / `--embeddings` / `--model` flags wire the real adapters into `grandplan organize`.
+- Windows selection capture: `Capturer` port + `ClipboardCapturer` (UIA-first, else clipboard
+  save/Ctrl+C/restore); real backend in `grandplan[windows]`.
+- Review view-model (`app.review`: start_review / approve / discard) — the UI-free, tested controller.
+- PySide6 tray GUI (`app.gui.run_app`) + `grandplan gui` subcommand: hotkey → capture → review →
+  Save/Discard, bound to the view-model (Qt code is a scaffold, verified on Windows).
 
 ### Notes
-- The full **offline core is implemented, runnable, and gated** (265 tests, green gate + CI).
-- Remaining MVP work is **Windows-only** and needs that machine to verify: global-hotkey capture (#6)
-  and the PySide6 review/approve GUI (#7).
+- The full **MVP app is structurally complete and gated** (278 tests, green gate + CI): capture →
+  organize (baseline or local LLM) → review/approve → linked, de-duplicated Markdown vault → Plan.md.
+- **Final step is runtime verification on Windows**: install `grandplan[windows,gui,llm,embeddings]`
+  + Ollama, run `python -m grandplan gui -o my-vault --llm --embeddings`, and confirm the
+  hotkey → capture → review → save flow, tuning the Qt wiring as needed.
