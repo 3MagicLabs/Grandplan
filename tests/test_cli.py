@@ -104,3 +104,11 @@ def test_main_embeddings_flag_reports_missing_dependency(
     code = main(["organize", str(src), "-o", str(vault), "--embeddings"])
     assert code == 1
     assert "sentence-transformers" in capsys.readouterr().err
+
+
+def test_main_gui_without_pyside_reports_missing_dependency(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["gui", "-o", str(tmp_path / "vault")])
+    assert code == 1
+    assert "PySide6" in capsys.readouterr().err

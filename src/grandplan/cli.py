@@ -1,13 +1,11 @@
-"""Command-line entrypoint: organize a text file into an Obsidian vault + graph + plan.
+"""Command-line entrypoint.
 
-Splits a (possibly messy) text file into paragraph-sized captures and runs the full core loop
-on each — organize → embed → reconcile (auto-skipping near-duplicates) → write a note + link
-related notes — then writes `graph.json` and `Plan.md` into the vault.
+`grandplan organize <file> -o <vault>` runs the full offline core loop over a text file
+(organize → embed → reconcile → write note + link related) and writes `graph.json` + `Plan.md`.
+`grandplan gui -o <vault>` launches the tray GUI (Windows; needs `grandplan[windows,gui]`).
 
-By default it uses the fully-offline deterministic baselines. `--llm` swaps in a local Ollama
-model for organization (falls back to the baseline if Ollama isn't available); `--embeddings`
-swaps in local sentence-transformer embeddings (requires the `embeddings` extra). The Windows
-global-capture / GUI adapters are separate (see docs/WINDOWS.md).
+By default `organize` uses the offline deterministic baselines; `--llm` / `--embeddings` swap in a
+local Ollama model and local embeddings (graceful fallback / clear error if unavailable).
 """
 
 from __future__ import annotations
@@ -106,9 +104,51 @@ def _read_input(source_arg: str) -> str:
     return Path(source_arg).read_text(encoding="utf-8")
 
 
+def _run_organize(args: argparse.Namespace) -> int:
+    organizer: Organizer | None = OllamaOrganizer(model=args.model) if args.llm else None
+    embedder: Embedder | None = SentenceTransformerEmbedder() if args.embeddings else None
+    title = "stdin" if args.input == "-" else Path(args.input).name
+    try:
+        summary = organize_text(
+            _read_input(args.input),
+            source=Source(app="cli", title=title),
+            created=datetime.now(timezone.utc).isoformat(),
+            vault_dir=Path(args.vault),
+            organizer=organizer,
+            embedder=embedder,
+        )
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"organized {summary.notes} note(s); skipped {summary.skipped_duplicates} duplicate(s)")
+    print(f"vault: {summary.vault_dir}")
+    print(f"graph: {summary.graph_path}")
+    print(f"plan:  {summary.plan_path}")
+    return 0
+
+
+def _run_gui(args: argparse.Namespace) -> int:
+    try:
+        from grandplan.app.gui import run_app
+
+        return run_app(
+            vault_dir=Path(args.vault),
+            use_llm=args.llm,
+            use_embeddings=args.embeddings,
+            model=args.model,
+        )
+    except ImportError as exc:
+        print(
+            f"error: the GUI needs PySide6 — `pip install grandplan[windows,gui]` ({exc})",
+            file=sys.stderr,
+        )
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="grandplan", description="Offline knowledge organizer.")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
     organize = subparsers.add_parser("organize", help="Organize a text file into a vault.")
     organize.add_argument("input", help="path to a text file, or - for stdin")
     organize.add_argument("-o", "--vault", required=True, help="output vault directory")
@@ -123,30 +163,21 @@ def main(argv: list[str] | None = None) -> int:
         help="use local sentence-transformer embeddings (needs the 'embeddings' extra)",
     )
     organize.add_argument("--model", default="llama3.2:3b", help="Ollama model name for --llm")
+
+    gui = subparsers.add_parser(
+        "gui", help="Launch the tray GUI (Windows; needs the windows,gui extras)."
+    )
+    gui.add_argument("-o", "--vault", required=True, help="vault directory to write notes into")
+    gui.add_argument("--llm", action="store_true", help="organize with a local Ollama model")
+    gui.add_argument(
+        "--embeddings", action="store_true", help="use local sentence-transformer embeddings"
+    )
+    gui.add_argument("--model", default="llama3.2:3b", help="Ollama model name for --llm")
+
     args = parser.parse_args(argv)
-
-    organizer: Organizer | None = OllamaOrganizer(model=args.model) if args.llm else None
-    embedder: Embedder | None = SentenceTransformerEmbedder() if args.embeddings else None
-
-    title = "stdin" if args.input == "-" else Path(args.input).name
-    try:
-        summary = organize_text(
-            _read_input(args.input),
-            source=Source(app="cli", title=title),
-            created=datetime.now(timezone.utc).isoformat(),
-            vault_dir=Path(args.vault),
-            organizer=organizer,
-            embedder=embedder,
-        )
-    except RuntimeError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-    print(f"organized {summary.notes} note(s); skipped {summary.skipped_duplicates} duplicate(s)")
-    print(f"vault: {summary.vault_dir}")
-    print(f"graph: {summary.graph_path}")
-    print(f"plan:  {summary.plan_path}")
-    return 0
+    if args.command == "gui":
+        return _run_gui(args)
+    return _run_organize(args)
 
 
 if __name__ == "__main__":  # pragma: no cover

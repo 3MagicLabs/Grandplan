@@ -30,6 +30,7 @@ where = ["src"]
 llm = ["ollama>=0.3"]
 embeddings = ["sentence-transformers>=2.2"]
 windows = ["pynput>=1.7", "pyperclip>=1.8", "uiautomation>=2.0"]
+gui = ["PySide6>=6.5"]
 
 [[tool.mypy.overrides]]
 module = [
@@ -41,5 +42,7 @@ module = [
   "pynput.*",
   "pyperclip",
   "uiautomation",
+  "PySide6",
+  "PySide6.*",
 ]
 ignore_missing_imports = true

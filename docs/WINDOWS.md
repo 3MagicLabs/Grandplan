@@ -63,6 +63,15 @@ python -m grandplan organize your-notes.txt -o my-vault --llm --embeddings
 - `--embeddings` uses local sentence-transformer embeddings (needs the `embeddings` extra installed).
 - `--model NAME` selects the Ollama model (default `llama3.2:3b`).
 
+Launch the **tray app** (after `pip install -e ".[windows,gui,llm,embeddings]"`):
+
+```cmd
+python -m grandplan gui -o my-vault --llm --embeddings
+```
+
+A tray icon appears; press the hotkey (`Ctrl+Alt+G`) or use "Capture now" — grandplan grabs your
+current selection, shows a review dialog, and on **Save** writes the note into `my-vault`.
+
 ## 5. Building the remaining adapters (design is ready)
 
 ### Capture — issue #6 (`Capturer` port)
@@ -90,7 +99,8 @@ Windows adapter (`grandplan/adapters/win_capture.py`):
 
 ## Status
 
-- ✅ Offline core complete, runnable, gated (265 tests): lossless store · pipeline · vault+graph ·
-  linking/dedup · planner · CLI.
-- ✅ Local-AI adapters (Ollama, sentence-transformers) behind the ports.
-- ⏳ Windows capture (**#6**) and GUI (**#7**) — build here with real verification.
+- ✅ Offline core + CLI + local-AI adapters + capture adapter + review view-model + tray-GUI
+  scaffold — all gated (278 tests). The full app is structurally complete.
+- ⏳ **Final step (here on Windows):** install `grandplan[windows,gui,llm,embeddings]` + Ollama, run
+  `python -m grandplan gui -o my-vault --llm --embeddings`, and verify the
+  hotkey → capture → review → save flow end-to-end — tuning the Qt wiring / hotkey as needed (#7).
