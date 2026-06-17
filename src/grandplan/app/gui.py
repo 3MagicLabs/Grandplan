@@ -47,7 +47,7 @@ _DEFAULT_HOTKEY = "<ctrl>+<alt>+g"
 _NOTIFY_STAGES = frozenset({Stage.SAVED, Stage.EMPTY, Stage.FAILED, Stage.PROJECTION_FAILED})
 
 
-@dataclass
+@dataclass(eq=False)  # identity-keyed: tracked in a set, and has a mutable `approved` (not frozen)
 class _ReviewRequest:
     """A worker-thread request for a main-thread review decision; the worker waits on `event`."""
 
