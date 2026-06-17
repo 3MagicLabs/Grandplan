@@ -46,13 +46,18 @@ class Plan:
     related: tuple[tuple[str, str], ...]  # semantic (relates) links, as (source, target) pairs
     needs_review: tuple[Note, ...]  # contradictions / needs-review notes to resolve (US-10)
     contradictions: tuple[tuple[str, str], ...]  # contradicts edges, as (source, target) pairs
+    status_by_id: dict[str, NoteStatus]  # derived current status per note (ADR-0008 event log)
 
 
 def build_plan(repo: NoteRepository) -> Plan:
     notes = {note.id: note for note in repo.notes()}
+    # Current status is *derived* from the event log (ADR-0008), not read off the note: a `status`
+    # event overrides the creation status without ever mutating the stored note. `status_of` always
+    # returns a concrete status for an id in `notes` (it falls back to the note's creation status).
+    status_by_id = {nid: repo.status_of(nid) or notes[nid].status for nid in notes}
     deps = _dependencies(repo, notes)
     order_ids, cycle_ids = _toposort(notes, deps)
-    done = {nid for nid, note in notes.items() if note.status is NoteStatus.DONE}
+    done = {nid for nid in notes if status_by_id[nid] is NoteStatus.DONE}
     # A note with an incoming `supersedes` edge is stale — excluded from the actionable plan, the
     # same effect as status SUPERSEDED but derived from the edge (no note is mutated; ADR-0007).
     superseded = _superseded_ids(repo, notes)
@@ -61,7 +66,7 @@ def build_plan(repo: NoteRepository) -> Plan:
     blocked: list[PlanItem] = []
     for nid in order_ids:
         note = notes[nid]
-        if not _actionable(note) or nid in superseded:
+        if not _actionable(note, status_by_id[nid]) or nid in superseded:
             continue
         incomplete = tuple(notes[p] for p in sorted(deps[nid]) if p not in done)
         if incomplete:
@@ -77,7 +82,7 @@ def build_plan(repo: NoteRepository) -> Plan:
         )
     )
     contradictions = _contradictions(repo, notes)
-    flagged = {nid for nid, note in notes.items() if note.status is NoteStatus.NEEDS_REVIEW}
+    flagged = {nid for nid in notes if status_by_id[nid] is NoteStatus.NEEDS_REVIEW}
     flagged |= {nid for pair in contradictions for nid in pair}
     return Plan(
         now=tuple(now),
@@ -91,6 +96,7 @@ def build_plan(repo: NoteRepository) -> Plan:
         related=_related(repo, notes),
         needs_review=tuple(notes[i] for i in sorted(flagged)),
         contradictions=contradictions,
+        status_by_id=status_by_id,
     )
 
 
@@ -188,10 +194,11 @@ def write_plan(repo: NoteRepository, path: Path) -> Path:
     return path
 
 
-def _actionable(note: Note) -> bool:
+def _actionable(note: Note, status: NoteStatus) -> bool:
+    # `status` is the derived current status (ADR-0008), not necessarily the note's creation status.
     # NEEDS_REVIEW is excluded: a note flagged by an unresolved contradiction (US-10) must be
     # resolved in the "Needs review" section first, not presented as immediately actionable.
-    return note.type is NoteType.TASK and note.status not in {
+    return note.type is NoteType.TASK and status not in {
         NoteStatus.DONE,
         NoteStatus.SUPERSEDED,
         NoteStatus.NEEDS_REVIEW,
@@ -259,7 +266,7 @@ def _render_tree(plan: Plan, nid: str, depth: int) -> list[str]:
     note = plan.by_id[nid]
     indent = "  " * depth
     if note.type is NoteType.TASK:
-        box = "[x] " if note.status is NoteStatus.DONE else "[ ] "
+        box = "[x] " if plan.status_by_id[nid] is NoteStatus.DONE else "[ ] "
     else:
         box = ""
     out = [f"{indent}- {box}{note.title} _({note.type.value}/{note.horizon.value})_"]

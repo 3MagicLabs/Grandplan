@@ -21,7 +21,7 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 
-from grandplan.core.models import Edge, Note, Original
+from grandplan.core.models import Edge, Note, NoteStatus, Original
 
 _SLUG = re.compile(r"[^0-9a-z]+")
 # Obsidian tag charset: letters, digits, '_', '-', '/'. Everything else is collapsed to '-'.
@@ -47,10 +47,12 @@ class MarkdownVaultWriter:
         links: tuple[Edge, ...],
         *,
         targets: Mapping[str, Note] | None = None,
+        status: NoteStatus | None = None,
     ) -> Path:
         self._dir.mkdir(parents=True, exist_ok=True)
         path = self._dir / f"{self._unique_stem(note)}.md"
-        path.write_text(render_markdown(note, original, links, targets=targets), encoding="utf-8")
+        markdown = render_markdown(note, original, links, targets=targets, status=status)
+        path.write_text(markdown, encoding="utf-8")
         return path
 
     def _unique_stem(self, note: Note) -> str:
@@ -68,8 +70,9 @@ def render_markdown(
     links: tuple[Edge, ...],
     *,
     targets: Mapping[str, Note] | None = None,
+    status: NoteStatus | None = None,
 ) -> str:
-    parts = [_frontmatter(note, original), "", f"# {note.title}", "", note.body.strip()]
+    parts = [_frontmatter(note, original, status), "", f"# {note.title}", "", note.body.strip()]
     wikilinks = _wikilinks(note.id, links, targets or {})
     if wikilinks:
         parts += ["", "## Links", *wikilinks]
@@ -77,12 +80,14 @@ def render_markdown(
     return "\n".join(parts) + "\n"
 
 
-def _frontmatter(note: Note, original: Original) -> str:
+def _frontmatter(note: Note, original: Original, status: NoteStatus | None = None) -> str:
+    # `status` is the derived current status (ADR-0008); it overrides the note's creation status
+    # in the rendered frontmatter without mutating the note. None => use the note's own status.
     fields: dict[str, object] = {
         "id": note.id,
         "aliases": [note.id],  # so `[[<id>]]` links resolve to this file in Obsidian
         "type": note.type.value,
-        "status": note.status.value,
+        "status": (status or note.status).value,
         "horizon": note.horizon.value,
     }
     # Planning properties — emitted only when set, to keep frontmatter uncluttered.

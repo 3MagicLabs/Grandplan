@@ -167,3 +167,28 @@ def test_write_plan_creates_file(tmp_path: Path) -> None:
     out = write_plan(_repo([_note("t1", title="X")], []), tmp_path / "Plan.md")
     assert out.exists()
     assert "# Plan" in out.read_text(encoding="utf-8")
+
+
+def test_status_event_done_unblocks_dependents_and_leaves_now() -> None:
+    # PR-A: the planner reads the *derived* status. A status event marking A done must unblock its
+    # dependent B and drop A from "Now" — same effect as a creation-time done, but event-sourced.
+    repo = _repo([_note("A"), _note("B")], [Edge("B", "A", EdgeKind.DEPENDS_ON)])
+    assert [n.id for n in build_plan(repo).now] == ["A"]  # before the event
+    repo.set_status("A", NoteStatus.DONE)
+    plan = build_plan(repo)
+    assert [n.id for n in plan.now] == ["B"]
+    assert plan.status_by_id["A"] is NoteStatus.DONE
+
+
+def test_status_event_needs_review_flags_and_removes_from_now() -> None:
+    repo = _repo([_note("A")], [])
+    repo.set_status("A", NoteStatus.NEEDS_REVIEW)
+    plan = build_plan(repo)
+    assert [n.id for n in plan.needs_review] == ["A"]
+    assert plan.now == ()  # a derived needs-review note is not actionable
+
+
+def test_render_tree_checkbox_reflects_derived_done() -> None:
+    repo = _repo([_note("A", title="Ship it")], [])
+    repo.set_status("A", NoteStatus.DONE)
+    assert "- [x] Ship it" in render_plan(build_plan(repo))

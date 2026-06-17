@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grandplan.core.models import Edge, EdgeKind, Note, NoteType, Original, Source
+from grandplan.core.models import Edge, EdgeKind, Note, NoteStatus, NoteType, Original, Source
 from grandplan.core.vault import MarkdownVaultWriter, render_markdown
 
 
@@ -33,6 +33,15 @@ def test_render_has_frontmatter_title_body_and_source() -> None:
     assert md.startswith("---\n")
     assert 'id: "abc123"' in md
     assert 'type: "task"' in md
+    assert 'status: "inbox"' in md  # defaults to the note's own status when none is passed
+
+
+def test_frontmatter_renders_derived_status_override() -> None:
+    # PR-A: the vault writes the *derived* current status (passed in), without mutating the note.
+    note = _note()  # creation status defaults to INBOX
+    md = render_markdown(note, _original(), (), status=NoteStatus.DONE)
+    assert 'status: "done"' in md
+    assert note.status is NoteStatus.INBOX  # note object untouched (lossless)
     assert "# Project kickoff" in md
     assert "do the thing" in md
     assert "## Source (original)" in md

@@ -28,11 +28,18 @@ User approved building the **whole** program (status updates + detail edits + hi
 embedding + artifact-attach flow). Execute the PRs in ADR-0008 order, each TDD + gated + reviewed +
 CI-merged (the loop used for #36–#42):
 
-1. **PR-A — event substrate** (START HERE): add a `status` record kind to `index.jsonl`
-   (`note_store.py` `_apply`/`_append` + `repository.py` in-memory map); add `status_of(note_id)` to
-   the `NoteRepository` port + both impls; `planner.build_plan` uses `repo.status_of(n)` not
-   `note.status`; `vault._frontmatter` writes the derived status. Tests: status event overrides
-   creation status; done unblocks/leaves Now; rehydrates from disk.
+1. **PR-A — event substrate** ✅ **DONE** (branch `feat/pr-a-event-substrate-status`): `status`
+   record kind in `index.jsonl` (`note_store.py` `_apply`/`set_status`, idempotent — no event when
+   status unchanged); `set_status` + `status_of(note_id)` on the `NoteRepository` port + both impls;
+   `planner.build_plan` derives status via `repo.status_of` (now/blocked/done-unblocks/needs-review/
+   tree checkbox), carried on `Plan.status_by_id`; `vault._frontmatter`/`render_markdown`/`write`
+   take an optional derived `status`; `graph.json` node shows derived status too. SPEC-PR-A.md is the
+   contract. Gate: **354 tests, 97% cov**, ruff/mypy/bandit green. Deferred (out of PR-A scope, see
+   code review): (a) re-render a note's `.md` frontmatter on a status event — **PR-C** (`commit`
+   writes creation status; pass `repo.status_of(note.id)` when re-rendering); (b) `_apply` crashes on
+   a malformed/corrupt `status`/`note`/`edge` record (pre-existing for all kinds) — wrap with
+   log-and-skip in a focused hardening PR; (c) `set_status` on an unknown `note_id` stores an orphan
+   event — guard once PR-B's match-then-update path exists.
 2. **PR-B** capture-driven status updates (match note → propose → approve → append `status`).
 3. **PR-C** `edit` events + per-note history + "what moved" digest in `Plan.md`.
 4. **PR-D** resource references (frontmatter `resources:`/`links:`, render Obsidian links/embeds/placeholders; organizer extracts URLs/paths).

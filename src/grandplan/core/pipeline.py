@@ -98,5 +98,7 @@ def commit(
     for edge in edges:
         repo.add_edge(edge)
     targets = {target.id: target for target, _ in links}
+    # New note → its frontmatter is the creation status (vault.write's `status` defaults to it).
+    # A later status event re-renders via repo.status_of (PR-B/PR-C), not here.
     path = vault.write(note, original, edges, targets=targets)
     return CaptureResult(original=original, note=note, path=path, links=edges)

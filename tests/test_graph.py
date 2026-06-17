@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from grandplan.core.graph import export_graph, to_graph
-from grandplan.core.models import Edge, EdgeKind, Note, NoteType
+from grandplan.core.models import Edge, EdgeKind, Note, NoteStatus, NoteType
 from grandplan.core.repository import InMemoryNoteRepository
 
 
@@ -43,3 +43,11 @@ def test_us9_export_is_a_portable_open_format(tmp_path: Path) -> None:
     for edge in data["edges"]:
         assert {"source", "target", "kind"} <= set(edge)
         assert isinstance(edge["kind"], str)  # typed edge as an open string
+
+
+def test_node_status_reflects_derived_status() -> None:
+    # PR-A: graph.json is a projection of the event log, so a node shows the derived status.
+    repo = _repo()  # node "b" is a TASK with creation status INBOX
+    repo.set_status("b", NoteStatus.DONE)
+    statuses = {node["id"]: node["status"] for node in to_graph(repo)["nodes"]}
+    assert statuses["b"] == "done"

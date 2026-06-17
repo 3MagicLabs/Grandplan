@@ -37,12 +37,16 @@ class JsonlNoteRepository:
                 self._apply(json.loads(record))
 
     def _apply(self, record: Any) -> None:
-        if record.get("kind") == "note":
+        kind = record.get("kind")
+        if kind == "note":
             note = _note_from_dict(record["note"])
             embedding = tuple(float(v) for v in record["embedding"])
             self._mem.add_note(note, embedding)
-        elif record.get("kind") == "edge":
+        elif kind == "edge":
             self._mem.add_edge(_edge_from_dict(record["edge"]))
+        elif kind == "status":
+            # Replay the status event onto the in-memory map; last line wins (ADR-0008).
+            self._mem.set_status(str(record["note_id"]), NoteStatus(str(record["status"])))
 
     def _append(self, record: dict[str, object]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,6 +64,15 @@ class JsonlNoteRepository:
             return
         self._mem.add_edge(edge)
         self._append({"kind": "edge", "edge": _edge_to_dict(edge)})
+
+    def set_status(self, note_id: str, status: NoteStatus) -> None:
+        if self._mem.status_of(note_id) is status:
+            return  # no state change → no event (append-only + idempotent, like add_note/add_edge)
+        self._mem.set_status(note_id, status)
+        self._append({"kind": "status", "note_id": note_id, "status": status.value})
+
+    def status_of(self, note_id: str) -> NoteStatus | None:
+        return self._mem.status_of(note_id)
 
     def get_note(self, note_id: str) -> Note | None:
         return self._mem.get_note(note_id)

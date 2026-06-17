@@ -7,7 +7,7 @@ adapter can later replace it without core changes.
 
 from __future__ import annotations
 
-from grandplan.core.models import Edge, Note
+from grandplan.core.models import Edge, Note, NoteStatus
 
 
 class InMemoryNoteRepository:
@@ -17,6 +17,9 @@ class InMemoryNoteRepository:
         self._notes: dict[str, Note] = {}
         self._embeddings: dict[str, tuple[float, ...]] = {}
         self._edges: list[Edge] = []
+        # note_id -> latest status from a status event (ADR-0008). Absent => no event yet, so the
+        # derived status falls back to the note's creation status. The note is never mutated.
+        self._statuses: dict[str, NoteStatus] = {}
 
     def add_note(self, note: Note, embedding: tuple[float, ...]) -> None:
         if note.id in self._notes:
@@ -36,6 +39,15 @@ class InMemoryNoteRepository:
 
     def edges(self) -> tuple[Edge, ...]:
         return tuple(self._edges)
+
+    def set_status(self, note_id: str, status: NoteStatus) -> None:
+        self._statuses[note_id] = status  # last-write-wins: the most recent event is current
+
+    def status_of(self, note_id: str) -> NoteStatus | None:
+        if note_id in self._statuses:
+            return self._statuses[note_id]
+        note = self._notes.get(note_id)
+        return note.status if note is not None else None
 
     def most_similar(
         self, embedding: tuple[float, ...], *, limit: int = 5, threshold: float = 0.0

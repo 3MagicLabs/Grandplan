@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
-from grandplan.core.models import Edge, Note, Original, ProposedNote
+from grandplan.core.models import Edge, Note, NoteStatus, Original, ProposedNote
 
 
 class Organizer(Protocol):
@@ -37,6 +37,14 @@ class NoteRepository(Protocol):
 
     def edges(self) -> tuple[Edge, ...]: ...
 
+    def set_status(self, note_id: str, status: NoteStatus) -> None:
+        """Record a note's new current status as an event (append-only; never mutates the note)."""
+        ...
+
+    def status_of(self, note_id: str) -> NoteStatus | None:
+        """Derived current status: latest status event, else creation status, else None if unknown."""
+        ...
+
     def most_similar(
         self, embedding: tuple[float, ...], *, limit: int = 5, threshold: float = 0.0
     ) -> tuple[tuple[Note, float], ...]: ...
@@ -56,6 +64,7 @@ class VaultWriter(Protocol):
         links: tuple[Edge, ...],
         *,
         targets: Mapping[str, Note] | None = None,
+        status: NoteStatus | None = None,
     ) -> Path: ...
 
 

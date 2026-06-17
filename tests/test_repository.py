@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from grandplan.core.models import Edge, EdgeKind, Note, NoteType
+from grandplan.core.models import Edge, EdgeKind, Note, NoteStatus, NoteType
 from grandplan.core.repository import InMemoryNoteRepository
 
 
@@ -37,3 +37,32 @@ def test_most_similar_orders_thresholds_and_limits() -> None:
     assert [n.id for n, _ in repo.most_similar(query)] == ["a", "c", "b"]
     assert [n.id for n, _ in repo.most_similar(query, threshold=0.5)] == ["a", "c"]
     assert [n.id for n, _ in repo.most_similar(query, limit=1)] == ["a"]
+
+
+def test_status_of_defaults_to_creation_status() -> None:
+    # With no status event yet, the derived current status is the note's creation status.
+    repo = InMemoryNoteRepository()
+    repo.add_note(_note("n1"), (1.0,))  # _note() defaults to NoteStatus.INBOX
+    assert repo.status_of("n1") is NoteStatus.INBOX
+
+
+def test_set_status_overrides_without_mutating_the_note() -> None:
+    # Event-sourced: a status event derives the current status; the stored note is never mutated.
+    repo = InMemoryNoteRepository()
+    repo.add_note(_note("n1"), (1.0,))
+    repo.set_status("n1", NoteStatus.DONE)
+    assert repo.status_of("n1") is NoteStatus.DONE
+    note = repo.get_note("n1")
+    assert note is not None and note.status is NoteStatus.INBOX  # lossless: creation status intact
+
+
+def test_set_status_is_last_write_wins() -> None:
+    repo = InMemoryNoteRepository()
+    repo.add_note(_note("n1"), (1.0,))
+    repo.set_status("n1", NoteStatus.ACTIVE)
+    repo.set_status("n1", NoteStatus.DONE)
+    assert repo.status_of("n1") is NoteStatus.DONE
+
+
+def test_status_of_unknown_note_is_none() -> None:
+    assert InMemoryNoteRepository().status_of("missing") is None
