@@ -129,6 +129,40 @@ def test_mermaid_includes_related_connection() -> None:
     assert "nB -.->|related| nA" in md
 
 
+def test_superseded_note_excluded_from_now() -> None:
+    # B supersedes A → A is stale and must drop out of the actionable plan (US-10), without
+    # mutating A's stored status (the edge is authoritative; ADR-0007).
+    repo = _repo([_note("A"), _note("B")], [Edge("B", "A", EdgeKind.SUPERSEDES)])
+    plan = build_plan(repo)
+    assert [n.id for n in plan.now] == ["B"]
+    assert all(item.note.id != "A" for item in plan.blocked)
+
+
+def test_contradiction_surfaces_in_needs_review_section() -> None:
+    repo = _repo(
+        [_note("X", title="Use Postgres"), _note("Y", title="Use MongoDB")],
+        [Edge("X", "Y", EdgeKind.CONTRADICTS)],
+    )
+    plan = build_plan(repo)
+    assert {n.id for n in plan.needs_review} == {"X", "Y"}
+    md = render_plan(plan)
+    assert "## ⚠ Needs review" in md
+    assert "contradiction: Use Postgres ⟷ Use MongoDB" in md
+
+
+def test_needs_review_status_note_is_flagged_and_not_actionable() -> None:
+    repo = _repo([_note("Q", status=NoteStatus.NEEDS_REVIEW, title="Unresolved")], [])
+    plan = build_plan(repo)
+    assert [n.id for n in plan.needs_review] == ["Q"]
+    assert plan.now == ()  # a needs-review note must NOT also appear as actionable "now"
+    assert "## ⚠ Needs review" in render_plan(plan)
+
+
+def test_clean_plan_has_no_needs_review_section() -> None:
+    md = render_plan(build_plan(_repo([_note("t1", title="Solo")], [])))
+    assert "Needs review" not in md  # absent when there's nothing to resolve
+
+
 def test_write_plan_creates_file(tmp_path: Path) -> None:
     out = write_plan(_repo([_note("t1", title="X")], []), tmp_path / "Plan.md")
     assert out.exists()

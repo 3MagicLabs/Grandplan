@@ -44,6 +44,8 @@ class Plan:
     child_ids: dict[str, tuple[str, ...]]
     deps: dict[str, tuple[str, ...]]  # note id -> its prerequisite note ids (depends_on/blocks)
     related: tuple[tuple[str, str], ...]  # semantic (relates) links, as (source, target) pairs
+    needs_review: tuple[Note, ...]  # contradictions / needs-review notes to resolve (US-10)
+    contradictions: tuple[tuple[str, str], ...]  # contradicts edges, as (source, target) pairs
 
 
 def build_plan(repo: NoteRepository) -> Plan:
@@ -51,12 +53,15 @@ def build_plan(repo: NoteRepository) -> Plan:
     deps = _dependencies(repo, notes)
     order_ids, cycle_ids = _toposort(notes, deps)
     done = {nid for nid, note in notes.items() if note.status is NoteStatus.DONE}
+    # A note with an incoming `supersedes` edge is stale — excluded from the actionable plan, the
+    # same effect as status SUPERSEDED but derived from the edge (no note is mutated; ADR-0007).
+    superseded = _superseded_ids(repo, notes)
 
     now: list[Note] = []
     blocked: list[PlanItem] = []
     for nid in order_ids:
         note = notes[nid]
-        if not _actionable(note):
+        if not _actionable(note) or nid in superseded:
             continue
         incomplete = tuple(notes[p] for p in sorted(deps[nid]) if p not in done)
         if incomplete:
@@ -71,6 +76,9 @@ def build_plan(repo: NoteRepository) -> Plan:
             key=lambda i: (_HORIZON_RANK[notes[i].horizon], notes[i].title, i),
         )
     )
+    contradictions = _contradictions(repo, notes)
+    flagged = {nid for nid, note in notes.items() if note.status is NoteStatus.NEEDS_REVIEW}
+    flagged |= {nid for pair in contradictions for nid in pair}
     return Plan(
         now=tuple(now),
         blocked=tuple(blocked),
@@ -81,6 +89,8 @@ def build_plan(repo: NoteRepository) -> Plan:
         child_ids=child_ids,
         deps={nid: tuple(sorted(prereqs)) for nid, prereqs in deps.items()},
         related=_related(repo, notes),
+        needs_review=tuple(notes[i] for i in sorted(flagged)),
+        contradictions=contradictions,
     )
 
 
@@ -89,6 +99,23 @@ def _related(repo: NoteRepository, notes: dict[str, Note]) -> tuple[tuple[str, s
         (edge.source_id, edge.target_id)
         for edge in repo.edges()
         if edge.kind is EdgeKind.RELATES and edge.source_id in notes and edge.target_id in notes
+    )
+
+
+def _superseded_ids(repo: NoteRepository, notes: dict[str, Note]) -> set[str]:
+    """Notes made stale by an incoming `supersedes` edge (target = the superseded note)."""
+    return {
+        edge.target_id
+        for edge in repo.edges()
+        if edge.kind is EdgeKind.SUPERSEDES and edge.target_id in notes
+    }
+
+
+def _contradictions(repo: NoteRepository, notes: dict[str, Note]) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (edge.source_id, edge.target_id)
+        for edge in repo.edges()
+        if edge.kind is EdgeKind.CONTRADICTS and edge.source_id in notes and edge.target_id in notes
     )
 
 
@@ -116,6 +143,13 @@ def render_plan(plan: Plan) -> str:
     lines += ["", "## By goal / project", ""]
     for root_id in plan.root_ids:
         lines += _render_tree(plan, root_id, 0)
+    if plan.needs_review:
+        lines += ["", "## ⚠ Needs review", ""]
+        lines += [f"- {note.title} (^{note.id})" for note in plan.needs_review]
+        for src, tgt in plan.contradictions:
+            a, b = plan.by_id.get(src), plan.by_id.get(tgt)
+            if a is not None and b is not None:
+                lines.append(f"  - contradiction: {a.title} ⟷ {b.title}")
     diagram = _mermaid(plan)
     if diagram:
         lines += ["", "## Map (diagram)", "", *diagram]
@@ -155,9 +189,12 @@ def write_plan(repo: NoteRepository, path: Path) -> Path:
 
 
 def _actionable(note: Note) -> bool:
+    # NEEDS_REVIEW is excluded: a note flagged by an unresolved contradiction (US-10) must be
+    # resolved in the "Needs review" section first, not presented as immediately actionable.
     return note.type is NoteType.TASK and note.status not in {
         NoteStatus.DONE,
         NoteStatus.SUPERSEDED,
+        NoteStatus.NEEDS_REVIEW,
     }
 
 

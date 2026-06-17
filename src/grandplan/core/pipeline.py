@@ -12,10 +12,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from grandplan.core.models import Edge, EdgeKind, Note, Original, ProposedNote, Source
+from grandplan.core.models import (
+    Edge,
+    EdgeKind,
+    Note,
+    NoteStatus,
+    Original,
+    ProposedNote,
+    Source,
+)
 from grandplan.core.ports import Embedder, NoteRepository, Organizer, VaultWriter
 from grandplan.core.reconcile import Reconciler, ReconcileProposal
 from grandplan.core.store import OriginalStore
@@ -60,9 +68,9 @@ def assess(
     repo: NoteRepository,
     reconciler: Reconciler,
 ) -> Assessment:
-    """Embed the proposal and reconcile it against existing notes (US-5/US-6)."""
+    """Embed the proposal and reconcile it against existing notes (US-5/US-6/US-10)."""
     embedding = embedder.embed(f"{proposed.title}\n{proposed.body}")
-    return Assessment(embedding=embedding, proposal=reconciler.reconcile(embedding, repo))
+    return Assessment(embedding=embedding, proposal=reconciler.reconcile(proposed, embedding, repo))
 
 
 def commit(
@@ -72,14 +80,23 @@ def commit(
     *,
     repo: NoteRepository,
     vault: VaultWriter,
-    link_to: tuple[Note, ...] = (),
+    links: tuple[tuple[Note, EdgeKind], ...] = (),
+    status: NoteStatus = NoteStatus.INBOX,
 ) -> CaptureResult:
-    """Approve: index the note, record approved RELATES links, write the vault file."""
+    """Approve: index the note (with the approved typed links + status), write the vault file.
+
+    `links` are the approved (target note, edge kind) pairs from reconciliation (US-10): RELATES,
+    BUILDS_ON, REFINES, SUPERSEDES, CONTRADICTS. `status` lets a contradiction land the new note as
+    `needs-review`. No existing note is mutated — supersede/contradict are expressed as edges and a
+    creation-time status, preserving the append-only/lossless invariant (ADR-0007).
+    """
     note = Note.from_proposed(proposed)
+    if status is not note.status:
+        note = replace(note, status=status)
     repo.add_note(note, assessment.embedding)
-    edges = tuple(Edge(note.id, target.id, EdgeKind.RELATES) for target in link_to)
+    edges = tuple(Edge(note.id, target.id, kind) for target, kind in links)
     for edge in edges:
         repo.add_edge(edge)
-    targets = {target.id: target for target in link_to}
+    targets = {target.id: target for target, _ in links}
     path = vault.write(note, original, edges, targets=targets)
     return CaptureResult(original=original, note=note, path=path, links=edges)

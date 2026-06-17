@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from grandplan.core.embed import HashingEmbedder
-from grandplan.core.models import Source
+from grandplan.core.models import EdgeKind, NoteStatus, Note, ProposedNote, Source
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.pipeline import assess, commit, propose
-from grandplan.core.reconcile import SimilarityReconciler
+from grandplan.core.reconcile import Relationship, SimilarityReconciler
 from grandplan.core.repository import InMemoryNoteRepository
 from grandplan.core.store import InMemoryOriginalStore
 from grandplan.core.vault import MarkdownVaultWriter
@@ -80,7 +80,7 @@ def test_related_note_is_detected_and_linked(tmp_path: Path) -> None:
     a2 = assess(p2, embedder=_EMBEDDER, repo=repo, reconciler=_RECONCILER)
     assert first.note in a2.proposal.related_notes  # US-5 detection
 
-    second = commit(o2, p2, a2, repo=repo, vault=vault, link_to=a2.proposal.related_notes)
+    second = commit(o2, p2, a2, repo=repo, vault=vault, links=a2.proposal.links())
     assert any((e.source_id, e.target_id) == (second.note.id, first.note.id) for e in repo.edges())
     # Resolvable wikilink to the real file (no broken/phantom link, SPEC US-5).
     written = second.path.read_text(encoding="utf-8")
@@ -106,3 +106,46 @@ def test_exact_duplicate_capture_is_flagged(tmp_path: Path) -> None:
     _, p2 = propose(text, _SOURCE, _CREATED, organizer=_ORGANIZER, originals=originals)
     a2 = assess(p2, embedder=_EMBEDDER, repo=repo, reconciler=_RECONCILER)
     assert a2.proposal.is_probable_duplicate  # US-6 review-before-clutter
+
+
+class _AlwaysContradict:
+    """Test classifier that flags every candidate as a contradiction (US-10)."""
+
+    def classify(self, new: ProposedNote, candidate: Note, score: float) -> Relationship:
+        return Relationship.CONTRADICTS
+
+
+def test_contradiction_commits_as_needs_review_with_a_contradicts_edge(tmp_path: Path) -> None:
+    originals = InMemoryOriginalStore()
+    repo = InMemoryNoteRepository()
+    vault = MarkdownVaultWriter(tmp_path / "vault")
+
+    o1, p1 = propose(
+        "we should use postgres", _SOURCE, _CREATED, organizer=_ORGANIZER, originals=originals
+    )
+    first = commit(
+        o1,
+        p1,
+        assess(p1, embedder=_EMBEDDER, repo=repo, reconciler=_RECONCILER),
+        repo=repo,
+        vault=vault,
+    )
+
+    # link_threshold=0 so the existing note is always a candidate → the classifier contradicts it.
+    conflicting = SimilarityReconciler(link_threshold=0.0, classifier=_AlwaysContradict())
+    o2, p2 = propose(
+        "we must use mongodb instead", _SOURCE, _CREATED, organizer=_ORGANIZER, originals=originals
+    )
+    a2 = assess(p2, embedder=_EMBEDDER, repo=repo, reconciler=conflicting)
+    assert a2.proposal.requires_review
+
+    status = NoteStatus.NEEDS_REVIEW if a2.proposal.requires_review else NoteStatus.INBOX
+    second = commit(o2, p2, a2, repo=repo, vault=vault, links=a2.proposal.links(), status=status)
+
+    assert second.note.status is NoteStatus.NEEDS_REVIEW  # never auto-resolved (US-10)
+    assert any(
+        (e.source_id, e.target_id, e.kind) == (second.note.id, first.note.id, EdgeKind.CONTRADICTS)
+        for e in repo.edges()
+    )
+    # the superseded/old note is NOT mutated — append-only preserved (ADR-0007)
+    assert repo.get_note(first.note.id).status is NoteStatus.INBOX

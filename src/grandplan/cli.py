@@ -21,7 +21,7 @@ from pathlib import Path
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OllamaOrganizer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
 from grandplan.core.embed import HashingEmbedder
-from grandplan.core.models import Source
+from grandplan.core.models import NoteStatus, Source
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.pipeline import assess, commit, propose
 from grandplan.core.ports import Embedder, Organizer
@@ -78,7 +78,10 @@ def organize_text(
             assessment,
             repo=repo,
             vault=vault,
-            link_to=assessment.proposal.related_notes,
+            links=assessment.proposal.links(),
+            status=(
+                NoteStatus.NEEDS_REVIEW if assessment.proposal.requires_review else NoteStatus.INBOX
+            ),
         )
         committed += 1
 

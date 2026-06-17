@@ -169,8 +169,13 @@ def _show_review(state: ReviewState) -> bool:  # pragma: no cover - Qt dialog
     layout.addWidget(QtWidgets.QLabel(f"<b>{state.title}</b>  ({state.note_type})"))
     if state.is_probable_duplicate:
         layout.addWidget(QtWidgets.QLabel("⚠ Looks like a duplicate of an existing note."))
-    if state.related_titles:
-        layout.addWidget(QtWidgets.QLabel("Related: " + ", ".join(state.related_titles)))
+    if state.requires_review:
+        layout.addWidget(
+            QtWidgets.QLabel("⚠ Conflicts with an existing note — will be saved as needs-review.")
+        )
+    if state.links:
+        summary = ", ".join(f"{relationship} {title}" for relationship, title in state.links)
+        layout.addWidget(QtWidgets.QLabel("Relationships: " + summary))
     layout.addWidget(QtWidgets.QLabel("Original (preserved verbatim):"))
     original = QtWidgets.QPlainTextEdit(state.original_text)
     original.setReadOnly(True)

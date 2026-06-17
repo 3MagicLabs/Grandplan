@@ -65,6 +65,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **WSL2 memory cap** documented as a hard prerequisite (`docs/WINDOWS.md`) — the backstop against a
   runaway VM starving the host.
 
+### Added (knowledge evolution & consistency — US-10 / #12, ADR-0007)
+- **Richer reconciliation:** a new note is classified against existing notes as `builds_on` /
+  `refines` / `supersedes` / `contradicts` (beyond related/duplicate). Classification is a Strategy
+  behind the port — deterministic `SimilarityClassifier` baseline (default; behaviour unchanged) +
+  an `LlmRelationshipClassifier` adapter (local Ollama, injected client, similarity fallback).
+- **Consistency by projection (lossless preserved):** approved relationships are recorded as typed
+  edges; a `supersedes` edge makes the old note drop out of the actionable plan (derived, never
+  mutated); a `contradicts` is **never auto-resolved** — both notes kept, a `contradicts` edge added,
+  and the new note lands as `needs-review`. `Plan.md` gains a **"⚠ Needs review"** section.
+- `commit` generalized to typed `links` + an explicit `status`; the CLI/GUI review path wires through.
+
 ### Notes
 - The full **MVP app is structurally complete and gated** (302 tests, green gate + CI): capture →
   organize (baseline or local LLM) → review/approve → linked, de-duplicated Markdown vault → Plan.md.
