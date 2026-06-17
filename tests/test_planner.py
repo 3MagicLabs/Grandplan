@@ -99,6 +99,26 @@ def test_render_contains_sections_and_checkbox() -> None:
     assert "## By goal / project" in md
 
 
+def test_render_includes_mermaid_diagram_with_dependency_edge() -> None:
+    repo = _repo(
+        [_note("A", title="First"), _note("B", title="Second")],
+        [Edge("B", "A", EdgeKind.DEPENDS_ON)],
+    )
+    md = render_plan(build_plan(repo))
+    assert "```mermaid" in md
+    assert "graph TD" in md
+    assert 'nA["First"]' in md
+    assert "nA --> nB" in md  # prerequisite A points to dependent B
+
+
+def test_mermaid_label_is_sanitized() -> None:
+    repo = _repo([_note("A", title='Quote " and [brackets]')], [])
+    md = render_plan(build_plan(repo))
+    # Characters that would break a Mermaid node label must be neutralized.
+    assert '"Quote " and' not in md
+    assert "[brackets]" not in md.split("graph TD", 1)[1]
+
+
 def test_write_plan_creates_file(tmp_path: Path) -> None:
     out = write_plan(_repo([_note("t1", title="X")], []), tmp_path / "Plan.md")
     assert out.exists()

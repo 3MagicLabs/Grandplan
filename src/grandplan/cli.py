@@ -21,12 +21,11 @@ from pathlib import Path
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OllamaOrganizer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
 from grandplan.core.embed import HashingEmbedder
-from grandplan.core.graph import export_graph
 from grandplan.core.models import Source
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.pipeline import assess, commit, propose
-from grandplan.core.planner import write_plan
 from grandplan.core.ports import Embedder, Organizer
+from grandplan.core.project import write_projections
 from grandplan.core.reconcile import SimilarityReconciler
 from grandplan.core.repository import InMemoryNoteRepository
 from grandplan.core.store import InMemoryOriginalStore
@@ -83,9 +82,7 @@ def organize_text(
         )
         committed += 1
 
-    vault_dir.mkdir(parents=True, exist_ok=True)
-    graph_path = export_graph(repo, vault_dir / "graph.json")
-    plan_path = write_plan(repo, vault_dir / "Plan.md")
+    graph_path, plan_path = write_projections(repo, vault_dir)
     return RunSummary(
         notes=committed,
         skipped_duplicates=skipped,

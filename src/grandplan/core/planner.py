@@ -41,6 +41,7 @@ class Plan:
     root_ids: tuple[str, ...]
     by_id: dict[str, Note]
     child_ids: dict[str, tuple[str, ...]]
+    deps: dict[str, tuple[str, ...]]  # note id -> its prerequisite note ids (depends_on/blocks)
 
 
 def build_plan(repo: NoteRepository) -> Plan:
@@ -76,6 +77,7 @@ def build_plan(repo: NoteRepository) -> Plan:
         root_ids=root_ids,
         by_id=notes,
         child_ids=child_ids,
+        deps={nid: tuple(sorted(prereqs)) for nid, prereqs in deps.items()},
     )
 
 
@@ -103,10 +105,35 @@ def render_plan(plan: Plan) -> str:
     lines += ["", "## By goal / project", ""]
     for root_id in plan.root_ids:
         lines += _render_tree(plan, root_id, 0)
+    diagram = _mermaid(plan)
+    if diagram:
+        lines += ["", "## Map (diagram)", "", *diagram]
     if plan.cycle:
         lines += ["", "## ⚠ Dependency cycle", ""]
         lines += [f"- {note.title} (^{note.id})" for note in plan.cycle]
     return "\n".join(lines) + "\n"
+
+
+def _mermaid(plan: Plan) -> list[str]:
+    """An Obsidian-rendered Mermaid flowchart of the graph: dependencies + part-of hierarchy."""
+    if not plan.by_id:
+        return []
+    lines = ["```mermaid", "graph TD"]
+    for nid in sorted(plan.by_id):
+        lines.append(f'    n{nid}["{_mermaid_label(plan.by_id[nid].title)}"]')
+    for nid in sorted(plan.deps):
+        for prereq in plan.deps[nid]:  # prerequisite --> dependent (completion flow)
+            lines.append(f"    n{prereq} --> n{nid}")
+    for parent in sorted(plan.child_ids):
+        for child in plan.child_ids[parent]:
+            lines.append(f"    n{child} -.->|part of| n{parent}")
+    lines.append("```")
+    return lines
+
+
+def _mermaid_label(title: str) -> str:
+    """Neutralize characters that would break a Mermaid node label."""
+    return title.replace('"', "'").replace("[", "(").replace("]", ")").replace("\n", " ")
 
 
 def write_plan(repo: NoteRepository, path: Path) -> Path:

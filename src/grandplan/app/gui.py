@@ -26,6 +26,7 @@ from grandplan.core.models import Source
 from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.ports import Embedder, Organizer
+from grandplan.core.project import write_projections
 from grandplan.core.reconcile import SimilarityReconciler
 from grandplan.core.store import JsonlOriginalStore
 from grandplan.core.vault import MarkdownVaultWriter
@@ -71,6 +72,8 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
             )
             if _show_review(pending.state):
                 approve(pending, repo=repo, vault=vault)
+                # Refresh the actionable plan + graph so the "grand plan" stays current.
+                write_projections(repo, vault_dir)
             else:
                 discard(pending)
         except Exception as exc:  # noqa: BLE001 - one failed capture must not kill the tray app
