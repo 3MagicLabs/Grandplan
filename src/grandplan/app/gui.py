@@ -30,6 +30,7 @@ from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
 from grandplan.app.coordinator import CaptureCoordinator, CaptureStatus, Stage
 from grandplan.app.review import ReviewState
 from grandplan.core.embed import HashingEmbedder
+from grandplan.core.index_location import migrate_legacy_index
 from grandplan.core.models import Source
 from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
@@ -69,9 +70,12 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     organizer: Organizer = OllamaOrganizer(model=model) if use_llm else HeuristicOrganizer()
     embedder: Embedder = SentenceTransformerEmbedder() if use_embeddings else HashingEmbedder()
     # Persistent index: rehydrates prior notes/embeddings/edges so a new capture links against
-    # the whole vault history, not just this session (SPEC US-5).
-    repo = JsonlNoteRepository(vault_dir / ".grandplan" / "index.jsonl")
-    originals = JsonlOriginalStore(vault_dir / ".grandplan" / "inbox.jsonl")
+    # the whole vault history, not just this session (SPEC US-5). Kept OUTSIDE the vault so a
+    # cloud sync (OneDrive/Dropbox) can't churn/conflict the internal index; migrates any legacy
+    # in-vault `.grandplan/` out, once.
+    index_root = migrate_legacy_index(vault_dir)
+    repo = JsonlNoteRepository(index_root / "index.jsonl")
+    originals = JsonlOriginalStore(index_root / "inbox.jsonl")
     vault = MarkdownVaultWriter(vault_dir)
 
     app = QtWidgets.QApplication.instance()
