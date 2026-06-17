@@ -29,3 +29,17 @@ def test_export_graph_writes_valid_json(tmp_path: Path) -> None:
     data = json.loads(out.read_text(encoding="utf-8"))
     assert len(data["nodes"]) == 2
     assert data["edges"][0]["kind"] == "relates"
+
+
+def test_us9_export_is_a_portable_open_format(tmp_path: Path) -> None:
+    # US-9: data in open formats with no proprietary lock-in — a third party needs only the
+    # stdlib json module + the documented node/typed-edge schema to consume the whole graph.
+    out = export_graph(_repo(), tmp_path / "graph.json")
+    data = json.loads(out.read_text(encoding="utf-8"))  # plain JSON, no custom loader
+    assert {"nodes", "edges"} <= set(data)  # subset: forward-compatible if fields are added
+    for node in data["nodes"]:
+        assert {"id", "title", "type", "status", "horizon", "tags", "original_id"} <= set(node)
+        assert isinstance(node["type"], str)  # plain string enum value, not a proprietary object
+    for edge in data["edges"]:
+        assert {"source", "target", "kind"} <= set(edge)
+        assert isinstance(edge["kind"], str)  # typed edge as an open string

@@ -76,6 +76,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   and the new note lands as `needs-review`. `Plan.md` gains a **"⚠ Needs review"** section.
 - `commit` generalized to typed `links` + an explicit `status`; the CLI/GUI review path wires through.
 
+### Added (hardening & onboarding)
+- **QAS-1 offline-egress check (was missing):** an automated test forbids any non-loopback socket
+  for a full offline run and proves the guard works (negative control) — the offline guarantee is
+  now verified, not just asserted in prose.
+- **Vault-clobber safety:** `write_projections` never overwrites a `Plan.md`/`graph.json` it didn't
+  generate — a foreign file is preserved and output is diverted to a `.grandplan` sibling (+warning),
+  so pointing grandplan at a real Obsidian vault can't destroy a hand-written plan.
+- **US-9 portability verified:** a test asserts the JSON graph is an open format (stdlib-parseable,
+  documented node/typed-edge schema, no proprietary objects).
+- **Windows onboarding:** `docs/QUICKSTART-WINDOWS.md` + a `run.bat` launcher for the daily run.
+
 ### Notes
 - The full **MVP app is structurally complete and gated** (302 tests, green gate + CI): capture →
   organize (baseline or local LLM) → review/approve → linked, de-duplicated Markdown vault → Plan.md.

@@ -29,8 +29,11 @@ def _edge(edge: Edge) -> dict[str, object]:
     return {"source": edge.source_id, "target": edge.target_id, "kind": edge.kind.value}
 
 
-def to_graph(repo: NoteRepository) -> dict[str, list[dict[str, object]]]:
+def to_graph(repo: NoteRepository) -> dict[str, object]:
+    # `_grandplan` is a sentinel so a regenerated graph.json is recognised as ours (and only ours
+    # is ever overwritten — see core.project); external consumers simply ignore the extra key.
     return {
+        "_grandplan": True,
         "nodes": [_node(note) for note in repo.notes()],
         "edges": [_edge(edge) for edge in repo.edges()],
     }
