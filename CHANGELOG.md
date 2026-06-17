@@ -87,6 +87,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   documented node/typed-edge schema, no proprietary objects).
 - **Windows onboarding:** `docs/QUICKSTART-WINDOWS.md` + a `run.bat` launcher for the daily run.
 
+### Fixed & improved (post-stabilization polish)
+- **GUI capture crash fixed (#39):** `_ReviewRequest` made identity-hashable — the worker's
+  pending-review set raised `TypeError` on the first real Windows capture (a `pragma: no cover` gap).
+- **Clean vault output (#40):** title-based note filenames (the content id moved to frontmatter +
+  `aliases`; links resolve via the id alias, independent of the filename, and never clobber a
+  different note); Obsidian-valid sanitized tags; richer frontmatter (`due`/`contexts`/`collections`).
+- **Index out of the synced vault (#41):** the internal index + verbatim inbox now live under the
+  user's home (per-vault, `GRANDPLAN_HOME`-overridable) with one-time non-destructive migration, so a
+  OneDrive/Dropbox vault no longer syncs/conflicts grandplan's rebuildable internal state.
+- **Richer connections (GUI):** under `--llm`, an `LlmRelationshipClassifier` now classifies the
+  **top-k most-similar** candidates into builds_on/refines/supersedes/contradicts (two-tier with the
+  cosine baseline for the tail), wired into the tray GUI — bounding LLM calls per capture.
+
 ### Notes
 - The full **MVP app is structurally complete and gated** (302 tests, green gate + CI): capture →
   organize (baseline or local LLM) → review/approve → linked, de-duplicated Markdown vault → Plan.md.

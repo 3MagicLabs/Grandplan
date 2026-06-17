@@ -55,11 +55,31 @@ def test_invalid_thresholds_raise() -> None:
         SimilarityReconciler(link_threshold=0.9, duplicate_threshold=0.3)
 
 
-def test_duplicate_threshold_with_custom_classifier_is_rejected() -> None:
-    # duplicate_threshold only configures the default classifier; pairing it with a custom one
-    # would silently do nothing, so it's an explicit error rather than a silent no-op.
-    with pytest.raises(ValueError, match="duplicate_threshold is unused"):
-        SimilarityReconciler(duplicate_threshold=0.5, classifier=SimilarityClassifier())
+def test_two_tier_applies_rich_classifier_only_to_top_k() -> None:
+    # The rich classifier would label BOTH candidates SUPERSEDES; with llm_top_k=1 only the
+    # top-scored ("dup") gets it — the tail falls back to the cheap baseline (RELATED).
+    classifier = _FixedClassifier({"dup": Relationship.SUPERSEDES, "rel": Relationship.SUPERSEDES})
+    proposal = SimilarityReconciler(classifier=classifier, llm_top_k=1).reconcile(
+        _proposed(), (1.0, 0.0, 0.0), _repo()
+    )
+    by_id = {c.note.id: c.relationship for c in proposal.candidates}
+    assert by_id["dup"] is Relationship.SUPERSEDES  # top-1 → rich classifier
+    assert by_id["rel"] is Relationship.RELATED  # tail → baseline (0.6 < duplicate threshold)
+
+
+def test_llm_top_k_zero_uses_baseline_for_all() -> None:
+    classifier = _FixedClassifier(
+        {"dup": Relationship.CONTRADICTS, "rel": Relationship.CONTRADICTS}
+    )
+    proposal = SimilarityReconciler(classifier=classifier, llm_top_k=0).reconcile(
+        _proposed(), (1.0, 0.0, 0.0), _repo()
+    )
+    assert not proposal.requires_review  # rich classifier never consulted → baseline bands only
+
+
+def test_negative_llm_top_k_raises() -> None:
+    with pytest.raises(ValueError, match="llm_top_k"):
+        SimilarityReconciler(llm_top_k=-1)
 
 
 def test_similarity_classifier_bands() -> None:

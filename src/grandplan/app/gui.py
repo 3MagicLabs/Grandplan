@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from grandplan.adapters.capture import make_windows_capturer, run_hotkey_listener
+from grandplan.adapters.llm_reconciler import LlmRelationshipClassifier
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OllamaOrganizer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
 from grandplan.app.coordinator import CaptureCoordinator, CaptureStatus, Stage
@@ -69,6 +70,10 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
 
     organizer: Organizer = OllamaOrganizer(model=model) if use_llm else HeuristicOrganizer()
     embedder: Embedder = SentenceTransformerEmbedder() if use_embeddings else HashingEmbedder()
+    # Under --llm, the LLM classifies the top-k most-similar candidates into richer typed links
+    # (builds_on/refines/supersedes/contradicts); without it, the cosine baseline (relates/duplicate).
+    classifier = LlmRelationshipClassifier(model=model) if use_llm else None
+    reconciler = SimilarityReconciler(classifier=classifier)
     # Persistent index: rehydrates prior notes/embeddings/edges so a new capture links against
     # the whole vault history, not just this session (SPEC US-5). Kept OUTSIDE the vault so a
     # cloud sync (OneDrive/Dropbox) can't churn/conflict the internal index; migrates any legacy
@@ -130,7 +135,7 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         capturer=make_windows_capturer(),
         organizer=organizer,
         embedder=embedder,
-        reconciler=SimilarityReconciler(),
+        reconciler=reconciler,
         repo=repo,
         originals=originals,
         vault=vault,

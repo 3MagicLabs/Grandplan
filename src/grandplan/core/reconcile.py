@@ -121,28 +121,33 @@ class SimilarityReconciler:
         duplicate_threshold: float = _DEFAULT_DUPLICATE_THRESHOLD,
         limit: int = 5,
         classifier: RelationshipClassifier | None = None,
+        llm_top_k: int = 2,
     ) -> None:
         if not 0.0 <= link_threshold <= duplicate_threshold <= 1.0:
             raise ValueError("require 0 <= link_threshold <= duplicate_threshold <= 1")
-        # `duplicate_threshold` only configures the default classifier; passing it alongside a
-        # custom classifier would silently do nothing, so reject that combination explicitly.
-        if classifier is not None and duplicate_threshold != _DEFAULT_DUPLICATE_THRESHOLD:
-            raise ValueError("duplicate_threshold is unused when a custom classifier is provided")
+        if llm_top_k < 0:
+            raise ValueError("llm_top_k must be >= 0")
         self._link = link_threshold
         self._limit = limit
-        self._classifier: RelationshipClassifier = classifier or SimilarityClassifier(
-            duplicate_threshold=duplicate_threshold
-        )
+        self._baseline = SimilarityClassifier(duplicate_threshold=duplicate_threshold)
+        self._rich = classifier  # optional richer (e.g. LLM) classifier; None = baseline only
+        self._llm_top_k = llm_top_k
 
     def reconcile(
         self, proposed: ProposedNote, embedding: tuple[float, ...], repo: NoteRepository
     ) -> ReconcileProposal:
-        candidates = tuple(
-            RelatedCandidate(
-                note=note,
-                score=score,
-                relationship=self._classifier.classify(proposed, note, score),
+        ranked = repo.most_similar(embedding, limit=self._limit, threshold=self._link)
+        candidates: list[RelatedCandidate] = []
+        for rank, (note, score) in enumerate(ranked):
+            # Two-tier linking: the richer (LLM) classifier runs only on the top-k most-similar
+            # candidates — where duplicate/supersede/contradict actually occur — which bounds LLM
+            # calls per capture (CPU-friendly); the rest get the cheap deterministic baseline.
+            classifier: RelationshipClassifier = self._baseline
+            if self._rich is not None and rank < self._llm_top_k:
+                classifier = self._rich
+            candidates.append(
+                RelatedCandidate(
+                    note=note, score=score, relationship=classifier.classify(proposed, note, score)
+                )
             )
-            for note, score in repo.most_similar(embedding, limit=self._limit, threshold=self._link)
-        )
-        return ReconcileProposal(candidates)
+        return ReconcileProposal(tuple(candidates))
