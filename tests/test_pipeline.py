@@ -82,10 +82,10 @@ def test_related_note_is_detected_and_linked(tmp_path: Path) -> None:
 
     second = commit(o2, p2, a2, repo=repo, vault=vault, links=a2.proposal.links())
     assert any((e.source_id, e.target_id) == (second.note.id, first.note.id) for e in repo.edges())
-    # Resolvable wikilink to the real file (no broken/phantom link, SPEC US-5).
+    # Resolvable alias-based wikilink (displays the title, resolves via the target's id alias).
     written = second.path.read_text(encoding="utf-8")
-    assert f"-{first.note.id}|{first.note.title}]]" in written
-    assert f"[[{first.note.id}]]" not in written  # not the old dangling bare-id form
+    assert f"[[{first.note.id}|{first.note.title}]]" in written
+    assert f"[[{first.note.id}]]" not in written  # not the bare, undisplayed form
 
 
 def test_exact_duplicate_capture_is_flagged(tmp_path: Path) -> None:

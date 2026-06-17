@@ -1,16 +1,17 @@
 """MarkdownVaultWriter — renders an approved note as Obsidian-friendly Markdown.
 
 Output: YAML frontmatter (JSON-encoded values, so titles/tags are always valid YAML and
-dependency-free), a title heading, the organized body, typed `[[wikilinks]]` that **resolve**
-to real notes, and a **verbatim** "Source (original)" block in a dynamically-sized code fence
-so any backticks in the original cannot break it. The verbatim original keeps the note lossless
-on disk too.
+dependency-free), a title heading, the organized body, typed `[[wikilinks]]`, and a **verbatim**
+"Source (original)" block in a dynamically-sized code fence so any backticks in the original
+cannot break it. The verbatim original keeps the note lossless on disk too.
 
-Link resolution (SPEC US-5 "targets are real notes, no broken links"): files are named
-`<slug>-<id>.md`, links render as `[[<slug>-<id>|<title>]]` (resolves to the file, displays the
-title), and every note also carries `aliases: ["<id>"]` so a bare-id reference resolves too.
-The `source` object is flattened into scalar `source_*` keys so Obsidian's property UI renders
-it cleanly instead of as a raw JSON string.
+File naming & links: files are named after a **clean, human-readable slug** of the title — the
+content id is *not* in the filename (it lives in frontmatter `id` + `aliases`). Links render as
+`[[<id>|<title>]]`, which Obsidian resolves to the target via its `aliases: ["<id>"]` and displays
+the title — so links are independent of the (clean) filename. If two *different* notes slugify to
+the same name, the second is disambiguated (`<slug>-<id6>.md`) so a note is never clobbered.
+The `source` object is flattened into scalar `source_*` keys so Obsidian's property UI renders it
+cleanly. Planning properties (`due`, `contexts`, `collections`) are emitted when present.
 """
 
 from __future__ import annotations
@@ -23,11 +24,14 @@ from pathlib import Path
 from grandplan.core.models import Edge, Note, Original
 
 _SLUG = re.compile(r"[^0-9a-z]+")
+# Obsidian tag charset: letters, digits, '_', '-', '/'. Everything else is collapsed to '-'.
+_TAG_INVALID = re.compile(r"[^0-9a-z/_-]+")
+_ID_LINE = re.compile(r'^id:\s*"([^"]+)"', re.MULTILINE)
 
 
 def note_filename(note: Note) -> str:
-    """Stable, human-readable, content-addressed file stem for a note (no extension)."""
-    return f"{_slug(note.title)}-{note.id}"
+    """Clean, human-readable file stem for a note (the id lives in frontmatter/aliases, not here)."""
+    return _slug(note.title)
 
 
 class MarkdownVaultWriter:
@@ -45,9 +49,17 @@ class MarkdownVaultWriter:
         targets: Mapping[str, Note] | None = None,
     ) -> Path:
         self._dir.mkdir(parents=True, exist_ok=True)
-        path = self._dir / f"{note_filename(note)}.md"
+        path = self._dir / f"{self._unique_stem(note)}.md"
         path.write_text(render_markdown(note, original, links, targets=targets), encoding="utf-8")
         return path
+
+    def _unique_stem(self, note: Note) -> str:
+        """A clean slug stem, disambiguated only if a *different* note already owns that name."""
+        base = note_filename(note)
+        existing = self._dir / f"{base}.md"
+        if not existing.exists() or _file_note_id(existing) == note.id:
+            return base  # free, or the same note being rewritten (idempotent)
+        return f"{base}-{note.id[:6]}"  # a different note has this slug → never clobber it
 
 
 def render_markdown(
@@ -68,18 +80,25 @@ def render_markdown(
 def _frontmatter(note: Note, original: Original) -> str:
     fields: dict[str, object] = {
         "id": note.id,
-        "aliases": [note.id],  # so `[[<id>]]` references resolve to this file in Obsidian
+        "aliases": [note.id],  # so `[[<id>]]` links resolve to this file in Obsidian
         "type": note.type.value,
         "status": note.status.value,
         "horizon": note.horizon.value,
-        "tags": list(note.tags),
-        "created": original.created,
-        # Flattened so Obsidian's property editor shows clean scalars (not a raw JSON object).
-        "source_app": original.source.app,
-        "source_title": original.source.title,
-        "source_uri": original.source.uri,
-        "original_id": original.id,
     }
+    # Planning properties — emitted only when set, to keep frontmatter uncluttered.
+    if note.due is not None:
+        fields["due"] = note.due
+    fields["tags"] = _sanitize_tags(note.tags)
+    if note.contexts:
+        fields["contexts"] = list(note.contexts)
+    if note.collections:
+        fields["collections"] = list(note.collections)
+    fields["created"] = original.created
+    # Flattened so Obsidian's property editor shows clean scalars (not a raw JSON object).
+    fields["source_app"] = original.source.app
+    fields["source_title"] = original.source.title
+    fields["source_uri"] = original.source.uri
+    fields["original_id"] = original.id
     body = "\n".join(
         f"{key}: {json.dumps(value, ensure_ascii=False)}" for key, value in fields.items()
     )
@@ -92,8 +111,10 @@ def _wikilinks(note_id: str, links: tuple[Edge, ...], targets: Mapping[str, Note
         if edge.source_id != note_id:
             continue
         target = targets.get(edge.target_id)
+        # Alias-based link: resolves via the target's `aliases: ["<id>"]` and displays the title,
+        # independent of the (clean) filename.
         link = (
-            f"[[{note_filename(target)}|{target.title}]]"
+            f"[[{edge.target_id}|{target.title}]]"
             if target is not None
             else f"[[{edge.target_id}]]"
         )
@@ -113,3 +134,31 @@ def _fenced(text: str) -> str:
 def _slug(title: str) -> str:
     slug = _SLUG.sub("-", title.lower()).strip("-")
     return slug[:50] or "note"
+
+
+def _obsidian_tag(raw: str) -> str | None:
+    """Coerce a raw tag into a valid Obsidian tag, or None if nothing usable remains."""
+    tag = _TAG_INVALID.sub("-", raw.strip().lower())
+    tag = re.sub(r"-{2,}", "-", tag).strip("-/_")
+    if not tag or tag.isdigit():  # Obsidian rejects empty and purely-numeric tags
+        return None
+    return tag
+
+
+def _sanitize_tags(tags: tuple[str, ...]) -> list[str]:
+    out: list[str] = []
+    for raw in tags:
+        tag = _obsidian_tag(raw)
+        if tag is not None and tag not in out:
+            out.append(tag)
+    return out
+
+
+def _file_note_id(path: Path) -> str | None:
+    """The `id` recorded in an existing note file's frontmatter, if any (for collision checks)."""
+    try:
+        head = path.read_text(encoding="utf-8")[:512]
+    except OSError:
+        return None
+    match = _ID_LINE.search(head)
+    return match.group(1) if match else None

@@ -63,12 +63,14 @@ def _target() -> Note:
     )
 
 
-def test_render_resolves_links_to_filename_with_title() -> None:
+def test_render_resolves_links_to_id_alias_with_title() -> None:
     edge = Edge("abc123", "target9", EdgeKind.DEPENDS_ON)
     md = render_markdown(_note(), _original(), (edge,), targets={"target9": _target()})
     assert "## Links" in md
-    # Resolvable wikilink: points at the real filename stem, displays the title.
-    assert "depends_on [[build-resume-target9|Build resume]]" in md
+    # Alias-based wikilink: resolves via the target's `aliases: ["<id>"]`, displays the title,
+    # and is independent of the (now clean, id-free) filename.
+    assert "depends_on [[target9|Build resume]]" in md
+    assert "build-resume-target9" not in md  # the id is no longer baked into the link/filename
 
 
 def test_render_flattens_source_and_adds_alias() -> None:
@@ -85,5 +87,61 @@ def test_writer_creates_file_with_verbatim_original(tmp_path: Path) -> None:
     path = MarkdownVaultWriter(tmp_path / "vault").write(_note(), _original(), ())
     assert path.exists()
     assert path.suffix == ".md"
-    assert path.name == "project-kickoff-abc123.md"  # slug + content id
+    assert path.name == "project-kickoff.md"  # clean slug; id is in frontmatter, not the name
     assert "verbatim original text" in path.read_text(encoding="utf-8")
+
+
+def test_same_title_different_notes_never_clobber(tmp_path: Path) -> None:
+    writer = MarkdownVaultWriter(tmp_path / "vault")
+    first = writer.write(_note(), _original(), ())
+    other = Note(
+        id="zzz999", original_id="o2", title="Project kickoff", body="other", type=NoteType.TASK
+    )
+    second = writer.write(other, _original(), ())
+    assert first.name == "project-kickoff.md"
+    assert second.name == "project-kickoff-zzz999.md"  # disambiguated, original preserved
+    assert "do the thing" in first.read_text(encoding="utf-8")  # first not overwritten
+
+
+def test_rewriting_same_note_overwrites_in_place(tmp_path: Path) -> None:
+    writer = MarkdownVaultWriter(tmp_path / "vault")
+    writer.write(_note(), _original(), ())
+    again = writer.write(_note(), _original(), ())  # same id → idempotent, no suffix
+    assert again.name == "project-kickoff.md"
+
+
+def test_tags_are_sanitized_for_obsidian() -> None:
+    note = Note(
+        id="t1",
+        original_id="o1",
+        title="x",
+        body="b",
+        type=NoteType.IDEA,
+        tags=("machine learning", "AI/ML", "2024", "  ", "valid-tag", "machine learning"),
+    )
+    frontmatter = render_markdown(note, _original(), ()).split("\n---", 1)[0]
+    assert '"machine-learning"' in frontmatter  # space -> hyphen
+    assert '"ai/ml"' in frontmatter  # lowercased, nested tag preserved
+    assert '"valid-tag"' in frontmatter
+    assert '"2024"' not in frontmatter  # purely-numeric tag dropped
+    assert frontmatter.count("machine-learning") == 1  # de-duplicated
+
+
+def test_planning_properties_emitted_only_when_present() -> None:
+    plain = render_markdown(_note(), _original(), ()).split("\n---", 1)[0]
+    assert "contexts:" not in plain and "due:" not in plain  # uncluttered when unset
+
+    rich = Note(
+        id="r1",
+        original_id="o1",
+        title="x",
+        body="b",
+        type=NoteType.TASK,
+        due="2026-07-01",
+        contexts=("@work",),
+        collections=("launch",),
+    )
+    fm = render_markdown(rich, _original(), ()).split("\n---", 1)[0]
+    assert 'due: "2026-07-01"' in fm
+    assert "@work" in fm
+    assert "launch" in fm
