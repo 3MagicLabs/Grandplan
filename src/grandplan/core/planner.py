@@ -42,6 +42,7 @@ class Plan:
     by_id: dict[str, Note]
     child_ids: dict[str, tuple[str, ...]]
     deps: dict[str, tuple[str, ...]]  # note id -> its prerequisite note ids (depends_on/blocks)
+    related: tuple[tuple[str, str], ...]  # semantic (relates) links, as (source, target) pairs
 
 
 def build_plan(repo: NoteRepository) -> Plan:
@@ -78,6 +79,15 @@ def build_plan(repo: NoteRepository) -> Plan:
         by_id=notes,
         child_ids=child_ids,
         deps={nid: tuple(sorted(prereqs)) for nid, prereqs in deps.items()},
+        related=_related(repo, notes),
+    )
+
+
+def _related(repo: NoteRepository, notes: dict[str, Note]) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (edge.source_id, edge.target_id)
+        for edge in repo.edges()
+        if edge.kind is EdgeKind.RELATES and edge.source_id in notes and edge.target_id in notes
     )
 
 
@@ -127,6 +137,8 @@ def _mermaid(plan: Plan) -> list[str]:
     for parent in sorted(plan.child_ids):
         for child in plan.child_ids[parent]:
             lines.append(f"    n{child} -.->|part of| n{parent}")
+    for src, tgt in plan.related:
+        lines.append(f"    n{src} -.->|related| n{tgt}")
     lines.append("```")
     return lines
 

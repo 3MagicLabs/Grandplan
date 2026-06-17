@@ -28,6 +28,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - PySide6 tray GUI (`app.gui.run_app`) + `grandplan gui` subcommand: hotkey → capture → review →
   Save/Discard, bound to the view-model (Qt code is a scaffold, verified on Windows).
 
+### Changed (connected-vault & enhancement milestone)
+- **Windows-runtime fixes:** create `<vault>/.grandplan/` on first capture (was a `FileNotFoundError`);
+  the GUI fails cleanly / degrades on missing optional deps instead of crashing the tray.
+- **Resolvable links (US-5):** wikilinks render as `[[<slug>-<id>|<title>]]` and notes carry
+  `aliases: ["<id>"]` — no more dangling phantom nodes in the Obsidian graph.
+- **Clean frontmatter (US-7):** flattened `source_app/title/uri` scalars (Obsidian renders them
+  cleanly instead of a raw JSON-object string).
+- **Rehydrating index (US-5):** `JsonlNoteRepository` persists notes/embeddings/edges to
+  `.grandplan/index.jsonl`; the GUI reloads it on startup so captures link against the whole
+  vault history, not just the current session.
+- **LLM enhances the body (US-3):** the model now summarizes + organizes the body (verbatim
+  original preserved in the Source block) with validate-and-retry; default model `qwen2.5:7b`
+  (swappable via `--model`, e.g. `gemma2:9b`).
+- **Actionable, visual plan (US-7/US-8):** `Plan.md` embeds a Mermaid map (dependencies,
+  hierarchy, semantic links); `write_projections` regenerates `Plan.md` + `graph.json` on every
+  GUI save. End-to-end offline pipeline test added.
+
 ### Notes
 - The full **MVP app is structurally complete and gated** (278 tests, green gate + CI): capture →
   organize (baseline or local LLM) → review/approve → linked, de-duplicated Markdown vault → Plan.md.

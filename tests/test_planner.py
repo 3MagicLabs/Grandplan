@@ -119,6 +119,16 @@ def test_mermaid_label_is_sanitized() -> None:
     assert "[brackets]" not in md.split("graph TD", 1)[1]
 
 
+def test_mermaid_includes_related_connection() -> None:
+    repo = _repo(
+        [_note("A", title="First"), _note("B", title="Second")],
+        [Edge("B", "A", EdgeKind.RELATES)],
+    )
+    md = render_plan(build_plan(repo))
+    # Semantic links from capture appear in the diagram so the map reflects real connections.
+    assert "nB -.->|related| nA" in md
+
+
 def test_write_plan_creates_file(tmp_path: Path) -> None:
     out = write_plan(_repo([_note("t1", title="X")], []), tmp_path / "Plan.md")
     assert out.exists()
