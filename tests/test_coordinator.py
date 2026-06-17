@@ -14,7 +14,8 @@ from pathlib import Path
 import pytest
 
 from grandplan.app.coordinator import CaptureCoordinator, CaptureStatus, Stage
-from grandplan.app.review import ReviewState, StatusUpdateResult
+from grandplan.app.review import EditResult, ReviewState, StatusUpdateResult
+from grandplan.core.edit_detect import HeuristicEditDetector
 from grandplan.core.embed import HashingEmbedder
 from grandplan.core.models import NoteStatus, Source
 from grandplan.core.organize import HeuristicOrganizer
@@ -55,6 +56,7 @@ def _make(
     on_status=None,  # type: ignore[no-untyped-def]
     after_commit=None,  # type: ignore[no-untyped-def]
     detector=None,  # type: ignore[no-untyped-def]
+    edit_detector=None,  # type: ignore[no-untyped-def]
     max_pending: int = 1,
 ) -> tuple[CaptureCoordinator, InMemoryNoteRepository, InMemoryOriginalStore]:
     repo = InMemoryNoteRepository()
@@ -73,6 +75,7 @@ def _make(
         on_status=on_status,
         after_commit=after_commit,
         detector=detector,
+        edit_detector=edit_detector,
         max_pending=max_pending,
     )
     return coord, repo, originals
@@ -140,6 +143,39 @@ def test_capture_driven_status_update_applies_event_without_new_note(tmp_path: P
     stages = _stages(statuses)
     assert stages[-1] is Stage.IDLE
     assert stages.count(Stage.SAVED) == 2  # both the create and the update report SAVED
+
+
+def test_capture_driven_edit_applies_event_without_new_note(tmp_path: Path) -> None:
+    """PR-C: an edit capture matches the existing note and (on approve) records an `edit` event —
+    no second note, the derived note reflects the edit, after_commit re-projection runs."""
+    statuses: list[CaptureStatus] = []
+    committed: list[object] = []
+    coord, repo, _ = _make(
+        tmp_path,
+        capturer=SeqCapturer(
+            [
+                "build the bug bounty finder tool",
+                "rename the bug bounty finder tool to bounty hunter",
+            ]
+        ),
+        review=lambda state: True,
+        on_status=statuses.append,
+        after_commit=committed.append,
+        edit_detector=HeuristicEditDetector(),
+    )
+
+    coord.submit()
+    first = coord.process_one(timeout=0)
+    coord.submit()
+    second = coord.process_one(timeout=0)
+
+    assert isinstance(first, CaptureResult)
+    assert isinstance(second, EditResult)
+    current = repo.current_note(first.note.id)
+    assert current is not None and current.title == "bounty hunter"  # edit applied (derived)
+    assert len(repo.notes()) == 1  # the edit added NO note
+    assert len(committed) == 2  # re-projection ran for the note AND the edit
+    assert _stages(statuses)[-1] is Stage.IDLE
 
 
 def test_discard_writes_nothing_but_keeps_inbox(tmp_path: Path) -> None:

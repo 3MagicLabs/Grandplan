@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from grandplan.core.graph import export_graph, to_graph
-from grandplan.core.models import Edge, EdgeKind, Note, NoteStatus, NoteType
+from grandplan.core.models import Edge, EdgeKind, Note, NoteEdit, NoteStatus, NoteType
 from grandplan.core.repository import InMemoryNoteRepository
 
 
@@ -51,3 +51,11 @@ def test_node_status_reflects_derived_status() -> None:
     repo.set_status("b", NoteStatus.DONE)
     statuses = {node["id"]: node["status"] for node in to_graph(repo)["nodes"]}
     assert statuses["b"] == "done"
+
+
+def test_node_reflects_edited_fields() -> None:
+    # PR-C: graph.json renders the derived current note, so an edited title/tags show up.
+    repo = _repo()
+    repo.record_edit("a", NoteEdit(title="A (renamed)", tags=("topic",)))
+    node = next(n for n in to_graph(repo)["nodes"] if n["id"] == "a")
+    assert node["title"] == "A (renamed)" and node["tags"] == ["topic"]

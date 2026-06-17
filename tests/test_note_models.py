@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
-from grandplan.core.models import Edge, EdgeKind, Horizon, Note, NoteType, ProposedNote
+from grandplan.core.models import (
+    Edge,
+    EdgeKind,
+    Horizon,
+    Note,
+    NoteEdit,
+    NoteEvent,
+    NoteStatus,
+    NoteType,
+    ProposedNote,
+    apply_edit,
+)
 
 
 def _proposed(title: str = "Idea", body: str = "body", original_id: str = "orig") -> ProposedNote:
@@ -33,3 +44,50 @@ def test_edge_is_hashable_and_equal() -> None:
     e2 = Edge("a", "b", EdgeKind.DEPENDS_ON)
     assert e1 == e2
     assert len({e1, e2}) == 1
+
+
+# -- PR-C: edits + history ----------------------------------------------------------------------
+
+
+def _note(**over: object) -> Note:
+    base = dict(
+        id="abc123",
+        original_id="orig",
+        title="Build the resume",
+        body="a body",
+        type=NoteType.TASK,
+        tags=("career",),
+        due=None,
+    )
+    base.update(over)
+    return Note(**base)  # type: ignore[arg-type]
+
+
+def test_apply_edit_changes_set_fields_and_keeps_the_id_stable() -> None:
+    edited = apply_edit(_note(), NoteEdit(title="Build the CV", due="2026-09-01"))
+    assert edited.title == "Build the CV"
+    assert edited.due == "2026-09-01"
+    assert edited.body == "a body"  # unchanged field preserved
+    assert edited.tags == ("career",)  # unchanged field preserved
+    assert edited.id == "abc123"  # identity is stable across an edit (NOT recomputed)
+
+
+def test_apply_edit_replaces_tags_wholesale() -> None:
+    edited = apply_edit(_note(), NoteEdit(tags=("cv", "job-search")))
+    assert edited.tags == ("cv", "job-search")
+
+
+def test_apply_empty_edit_is_a_noop() -> None:
+    note = _note()
+    assert NoteEdit().is_empty()
+    assert apply_edit(note, NoteEdit()) == note
+
+
+def test_note_event_summary_reads_naturally() -> None:
+    status_event = NoteEvent(note_id="abc123", kind="status", at="t", status=NoteStatus.DONE)
+    edit_event = NoteEvent(
+        note_id="abc123", kind="edit", at="t", edit=NoteEdit(due="Q3", title="New")
+    )
+    assert status_event.summary() == "status → done"
+    assert "due → Q3" in edit_event.summary()
+    assert "title → New" in edit_event.summary()

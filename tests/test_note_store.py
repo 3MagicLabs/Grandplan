@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grandplan.core.models import Edge, EdgeKind, Note, NoteStatus, NoteType
+from grandplan.core.models import Edge, EdgeKind, Note, NoteEdit, NoteStatus, NoteType
 from grandplan.core.note_store import JsonlNoteRepository
 
 
@@ -98,3 +98,70 @@ def test_recording_unchanged_status_appends_no_event(tmp_path: Path) -> None:
     repo.set_status("a1", NoteStatus.DONE)
     repo.set_status("a1", NoteStatus.DONE)  # idempotent: the second changes nothing
     assert path.read_text(encoding="utf-8").count('"kind": "status"') == 1
+
+
+# -- PR-C: edit events + timestamps + history persistence ---------------------------------------
+
+
+def test_edit_event_persists_and_rehydrates(tmp_path: Path) -> None:
+    path = tmp_path / "index.jsonl"
+    repo = JsonlNoteRepository(path)
+    repo.add_note(_note("a1", "First"), (1.0, 0.0))
+    repo.record_edit(
+        "a1", NoteEdit(title="First (renamed)", due="2026-09-01"), at="2026-06-17T00:00:00Z"
+    )
+
+    reopened = JsonlNoteRepository(path)
+    current = reopened.current_note("a1")
+    assert current is not None
+    assert current.title == "First (renamed)" and current.due == "2026-09-01"
+    stored = reopened.get_note("a1")
+    assert stored is not None and stored.title == "First"  # stored note untouched (lossless)
+    history = reopened.history_of("a1")
+    assert history[-1].kind == "edit" and history[-1].at == "2026-06-17T00:00:00Z"
+
+
+def test_edit_persists_all_field_kinds(tmp_path: Path) -> None:
+    # body and tags edits must round-trip through JSON too (not just title/due).
+    path = tmp_path / "index.jsonl"
+    repo = JsonlNoteRepository(path)
+    repo.add_note(_note("a1", "First"), (1.0, 0.0))
+    repo.record_edit("a1", NoteEdit(body="rewritten body", tags=("x", "y")))
+
+    current = JsonlNoteRepository(path).current_note("a1")
+    assert current is not None
+    assert current.body == "rewritten body" and current.tags == ("x", "y")
+
+
+def test_status_event_timestamp_rehydrates(tmp_path: Path) -> None:
+    path = tmp_path / "index.jsonl"
+    repo = JsonlNoteRepository(path)
+    repo.add_note(_note("a1", "First"), (1.0, 0.0))
+    repo.set_status("a1", NoteStatus.DONE, at="2026-06-17T09:00:00Z")
+
+    reopened = JsonlNoteRepository(path)
+    assert reopened.status_of("a1") is NoteStatus.DONE
+    (event,) = [e for e in reopened.history_of("a1") if e.kind == "status"]
+    assert event.at == "2026-06-17T09:00:00Z"
+
+
+def test_unknown_record_kind_is_skipped_not_crashed(tmp_path: Path) -> None:
+    # Forward-incompatible / corrupt lines must be skipped (logged), never crash rehydration.
+    path = tmp_path / "index.jsonl"
+    repo = JsonlNoteRepository(path)
+    repo.add_note(_note("a1", "First"), (1.0, 0.0))
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('{"kind": "from-the-future", "payload": 1}\n')
+
+    reopened = JsonlNoteRepository(path)  # must not raise
+    assert reopened.get_note("a1") is not None  # the good record still loaded
+
+
+def test_noop_or_unknown_edit_appends_no_line(tmp_path: Path) -> None:
+    path = tmp_path / "index.jsonl"
+    repo = JsonlNoteRepository(path)
+    repo.add_note(_note("a1", "First"), (1.0, 0.0))
+    before = path.read_text(encoding="utf-8")
+    repo.record_edit("a1", NoteEdit(title="First"))  # same as current → no-op
+    repo.record_edit("ghost", NoteEdit(title="x"))  # unknown note → orphan-guarded
+    assert path.read_text(encoding="utf-8") == before

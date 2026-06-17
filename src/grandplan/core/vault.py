@@ -21,7 +21,7 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 
-from grandplan.core.models import Edge, Note, NoteStatus, Original
+from grandplan.core.models import Edge, Note, NoteEvent, NoteStatus, Original
 
 _SLUG = re.compile(r"[^0-9a-z]+")
 # Obsidian tag charset: letters, digits, '_', '-', '/'. Everything else is collapsed to '-'.
@@ -48,10 +48,13 @@ class MarkdownVaultWriter:
         *,
         targets: Mapping[str, Note] | None = None,
         status: NoteStatus | None = None,
+        history: tuple[NoteEvent, ...] = (),
     ) -> Path:
         self._dir.mkdir(parents=True, exist_ok=True)
         path = self._dir / f"{self._unique_stem(note)}.md"
-        markdown = render_markdown(note, original, links, targets=targets, status=status)
+        markdown = render_markdown(
+            note, original, links, targets=targets, status=status, history=history
+        )
         path.write_text(markdown, encoding="utf-8")
         return path
 
@@ -71,13 +74,30 @@ def render_markdown(
     *,
     targets: Mapping[str, Note] | None = None,
     status: NoteStatus | None = None,
+    history: tuple[NoteEvent, ...] = (),
 ) -> str:
     parts = [_frontmatter(note, original, status), "", f"# {note.title}", "", note.body.strip()]
     wikilinks = _wikilinks(note.id, links, targets or {})
     if wikilinks:
         parts += ["", "## Links", *wikilinks]
+    if history:
+        parts += ["", "## History", "", *_history_lines(history)]
     parts += ["", "## Source (original)", "", _fenced(original.text)]
     return "\n".join(parts) + "\n"
+
+
+def _history_lines(history: tuple[NoteEvent, ...]) -> list[str]:
+    """The note's "git log" — one bullet per event, newest last (append order)."""
+    lines: list[str] = []
+    for event in history:
+        prefix = f"{event.at} · " if event.at else ""
+        lines.append(f"- {prefix}{event.summary()}")
+    return lines
+
+
+def read_note_id(path: Path) -> str | None:
+    """The `id` recorded in a note file's frontmatter, if any (for re-render / orphan checks)."""
+    return _file_note_id(path)
 
 
 def _frontmatter(note: Note, original: Original, status: NoteStatus | None = None) -> str:

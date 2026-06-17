@@ -7,19 +7,21 @@ adapter can later replace it without core changes.
 
 from __future__ import annotations
 
-from grandplan.core.models import Edge, Note, NoteStatus
+from dataclasses import replace
+
+from grandplan.core.models import Edge, Note, NoteEdit, NoteEvent, NoteStatus, apply_edit
 
 
 class InMemoryNoteRepository:
-    """In-memory notes + embeddings + edges, with similarity search."""
+    """In-memory notes + embeddings + edges + an event log, with similarity search."""
 
     def __init__(self) -> None:
         self._notes: dict[str, Note] = {}
         self._embeddings: dict[str, tuple[float, ...]] = {}
         self._edges: list[Edge] = []
-        # note_id -> latest status from a status event (ADR-0008). Absent => no event yet, so the
-        # derived status falls back to the note's creation status. The note is never mutated.
-        self._statuses: dict[str, NoteStatus] = {}
+        # Global append-order log of status/edit events (ADR-0008). Current state is *derived* by
+        # replaying it; the stored notes are never mutated. Absent events => creation state.
+        self._events: list[NoteEvent] = []
 
     def add_note(self, note: Note, embedding: tuple[float, ...]) -> None:
         if note.id in self._notes:
@@ -40,14 +42,50 @@ class InMemoryNoteRepository:
     def edges(self) -> tuple[Edge, ...]:
         return tuple(self._edges)
 
-    def set_status(self, note_id: str, status: NoteStatus) -> None:
-        self._statuses[note_id] = status  # last-write-wins: the most recent event is current
+    def set_status(self, note_id: str, status: NoteStatus, *, at: str | None = None) -> None:
+        if self.status_of(note_id) is status:
+            return  # no change → no event (idempotent, append-only)
+        self._events.append(NoteEvent(note_id=note_id, kind="status", at=at, status=status))
+
+    def record_edit(self, note_id: str, edit: NoteEdit, *, at: str | None = None) -> None:
+        current = self.current_note(note_id)
+        if current is None or apply_edit(current, edit) == current:
+            return  # unknown note or no-op → no event (idempotent + orphan-guarded)
+        self._events.append(NoteEvent(note_id=note_id, kind="edit", at=at, edit=edit))
 
     def status_of(self, note_id: str) -> NoteStatus | None:
-        if note_id in self._statuses:
-            return self._statuses[note_id]
+        latest: NoteStatus | None = None
+        for event in self._events:
+            if event.note_id == note_id and event.kind == "status":
+                latest = event.status
+        if latest is not None:
+            return latest
         note = self._notes.get(note_id)
         return note.status if note is not None else None
+
+    def current_note(self, note_id: str) -> Note | None:
+        # Derivation replays the event log (O(events)); `current_notes` does this per note. Fine at
+        # personal scale; memoise a note_id→(status, edits) index here if the log ever grows large.
+        note = self._notes.get(note_id)
+        if note is None:
+            return None
+        for event in self._events:
+            if event.note_id == note_id and event.kind == "edit" and event.edit is not None:
+                note = apply_edit(note, event.edit)
+        status = self.status_of(note_id)
+        if status is not None and status is not note.status:
+            note = replace(note, status=status)
+        return note
+
+    def current_notes(self) -> tuple[Note, ...]:
+        derived = [self.current_note(note_id) for note_id in self._notes]
+        return tuple(note for note in derived if note is not None)
+
+    def history_of(self, note_id: str) -> tuple[NoteEvent, ...]:
+        return tuple(event for event in self._events if event.note_id == note_id)
+
+    def events(self) -> tuple[NoteEvent, ...]:
+        return tuple(self._events)
 
     def most_similar(
         self, embedding: tuple[float, ...], *, limit: int = 5, threshold: float = 0.0

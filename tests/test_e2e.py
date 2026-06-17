@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from grandplan.app.review import StatusUpdateResult, approve, start_review
+from grandplan.app.review import EditResult, StatusUpdateResult, approve, start_review
+from grandplan.core.edit_detect import HeuristicEditDetector
 from grandplan.core.embed import HashingEmbedder
 from grandplan.core.models import NoteStatus, Source
 from grandplan.core.note_store import JsonlNoteRepository
@@ -93,7 +94,14 @@ def _inbox(vault: Path) -> Path:
     return vault / ".grandplan" / "inbox.jsonl"
 
 
-def _start(text: str, repo: JsonlNoteRepository, originals: JsonlOriginalStore, *, detector=None):  # type: ignore[no-untyped-def]
+def _start(  # type: ignore[no-untyped-def]
+    text: str,
+    repo: JsonlNoteRepository,
+    originals: JsonlOriginalStore,
+    *,
+    detector=None,
+    edit_detector=None,
+):
     return start_review(
         text,
         created=_CREATED,
@@ -104,6 +112,7 @@ def _start(text: str, repo: JsonlNoteRepository, originals: JsonlOriginalStore, 
         repo=repo,
         originals=originals,
         detector=detector,
+        edit_detector=edit_detector,
     )
 
 
@@ -158,3 +167,48 @@ def test_capture_driven_status_update_survives_reopen_and_reprojects(tmp_path: P
         .split("## Blocked", 1)[0]
     )
     assert first.note.title not in now_after  # the completed task left "Now"
+
+
+def test_capture_driven_edit_re_renders_note_and_survives_reopen(tmp_path: Path) -> None:
+    """PR-C end-to-end: a later 'rename … to …' capture edits a seeded note's title (an event, no
+    new note); the re-rendered .md shows the new title + a History section, it survives a reopen, and
+    Plan.md's 'What moved' digest records it."""
+    vault = tmp_path / "vault"
+    writer = MarkdownVaultWriter(vault)
+
+    # Session 1: seed a note and project (re-rendering its .md from derived state).
+    repo1 = JsonlNoteRepository(_index(vault))
+    originals1 = JsonlOriginalStore(_inbox(vault))
+    first = approve(
+        _start("draft the bug bounty finder tool", repo1, originals1), repo=repo1, vault=writer
+    )
+    assert isinstance(first, EditResult) is False  # a real new note
+    write_projections(repo1, vault, originals=originals1)
+
+    # Session 2 (fresh repo from disk): a "rename" capture edits the note's title.
+    repo2 = JsonlNoteRepository(_index(vault))
+    originals2 = JsonlOriginalStore(_inbox(vault))
+    pending = _start(
+        "rename the bug bounty finder tool to bounty hunter",
+        repo2,
+        originals2,
+        edit_detector=HeuristicEditDetector(),
+    )
+    assert pending.edit is not None and pending.edit.edit.title == "bounty hunter"
+    result = approve(pending, repo=repo2, vault=writer)
+    assert isinstance(result, EditResult)
+    write_projections(repo2, vault, originals=originals2)
+
+    # Session 3 (reopen): the edit persisted; derived title changed; still ONE note; no orphan file.
+    repo3 = JsonlNoteRepository(_index(vault))
+    assert len(repo3.notes()) == 1
+    current = repo3.current_note(first.note.id)
+    assert current is not None and current.title == "bounty hunter"
+
+    note_files = [p for p in vault.glob("*.md") if p.name != "Plan.md"]
+    assert len(note_files) == 1  # the title edit re-rendered in place — no orphaned old-title file
+    note_md = note_files[0].read_text(encoding="utf-8")
+    assert "# bounty hunter" in note_md and "## History" in note_md and "edit: title" in note_md
+
+    plan = (vault / "Plan.md").read_text(encoding="utf-8")
+    assert "## What moved" in plan and "edit: title → bounty hunter" in plan

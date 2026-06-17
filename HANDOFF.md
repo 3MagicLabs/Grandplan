@@ -25,8 +25,20 @@ The MVP is complete, gated, and running on the user's native-Windows machine. Re
   New `UpdateDetector` port + `HeuristicUpdateDetector` (word-boundary cues → DONE/ACTIVE/NEXT,
   reopen→ACTIVE) + Ollama `LlmUpdateDetector` (heuristic fallback); `start_review`/`approve` branch
   to a `StatusUpdate`/`StatusUpdateResult`; coordinator + GUI wired. Contract: `SPEC-PR-B.md`.
+- **PR-C** (branch `feat/pr-c-edit-events-history-digest`, stacked on PR-B) — detail edits + per-note
+  history + "what moved" digest: an `edit` event kind (note→title/body/tags/due) + timestamps (`at`)
+  on status/edit events (from the capture's `created`, no hidden clock); derived **current note**
+  (`current_note`/`current_notes`) read by planner/graph/vault so all three projections agree;
+  `history_of` per-note git-log → a `## History` section in each note `.md`; a `## What moved` digest
+  in `Plan.md`; **note `.md` re-render from derived state** (`write_projections(..., originals=...)`
+  → `write_notes` with an orphan sweep for title-edit renames) — finishing the PR-A/B deferred item;
+  capture-driven edits via `EditDetector` (`HeuristicEditDetector` due/retitle + Ollama
+  `LlmEditDetector`), matched on the **verbatim capture** embedding, proposed in the review dialog,
+  `approve` → `record_edit` (no new note). Precedence status > edit > new note. Contract:
+  `SPEC-PR-C.md`. Also: log-and-skip on unknown `index.jsonl` record kinds (closes the deferred
+  corrupt-record hardening); `NoteEvent.kind` is a `Literal`.
 
-Gate: **402 tests, 97% coverage**, all green; CI mirrors it.
+Gate: **464 tests, 98% coverage**, all green; CI mirrors it.
 
 ## Operational notes for the user's machine
 - Run on **native Windows** (Python 3.12 from python.org, not Anaconda), `--llm --embeddings`, model `llama3.2:3b`.
@@ -64,7 +76,16 @@ CI-merged (the loop used for #36–#42):
    follow-ups): re-render the matched note's `.md` frontmatter on a status event (today the `.md`
    frontmatter is stale until re-created; Plan.md/graph.json already reflect the new status); a
    "create a new note instead" button when the match is wrong (today: discard + re-capture).
-3. **PR-C** `edit` events + per-note history + "what moved" digest in `Plan.md`.
+3. **PR-C — detail edits + history + digest** ✅ **DONE** (branch
+   `feat/pr-c-edit-events-history-digest`, stacked on PR-B): `edit` event kind + `NoteEdit`/`NoteEvent`
+   models + `apply_edit` (id stable); timestamps (`at`) on status/edit events from the capture's
+   `created`; `record_edit`/`current_note`/`current_notes`/`history_of`/`events` on both repos;
+   planner+graph+vault read derived current notes; `## What moved` in `Plan.md`, `## History` per note;
+   `write_projections(..., originals=...)`→`write_notes` re-renders note `.md` from derived state +
+   orphan sweep; `core/edit_detect.py` + `adapters/llm_edit_detector.py`; `review.approve` returns
+   `CaptureResult | StatusUpdateResult | EditResult`; coordinator/gui/cli wired. SPEC-PR-C.md is the
+   contract. Gate: **464 tests, 98% cov**. Deferred to **PR-D+**: clearing a field (due→None); a
+   "create a new note instead" dialog button when a match is wrong.
 4. **PR-D** resource references (frontmatter `resources:`/`links:`, render Obsidian links/embeds/placeholders; organizer extracts URLs/paths).
 5. **PR-E** `grandplan attach <path|url>` + capture-driven artifact attach (parse vault → match → attach → mark progress → propagate to related notes).
 6. **PR-F** voice capture (offline STT) behind the `Capturer` port.

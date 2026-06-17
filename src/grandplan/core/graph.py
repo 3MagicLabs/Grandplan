@@ -9,19 +9,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from grandplan.core.models import Edge, Note, NoteStatus
+from grandplan.core.models import Edge, Note
 from grandplan.core.ports import NoteRepository
 
 
-def _node(note: Note, status: NoteStatus) -> dict[str, object]:
-    # `status` is the derived current status (ADR-0008), so graph.json agrees with Plan.md (both
-    # regenerated on every projection). Per-note vault .md frontmatter only reflects derived status
-    # on re-render (PR-C); until then a note's .md shows its creation status while these views move.
+def _node(note: Note) -> dict[str, object]:
+    # `note` is the derived current note (ADR-0008/PR-C): edited fields + derived status, so
+    # graph.json agrees with Plan.md and the re-rendered note files (all regenerated per projection).
     return {
         "id": note.id,
         "title": note.title,
         "type": note.type.value,
-        "status": status.value,
+        "status": note.status.value,
         "horizon": note.horizon.value,
         "tags": list(note.tags),
         "original_id": note.original_id,
@@ -37,7 +36,7 @@ def to_graph(repo: NoteRepository) -> dict[str, object]:
     # is ever overwritten — see core.project); external consumers simply ignore the extra key.
     return {
         "_grandplan": True,
-        "nodes": [_node(note, repo.status_of(note.id) or note.status) for note in repo.notes()],
+        "nodes": [_node(note) for note in repo.current_notes()],
         "edges": [_edge(edge) for edge in repo.edges()],
     }
 

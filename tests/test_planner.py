@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grandplan.core.models import Edge, EdgeKind, Horizon, Note, NoteStatus, NoteType
+from grandplan.core.models import Edge, EdgeKind, Horizon, Note, NoteEdit, NoteStatus, NoteType
 from grandplan.core.planner import build_plan, render_plan, write_plan
 from grandplan.core.repository import InMemoryNoteRepository
 
@@ -43,6 +43,27 @@ def test_now_and_blocked_split() -> None:
     assert [n.id for n in plan.now] == ["A"]
     assert [item.note.id for item in plan.blocked] == ["B"]
     assert plan.blocked[0].blocked_by[0].id == "A"
+
+
+def test_plan_uses_edited_title_and_lists_what_moved(tmp_path: Path) -> None:
+    # PR-C: the plan renders derived (edited) titles and a "What moved" digest of recent events.
+    repo = _repo([_note("A", title="draft the spec")], [])
+    repo.record_edit("A", NoteEdit(title="finalize the spec"), at="2026-06-17T10:00:00Z")
+    repo.set_status("A", NoteStatus.DONE, at="2026-06-17T11:00:00Z")
+
+    plan = build_plan(repo)
+    text = render_plan(plan)
+    assert "finalize the spec" in text and "draft the spec" not in text  # derived title
+    assert "## What moved" in text
+    # Most-recent first: the DONE status event leads, then the edit.
+    assert plan.moved[0].startswith("finalize the spec: status → done")
+    assert any("edit: title → finalize the spec" in line for line in plan.moved)
+
+
+def test_no_events_means_no_what_moved_section() -> None:
+    repo = _repo([_note("A")], [])
+    assert build_plan(repo).moved == ()
+    assert "## What moved" not in render_plan(build_plan(repo))
 
 
 def test_completing_dependency_unblocks() -> None:

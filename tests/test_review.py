@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grandplan.app.review import StatusUpdateResult, approve, discard, start_review
+from grandplan.app.review import EditResult, StatusUpdateResult, approve, discard, start_review
+from grandplan.core.edit_detect import EditDetector, HeuristicEditDetector
 from grandplan.core.embed import HashingEmbedder
-from grandplan.core.models import NoteStatus, Source
+from grandplan.core.models import NoteEdit, NoteStatus, Source
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.pipeline import CaptureResult
 from grandplan.core.reconcile import SimilarityReconciler
@@ -24,6 +25,7 @@ def _start(  # type: ignore[no-untyped-def]
     originals: InMemoryOriginalStore,
     *,
     detector: HeuristicUpdateDetector | None = None,
+    edit_detector: EditDetector | None = None,
 ):
     return start_review(
         text,
@@ -35,6 +37,7 @@ def _start(  # type: ignore[no-untyped-def]
         repo=repo,
         originals=originals,
         detector=detector,
+        edit_detector=edit_detector,
     )
 
 
@@ -185,3 +188,109 @@ def test_no_detector_means_no_update_detection(tmp_path: Path) -> None:
     pending = _start("done building the bug bounty finder tool", repo, originals)  # detector=None
     assert pending.update is None
     assert not pending.state.is_status_update
+
+
+def test_status_update_event_carries_the_capture_timestamp(tmp_path: Path) -> None:
+    from grandplan.core.vault import MarkdownVaultWriter
+
+    repo, originals = InMemoryNoteRepository(), InMemoryOriginalStore()
+    vault = MarkdownVaultWriter(tmp_path / "vault")
+    first = approve(_start(_TASK, repo, originals), repo=repo, vault=vault)
+    assert isinstance(first, CaptureResult)
+
+    pending = _start(
+        "done building the bug bounty finder tool",
+        repo,
+        originals,
+        detector=HeuristicUpdateDetector(),
+    )
+    approve(pending, repo=repo, vault=vault)
+    (event,) = [e for e in repo.history_of(first.note.id) if e.kind == "status"]
+    assert (
+        event.at == _CREATED
+    )  # the event is stamped with the capture's `created` (no hidden clock)
+
+
+# -- PR-C: capture-driven edits -----------------------------------------------------------------
+
+
+def test_edit_capture_proposes_and_applies_an_edit_event(tmp_path: Path) -> None:
+    from grandplan.core.vault import MarkdownVaultWriter
+
+    repo, originals = InMemoryNoteRepository(), InMemoryOriginalStore()
+    vault = MarkdownVaultWriter(tmp_path / "vault")
+    first = approve(_start(_TASK, repo, originals), repo=repo, vault=vault)
+    assert isinstance(first, CaptureResult)
+
+    pending = _start(
+        "rename the bug bounty finder tool to bounty hunter",
+        repo,
+        originals,
+        edit_detector=HeuristicEditDetector(),
+    )
+    assert pending.edit is not None
+    assert pending.edit.target.id == first.note.id
+    assert pending.edit.edit == NoteEdit(title="bounty hunter")
+    assert pending.state.is_edit and pending.state.edit_target_title == first.note.title
+    assert "title → bounty hunter" in pending.state.edit_summary
+
+    result = approve(pending, repo=repo, vault=vault)
+    assert isinstance(result, EditResult)
+    current = repo.current_note(first.note.id)
+    assert current is not None and current.title == "bounty hunter"
+    assert len(repo.notes()) == 1  # an edit is an event, not a new note
+    (event,) = [e for e in repo.history_of(first.note.id) if e.kind == "edit"]
+    assert event.at == _CREATED
+
+
+def test_edit_that_would_not_change_the_note_proposes_nothing(tmp_path: Path) -> None:
+    from grandplan.core.vault import MarkdownVaultWriter
+
+    repo, originals = InMemoryNoteRepository(), InMemoryOriginalStore()
+    vault = MarkdownVaultWriter(tmp_path / "vault")
+    first = approve(_start(_TASK, repo, originals), repo=repo, vault=vault)
+    assert isinstance(first, CaptureResult)
+    title = first.note.title  # the note's current title
+
+    # An edit capture whose new title equals the current title → no derived change → no proposal.
+    pending = _start(
+        f"rename it to {title}", repo, originals, edit_detector=HeuristicEditDetector()
+    )
+    assert pending.edit is None  # idempotent: nothing to change
+
+
+def test_status_intent_takes_precedence_over_edit(tmp_path: Path) -> None:
+    from grandplan.core.vault import MarkdownVaultWriter
+
+    repo, originals = InMemoryNoteRepository(), InMemoryOriginalStore()
+    vault = MarkdownVaultWriter(tmp_path / "vault")
+    approve(_start(_TASK, repo, originals), repo=repo, vault=vault)
+
+    pending = _start(
+        "done building the bug bounty finder tool",
+        repo,
+        originals,
+        detector=HeuristicUpdateDetector(),
+        edit_detector=HeuristicEditDetector(),
+    )
+    assert pending.update is not None  # status wins
+    assert pending.edit is None
+
+
+def test_edit_intent_without_match_falls_back_to_new_note(tmp_path: Path) -> None:
+    from grandplan.core.vault import MarkdownVaultWriter
+
+    repo, originals = InMemoryNoteRepository(), InMemoryOriginalStore()
+    vault = MarkdownVaultWriter(tmp_path / "vault")
+    approve(_start(_TASK, repo, originals), repo=repo, vault=vault)
+
+    pending = _start(
+        "rename the grocery list to weekly shopping",
+        repo,
+        originals,
+        edit_detector=HeuristicEditDetector(),
+    )
+    assert pending.edit is None  # no confident match → normal new-note flow
+    result = approve(pending, repo=repo, vault=vault)
+    assert isinstance(result, CaptureResult)
+    assert len(repo.notes()) == 2

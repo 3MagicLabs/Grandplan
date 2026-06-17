@@ -10,7 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from grandplan.core.models import Note, NoteStatus, Original, ProposedNote, Source
+from grandplan.core.edit_detect import EditDetector
+from grandplan.core.models import (
+    Note,
+    NoteEdit,
+    NoteStatus,
+    Original,
+    ProposedNote,
+    Source,
+    apply_edit,
+)
 from grandplan.core.pipeline import Assessment, CaptureResult, assess, commit, propose
 from grandplan.core.ports import Embedder, NoteRepository, Organizer, VaultWriter
 from grandplan.core.reconcile import Reconciler, Relationship
@@ -39,6 +48,10 @@ class ReviewState:
     is_status_update: bool = False
     update_target_title: str = ""  # the matched note this update applies to
     update_status: str = ""  # the proposed new status value (e.g. "done")
+    # PR-C: the capture is a detail edit to an existing note.
+    is_edit: bool = False
+    edit_target_title: str = ""
+    edit_summary: str = ""  # human-readable, e.g. "due → Q3; title → CV"
 
 
 @dataclass(frozen=True)
@@ -60,6 +73,28 @@ class StatusUpdateResult:
 
 
 @dataclass(frozen=True)
+class ProposedEdit:
+    """A proposed field edit on an existing note (PR-C), detected from a capture + a match."""
+
+    target: Note
+    edit: NoteEdit
+    score: float
+
+    def summary(self) -> str:
+        """Human-readable change list, e.g. `due → Q3; title → CV`."""
+        return "; ".join(f"{field} → {value}" for field, value in self.edit.changes())
+
+
+@dataclass(frozen=True)
+class EditResult:
+    """The outcome of an approved edit: an `edit` event, no new note (PR-C/ADR-0008)."""
+
+    original: Original
+    target: Note
+    edit: NoteEdit
+
+
+@dataclass(frozen=True)
 class PendingReview:
     """An immutable handle to a capture awaiting the user's approve/discard decision."""
 
@@ -68,7 +103,8 @@ class PendingReview:
     assessment: Assessment
     related: tuple[Note, ...]
     state: ReviewState
-    update: StatusUpdate | None = None  # set when the capture is an update to an existing note
+    update: StatusUpdate | None = None  # set when the capture is a status update (PR-B)
+    edit: ProposedEdit | None = None  # set when the capture is a detail edit (PR-C)
 
 
 def start_review(
@@ -82,19 +118,40 @@ def start_review(
     repo: NoteRepository,
     originals: OriginalStore,
     detector: UpdateDetector | None = None,
+    edit_detector: EditDetector | None = None,
     match_threshold: float = _DEFAULT_MATCH_THRESHOLD,
 ) -> PendingReview:
     """Capture + organize + reconcile; return display state for review (nothing committed yet).
 
-    PR-B: if `detector` recognises update-intent in the capture *and* it confidently matches an
-    existing note, the review becomes a **status-update** proposal (`pending.update`) instead of a
-    new note — the "commit a change" verb of ADR-0008. With no detector, behaviour is unchanged.
+    Precedence **status > edit > new note**: if `detector` recognises update-intent and confidently
+    matches a note, the review is a **status update** (PR-B); else if `edit_detector` recognises a
+    field edit and matches, it is an **edit** (PR-C); otherwise it is a new note. Both reuse the same
+    similarity match. With neither detector, behaviour is unchanged.
     """
     original, proposed = propose(text, source, created, organizer=organizer, originals=originals)
     assessment = assess(proposed, embedder=embedder, repo=repo, reconciler=reconciler)
     proposal = assessment.proposal
+    # Match an update/edit against the existing notes using the embedding of the **verbatim capture**
+    # (not the organizer's reorganized proposal): the user's literal words are what should locate the
+    # note they mean — robust even when an LLM organizer rewrites the title (e.g. a retitle capture).
+    match_embedding = (
+        embedder.embed(original.text)
+        if (detector is not None or edit_detector is not None)
+        else None
+    )
     update = _detect_update(
-        original.text, assessment, repo, detector=detector, match_threshold=match_threshold
+        original.text, match_embedding, repo, detector=detector, match_threshold=match_threshold
+    )
+    edit = (
+        None
+        if update is not None
+        else _detect_edit(
+            original.text,
+            match_embedding,
+            repo,
+            detector=edit_detector,
+            match_threshold=match_threshold,
+        )
     )
     related = proposal.related_notes
     links = tuple(
@@ -114,6 +171,9 @@ def start_review(
         is_status_update=update is not None,
         update_target_title=update.target.title if update is not None else "",
         update_status=update.status.value if update is not None else "",
+        is_edit=edit is not None,
+        edit_target_title=edit.target.title if edit is not None else "",
+        edit_summary=edit.summary() if edit is not None else "",
     )
     return PendingReview(
         original=original,
@@ -122,12 +182,23 @@ def start_review(
         related=related,
         state=state,
         update=update,
+        edit=edit,
     )
+
+
+def _best_match(
+    embedding: tuple[float, ...] | None, repo: NoteRepository, match_threshold: float
+) -> tuple[Note, float] | None:
+    """The single most-similar note above `match_threshold` (the capture-driven update/edit target)."""
+    if embedding is None:
+        return None
+    matches = repo.most_similar(embedding, limit=1, threshold=match_threshold)
+    return matches[0] if matches else None
 
 
 def _detect_update(
     text: str,
-    assessment: Assessment,
+    embedding: tuple[float, ...] | None,
     repo: NoteRepository,
     *,
     detector: UpdateDetector | None,
@@ -135,7 +206,6 @@ def _detect_update(
 ) -> StatusUpdate | None:
     """Propose a status change when the capture is update-intent + a confident match (PR-B).
 
-    Considers at most one candidate (`limit=1`) above `match_threshold`.
     Fail-safe: no detector, no intent, or no match above `match_threshold` → None (normal new-note
     flow, no note touched). Idempotent: if the match's derived status already equals the detected
     target, propose nothing (mirrors `set_status`'s no-op-on-equal, PR-A).
@@ -145,13 +215,41 @@ def _detect_update(
     status = detector.detect(text)
     if status is None:
         return None
-    matches = repo.most_similar(assessment.embedding, limit=1, threshold=match_threshold)
-    if not matches:
+    match = _best_match(embedding, repo, match_threshold)
+    if match is None:
         return None
-    target, score = matches[0]
+    target, score = match
     if repo.status_of(target.id) is status:
         return None
     return StatusUpdate(target=target, status=status, score=score)
+
+
+def _detect_edit(
+    text: str,
+    embedding: tuple[float, ...] | None,
+    repo: NoteRepository,
+    *,
+    detector: EditDetector | None,
+    match_threshold: float,
+) -> ProposedEdit | None:
+    """Propose a field edit when the capture is edit-intent + a confident match (PR-C).
+
+    Fail-safe and idempotent like `_detect_update`: no detector / intent / match → None, and an edit
+    that would not change the matched note's derived state proposes nothing.
+    """
+    if detector is None:
+        return None
+    edit = detector.detect(text)
+    if edit is None:
+        return None
+    match = _best_match(embedding, repo, match_threshold)
+    if match is None:
+        return None
+    target, score = match
+    current = repo.current_note(target.id)
+    if current is None or apply_edit(current, edit) == current:
+        return None
+    return ProposedEdit(target=target, edit=edit, score=score)
 
 
 def approve(
@@ -160,19 +258,24 @@ def approve(
     repo: NoteRepository,
     vault: VaultWriter,
     link_related: bool = True,
-) -> CaptureResult | StatusUpdateResult:
-    """Commit the review: a `status` event for an update (PR-B), else a new note.
+) -> CaptureResult | StatusUpdateResult | EditResult:
+    """Commit the review: a `status` event (PR-B), an `edit` event (PR-C), else a new note.
 
-    An approved update appends a `status` event (`repo.set_status`) and creates **no** new note and
-    **no** vault file — the matched note is never mutated (append-only/lossless, ADR-0007/0008). The
-    raw capture stays in the inbox regardless.
+    An approved update/edit appends an event and creates **no** new note and **no** vault file — the
+    matched note is never mutated (append-only/lossless, ADR-0007/0008). Each event is stamped with
+    the capture's `created` (the no-hidden-clock timestamp). The raw capture stays in the inbox.
     """
+    occurred = pending.original.created
     update = pending.update
     if update is not None:
-        repo.set_status(update.target.id, update.status)
+        repo.set_status(update.target.id, update.status, at=occurred)
         return StatusUpdateResult(
             original=pending.original, target=update.target, status=update.status
         )
+    edit = pending.edit
+    if edit is not None:
+        repo.record_edit(edit.target.id, edit.edit, at=occurred)
+        return EditResult(original=pending.original, target=edit.target, edit=edit.edit)
     proposal = pending.assessment.proposal
     links = proposal.links() if link_related else ()
     status = NoteStatus.NEEDS_REVIEW if proposal.requires_review else NoteStatus.INBOX

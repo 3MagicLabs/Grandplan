@@ -12,11 +12,24 @@ ranking logic stays in one place (a SQLite/sqlite-vec adapter can replace this l
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
-from grandplan.core.models import Edge, EdgeKind, Horizon, Note, NoteStatus, NoteType
+from grandplan.core.models import (
+    Edge,
+    EdgeKind,
+    Horizon,
+    Note,
+    NoteEdit,
+    NoteEvent,
+    NoteStatus,
+    NoteType,
+    apply_edit,
+)
 from grandplan.core.repository import InMemoryNoteRepository
+
+logger = logging.getLogger(__name__)
 
 
 class JsonlNoteRepository:
@@ -45,8 +58,19 @@ class JsonlNoteRepository:
         elif kind == "edge":
             self._mem.add_edge(_edge_from_dict(record["edge"]))
         elif kind == "status":
-            # Replay the status event onto the in-memory map; last line wins (ADR-0008).
-            self._mem.set_status(str(record["note_id"]), NoteStatus(str(record["status"])))
+            # Replay the status event onto the in-memory log; last line wins (ADR-0008).
+            self._mem.set_status(
+                str(record["note_id"]), NoteStatus(str(record["status"])), at=record.get("at")
+            )
+        elif kind == "edit":
+            # Replay a field edit (PR-C); derived state folds edits in append order over the note.
+            self._mem.record_edit(
+                str(record["note_id"]), _edit_from_dict(record["edit"]), at=record.get("at")
+            )
+        else:
+            # An unknown/corrupt record kind would otherwise be silently dropped — surface it so a
+            # forward-incompatible or damaged line can't disappear without a trace.
+            logger.warning("skipping index record with unknown kind %r", kind)
 
     def _append(self, record: dict[str, object]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,14 +89,43 @@ class JsonlNoteRepository:
         self._mem.add_edge(edge)
         self._append({"kind": "edge", "edge": _edge_to_dict(edge)})
 
-    def set_status(self, note_id: str, status: NoteStatus) -> None:
+    def set_status(self, note_id: str, status: NoteStatus, *, at: str | None = None) -> None:
         if self._mem.status_of(note_id) is status:
             return  # no state change → no event (append-only + idempotent, like add_note/add_edge)
-        self._mem.set_status(note_id, status)
-        self._append({"kind": "status", "note_id": note_id, "status": status.value})
+        self._mem.set_status(note_id, status, at=at)
+        record: dict[str, object] = {"kind": "status", "note_id": note_id, "status": status.value}
+        if at is not None:
+            record["at"] = at
+        self._append(record)
 
     def status_of(self, note_id: str) -> NoteStatus | None:
         return self._mem.status_of(note_id)
+
+    def record_edit(self, note_id: str, edit: NoteEdit, *, at: str | None = None) -> None:
+        current = self._mem.current_note(note_id)
+        if current is None or apply_edit(current, edit) == current:
+            return  # unknown note or no-op → no event (idempotent + orphan-guarded)
+        self._mem.record_edit(note_id, edit, at=at)
+        record: dict[str, object] = {
+            "kind": "edit",
+            "note_id": note_id,
+            "edit": _edit_to_dict(edit),
+        }
+        if at is not None:
+            record["at"] = at
+        self._append(record)
+
+    def current_note(self, note_id: str) -> Note | None:
+        return self._mem.current_note(note_id)
+
+    def current_notes(self) -> tuple[Note, ...]:
+        return self._mem.current_notes()
+
+    def history_of(self, note_id: str) -> tuple[NoteEvent, ...]:
+        return self._mem.history_of(note_id)
+
+    def events(self) -> tuple[NoteEvent, ...]:
+        return self._mem.events()
 
     def get_note(self, note_id: str) -> Note | None:
         return self._mem.get_note(note_id)
@@ -118,6 +171,30 @@ def _note_from_dict(data: Any) -> Note:
         contexts=tuple(str(c) for c in data.get("contexts", [])),
         due=None if data.get("due") is None else str(data["due"]),
         collections=tuple(str(c) for c in data.get("collections", [])),
+    )
+
+
+def _edit_to_dict(edit: NoteEdit) -> dict[str, object]:
+    # Only the fields the edit actually sets are persisted (None = "unchanged", never serialized).
+    out: dict[str, object] = {}
+    if edit.title is not None:
+        out["title"] = edit.title
+    if edit.body is not None:
+        out["body"] = edit.body
+    if edit.tags is not None:
+        out["tags"] = list(edit.tags)
+    if edit.due is not None:
+        out["due"] = edit.due
+    return out
+
+
+def _edit_from_dict(data: Any) -> NoteEdit:
+    tags = data.get("tags")
+    return NoteEdit(
+        title=None if data.get("title") is None else str(data["title"]),
+        body=None if data.get("body") is None else str(data["body"]),
+        tags=None if tags is None else tuple(str(tag) for tag in tags),
+        due=None if data.get("due") is None else str(data["due"]),
     )
 
 

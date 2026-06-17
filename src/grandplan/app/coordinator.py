@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from grandplan.app.review import (
+    EditResult,
     PendingReview,
     ReviewState,
     StatusUpdateResult,
@@ -38,6 +39,7 @@ from grandplan.app.review import (
     discard,
     start_review,
 )
+from grandplan.core.edit_detect import EditDetector
 from grandplan.core.models import Source
 from grandplan.core.pipeline import CaptureResult
 from grandplan.core.ports import Capturer, Embedder, NoteRepository, Organizer, VaultWriter
@@ -45,8 +47,8 @@ from grandplan.core.reconcile import Reconciler
 from grandplan.core.store import OriginalStore
 from grandplan.core.update_detect import UpdateDetector
 
-# Either capture outcome: a new note, or a status update to an existing one (PR-B/ADR-0008).
-Committed = CaptureResult | StatusUpdateResult
+# Any capture outcome: a new note, a status update (PR-B), or a field edit (PR-C) — all ADR-0008.
+Committed = CaptureResult | StatusUpdateResult | EditResult
 
 logger = logging.getLogger(__name__)
 
@@ -89,18 +91,25 @@ def _utc_now_iso() -> str:
 
 
 def _committing_detail(pending: PendingReview) -> str:
-    """Human-readable COMMITTING detail: a status update reads differently from a new note."""
-    update = pending.update
-    if update is not None:
-        return f"marking '{update.target.title}' as {update.status.value}"
+    """Human-readable COMMITTING detail: a status update / edit reads differently from a new note."""
+    if pending.update is not None:
+        return f"marking '{pending.update.target.title}' as {pending.update.status.value}"
+    if pending.edit is not None:
+        return f"editing '{pending.edit.target.title}' ({pending.edit.summary()})"
     return "saving the note"
 
 
 def _saved_detail(result: Committed) -> str:
-    """Human-readable SAVED detail for either outcome (a status update has no file path)."""
+    """Human-readable SAVED detail for any outcome (an update/edit has no file path)."""
     if isinstance(result, StatusUpdateResult):
         return f"{result.target.title} → {result.status.value}"
-    return str(result.path)
+    if isinstance(result, EditResult):
+        return f"{result.target.title} edited"
+    if isinstance(result, CaptureResult):
+        return str(result.path)
+    # Exhaustiveness guard: a new `Committed` variant must extend this (portable to py3.10, which
+    # lacks typing.assert_never) — a clear failure here beats an AttributeError on a missing `.path`.
+    raise AssertionError(f"unhandled Committed variant: {type(result).__name__}")
 
 
 # A single token meaning "process one capture"; identity is all that matters.
@@ -126,6 +135,7 @@ class CaptureCoordinator:
         on_status: StatusFn | None = None,
         after_commit: CommitHook | None = None,
         detector: UpdateDetector | None = None,
+        edit_detector: EditDetector | None = None,
         max_pending: int = 1,
     ) -> None:
         if max_pending < 1:
@@ -143,6 +153,7 @@ class CaptureCoordinator:
         self._on_status = on_status
         self._after_commit = after_commit
         self._detector = detector  # PR-B: detect capture-driven status updates (None = off)
+        self._edit_detector = edit_detector  # PR-C: detect capture-driven field edits (None = off)
         self._queue: queue.Queue[object] = queue.Queue(maxsize=max_pending)
         self._shutdown = threading.Event()
         self._thread: threading.Thread | None = None
@@ -228,6 +239,7 @@ class CaptureCoordinator:
                 repo=self._repo,
                 originals=self._originals,
                 detector=self._detector,
+                edit_detector=self._edit_detector,
             )
             self._emit(Stage.AWAITING_REVIEW, pending.state.title)
             if not self._review(pending.state):

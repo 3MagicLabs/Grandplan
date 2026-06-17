@@ -4,8 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grandplan.core.models import Edge, EdgeKind, Note, NoteStatus, NoteType, Original, Source
-from grandplan.core.vault import MarkdownVaultWriter, render_markdown
+from grandplan.core.models import (
+    Edge,
+    EdgeKind,
+    Note,
+    NoteEdit,
+    NoteEvent,
+    NoteStatus,
+    NoteType,
+    Original,
+    Source,
+)
+from grandplan.core.vault import MarkdownVaultWriter, read_note_id, render_markdown
 
 
 def _note() -> Note:
@@ -34,6 +44,9 @@ def test_render_has_frontmatter_title_body_and_source() -> None:
     assert 'id: "abc123"' in md
     assert 'type: "task"' in md
     assert 'status: "inbox"' in md  # defaults to the note's own status when none is passed
+    assert "do the thing" in md
+    assert "## Source (original)" in md
+    assert "verbatim original text" in md
 
 
 def test_frontmatter_renders_derived_status_override() -> None:
@@ -43,9 +56,30 @@ def test_frontmatter_renders_derived_status_override() -> None:
     assert 'status: "done"' in md
     assert note.status is NoteStatus.INBOX  # note object untouched (lossless)
     assert "# Project kickoff" in md
-    assert "do the thing" in md
-    assert "## Source (original)" in md
-    assert "verbatim original text" in md
+
+
+def test_render_includes_history_section_when_events_present() -> None:
+    # PR-C: a note's "git log" is surfaced as a ## History section, newest last (append order).
+    history = (
+        NoteEvent(
+            note_id="abc123", kind="status", at="2026-06-17T09:00:00Z", status=NoteStatus.DONE
+        ),
+        NoteEvent(
+            note_id="abc123", kind="edit", at="2026-06-17T10:00:00Z", edit=NoteEdit(due="Q3")
+        ),
+    )
+    md = render_markdown(_note(), _original(), (), history=history)
+    assert "## History" in md
+    assert "2026-06-17T09:00:00Z · status → done" in md
+    assert "edit: due → Q3" in md
+    # No history → no section (keeps simple notes clean).
+    assert "## History" not in render_markdown(_note(), _original(), ())
+
+
+def test_read_note_id_round_trips(tmp_path: Path) -> None:
+    path = MarkdownVaultWriter(tmp_path).write(_note(), _original(), ())
+    assert read_note_id(path) == "abc123"
+    assert read_note_id(tmp_path / "missing.md") is None
 
 
 def test_render_preserves_backticks_with_expanded_fence() -> None:

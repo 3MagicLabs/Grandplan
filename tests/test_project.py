@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from grandplan.core.models import Note, NoteType
+from grandplan.core.models import Note, NoteEdit, NoteStatus, NoteType, Original, Source
 from grandplan.core.project import write_projections
 from grandplan.core.repository import InMemoryNoteRepository
+from grandplan.core.store import InMemoryOriginalStore
 
 
 def _repo() -> InMemoryNoteRepository:
@@ -17,6 +18,10 @@ def _repo() -> InMemoryNoteRepository:
         (1.0,),
     )
     return repo
+
+
+def _original(oid: str = "o1", text: str = "verbatim") -> Original:
+    return Original(id=oid, text=text, source=Source(app="x"), created="2026-06-17T00:00:00Z")
 
 
 def test_write_projections_writes_graph_and_plan(tmp_path: Path) -> None:
@@ -83,3 +88,69 @@ def test_chain_of_foreign_files_is_never_clobbered(tmp_path: Path) -> None:
     assert plan_path.name == "Plan.grandplan.grandplan.md"
     assert (vault / "Plan.md").read_text(encoding="utf-8") == "mine 1"
     assert (vault / "Plan.grandplan.md").read_text(encoding="utf-8") == "mine 2"
+
+
+# -- PR-C: note .md re-render from derived state ------------------------------------------------
+
+
+def test_originals_re_render_notes_with_derived_status_edits_and_history(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    repo = _repo()
+    originals = InMemoryOriginalStore()
+    originals.add(_original())
+    repo.set_status("t1", NoteStatus.DONE, at="2026-06-17T11:00:00Z")
+    repo.record_edit("t1", NoteEdit(due="2026-09-01"), at="2026-06-17T12:00:00Z")
+
+    write_projections(repo, vault, originals=originals)
+
+    note_md = next(p for p in vault.glob("*.md") if p.name != "Plan.md").read_text(encoding="utf-8")
+    assert 'status: "done"' in note_md  # derived status now in the note file (PR-A/B deferred item)
+    assert 'due: "2026-09-01"' in note_md  # edited field
+    assert "## History" in note_md and "status → done" in note_md and "edit: due" in note_md
+
+
+def test_without_originals_notes_are_not_re_rendered(tmp_path: Path) -> None:
+    # Back-compatible: omitting `originals` keeps the lighter graph + Plan-only behaviour.
+    vault = tmp_path / "vault"
+    write_projections(_repo(), vault)  # no originals
+    assert [p.name for p in vault.glob("*.md")] == ["Plan.md"]  # no per-note file written
+
+
+def test_title_edit_re_render_leaves_no_orphan_file(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    repo = _repo()
+    originals = InMemoryOriginalStore()
+    originals.add(_original())
+
+    write_projections(repo, vault, originals=originals)  # writes "do-the-thing.md"
+    assert (vault / "do-the-thing.md").exists()
+    repo.record_edit("t1", NoteEdit(title="Do the renamed thing"))
+    write_projections(repo, vault, originals=originals)  # re-render under the new slug
+
+    assert not (vault / "do-the-thing.md").exists()  # the stale old-title file was swept
+    notes = sorted(p.name for p in vault.glob("*.md") if p.name != "Plan.md")
+    assert len(notes) == 1  # exactly one note file — the old-title file was swept, not orphaned
+    body = (vault / notes[0]).read_text(encoding="utf-8")
+    assert "# Do the renamed thing" in body
+
+
+def test_note_without_a_stored_original_is_skipped_not_rendered_lossy(tmp_path: Path) -> None:
+    # Losslessness: we never render a note whose verbatim source is missing — skip it (logged).
+    vault = tmp_path / "vault"
+    repo = _repo()  # note t1 references original "o1"
+    originals = InMemoryOriginalStore()  # ...which is absent here
+    write_projections(repo, vault, originals=originals)
+    assert [p.name for p in vault.glob("*.md")] == ["Plan.md"]  # no note file written
+
+
+def test_orphan_sweep_never_touches_foreign_files(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    foreign = vault / "my-notes.md"
+    foreign.write_text("# Hand-written, no grandplan id\n", encoding="utf-8")
+    repo = _repo()
+    originals = InMemoryOriginalStore()
+    originals.add(_original())
+
+    write_projections(repo, vault, originals=originals)
+    assert foreign.read_text(encoding="utf-8") == "# Hand-written, no grandplan id\n"

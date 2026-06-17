@@ -10,8 +10,9 @@ approved atomic note that *derives from* an Original (referencing it, never repl
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -144,3 +145,69 @@ class Edge:
     source_id: str
     target_id: str
     kind: EdgeKind
+
+
+# Order in which a NoteEdit's set fields are rendered/summarised (stable, deterministic).
+_EDITABLE_FIELDS: tuple[str, ...] = ("title", "body", "tags", "due")
+
+
+@dataclass(frozen=True)
+class NoteEdit:
+    """A change to a subset of a note's editable fields (PR-C, ADR-0008).
+
+    `None` means "leave this field unchanged" for every field; recorded as an `edit` *event* and
+    applied on derivation, so the stored note is never mutated and its `id` never changes. Clearing
+    a field (setting `due` back to `None`) is out of scope — `None` is always "unchanged".
+    """
+
+    title: str | None = None
+    body: str | None = None
+    tags: tuple[str, ...] | None = None
+    due: str | None = None
+
+    def is_empty(self) -> bool:
+        """True when no field is set (applying it would be a no-op)."""
+        return all(getattr(self, field) is None for field in _EDITABLE_FIELDS)
+
+    def changes(self) -> tuple[tuple[str, object], ...]:
+        """The (field, new value) pairs this edit sets, in a stable order."""
+        return tuple(
+            (field, getattr(self, field))
+            for field in _EDITABLE_FIELDS
+            if getattr(self, field) is not None
+        )
+
+
+def apply_edit(note: Note, edit: NoteEdit) -> Note:
+    """Return a new Note with `edit`'s set fields applied (same `id` — identity is stable).
+
+    `None` on any field of `edit` means "leave unchanged"; the note's content-addressed id is never
+    recomputed, so an edit changes a note's fields without changing its identity.
+    """
+    return replace(
+        note,
+        title=note.title if edit.title is None else edit.title,
+        body=note.body if edit.body is None else edit.body,
+        tags=note.tags if edit.tags is None else edit.tags,
+        due=note.due if edit.due is None else edit.due,
+    )
+
+
+@dataclass(frozen=True)
+class NoteEvent:
+    """One entry in a note's history — its "git log" (PR-C). A status change or a field edit."""
+
+    note_id: str
+    kind: Literal["status", "edit"]  # a status change or a field edit
+    at: str | None = None  # caller-supplied timestamp (the capture's `created`); None if unknown
+    status: NoteStatus | None = None
+    edit: NoteEdit | None = None
+
+    def summary(self) -> str:
+        """A compact human-readable description, e.g. `status → done` or `edit: due → Q3`."""
+        if self.kind == "status" and self.status is not None:
+            return f"status → {self.status.value}"
+        if self.kind == "edit" and self.edit is not None:
+            parts = ", ".join(f"{field} → {value}" for field, value in self.edit.changes())
+            return f"edit: {parts}" if parts else "edit"
+        return self.kind

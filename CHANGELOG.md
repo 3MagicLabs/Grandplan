@@ -47,6 +47,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   - Fail-safe + idempotent: an update is proposed only on a confident single match above threshold
     and only when it actually changes the derived status; otherwise the normal new-note flow runs.
   - Contract: `SPEC-PR-B.md`.
+- **Detail edits + per-note history + "what moved" digest (PR-C):** a second event kind, **`edit`**
+  (note → title/body/tags/due), so progress on the *content* of an idea is recorded — never a
+  mutation. The current note is **derived** (stored note + replayed edits, with the content-addressed
+  `id` held stable), and the Planner, graph, **and** the note `.md` files all read it, so the three
+  projections agree. Status/edit events now carry a **timestamp** (the capture's `created`; still no
+  hidden clock).
+  - **Per-note history** (`history_of`, the "git log for an idea") renders as a `## History` section
+    in each note; a **`## What moved`** digest of recent events leads `Plan.md`'s body.
+  - **Note `.md` re-render from derived state** (`write_projections(..., originals=…)`): a PR-B "done"
+    capture now also shows `status: done` in the note file, and an edit shows the new
+    title/body/tags/due — finishing the PR-A/B deferred item. A title edit re-renders in place; a
+    sweep removes the stale old-title file (never a foreign/hand-written one).
+  - **Capture-driven edits:** an `EditDetector` port — deterministic `HeuristicEditDetector`
+    (due + retitle) and an Ollama `LlmEditDetector` (heuristic fallback) — recognises edit-intent
+    ("launch slipped to Q3", "rename X to Y"), matches the note on the **verbatim capture** text, and
+    proposes the edit in the review dialog → on approve appends an `edit` event (no duplicate note).
+    Precedence: status > edit > new note.
+  - Hardening: unknown/corrupt `index.jsonl` record kinds are now logged-and-skipped on rehydrate
+    instead of silently dropped; `NoteEvent.kind` is a typed `Literal`.
+  - Contract: `SPEC-PR-C.md`.
 
 ### Changed (connected-vault & enhancement milestone)
 - **Windows-runtime fixes:** create `<vault>/.grandplan/` on first capture (was a `FileNotFoundError`);

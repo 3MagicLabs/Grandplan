@@ -85,7 +85,9 @@ def organize_text(
         )
         committed += 1
 
-    graph_path, plan_path = write_projections(repo, vault_dir)
+    # Pass `originals` so each note's .md is (re-)rendered from its derived state too (PR-C):
+    # status/edit events show up in the note files, not just in Plan.md/graph.json.
+    graph_path, plan_path = write_projections(repo, vault_dir, originals=originals)
     return RunSummary(
         notes=committed,
         skipped_duplicates=skipped,

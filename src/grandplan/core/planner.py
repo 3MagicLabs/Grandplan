@@ -47,10 +47,16 @@ class Plan:
     needs_review: tuple[Note, ...]  # contradictions / needs-review notes to resolve (US-10)
     contradictions: tuple[tuple[str, str], ...]  # contradicts edges, as (source, target) pairs
     status_by_id: dict[str, NoteStatus]  # derived current status per note (ADR-0008 event log)
+    moved: tuple[str, ...]  # "what moved" digest lines, most-recent first (PR-C)
+
+
+_MOVED_LIMIT = 10  # cap the "what moved" digest to the most recent N events
 
 
 def build_plan(repo: NoteRepository) -> Plan:
-    notes = {note.id: note for note in repo.notes()}
+    # Notes are the *derived* current notes (ADR-0008/PR-C): edited fields + status folded in from
+    # the event log, so the plan agrees with the graph and the re-rendered note files.
+    notes = {note.id: note for note in repo.current_notes()}
     # Current status is *derived* from the event log (ADR-0008), not read off the note: a `status`
     # event overrides the creation status without ever mutating the stored note. `status_of` always
     # returns a concrete status for an id in `notes` (it falls back to the note's creation status).
@@ -97,7 +103,21 @@ def build_plan(repo: NoteRepository) -> Plan:
         needs_review=tuple(notes[i] for i in sorted(flagged)),
         contradictions=contradictions,
         status_by_id=status_by_id,
+        moved=_what_moved(repo, notes),
     )
+
+
+def _what_moved(repo: NoteRepository, notes: dict[str, Note]) -> tuple[str, ...]:
+    """The most-recent events as digest lines (the "git for ideas" progress log, PR-C)."""
+    lines: list[str] = []
+    for event in reversed(repo.events()):  # global append order → most recent first
+        note = notes.get(event.note_id)
+        title = note.title if note is not None else event.note_id
+        when = f" — {event.at}" if event.at else ""
+        lines.append(f"{title}: {event.summary()}{when}")
+        if len(lines) >= _MOVED_LIMIT:
+            break
+    return tuple(lines)
 
 
 def _related(repo: NoteRepository, notes: dict[str, Note]) -> tuple[tuple[str, str], ...]:
@@ -146,6 +166,9 @@ def render_plan(plan: Plan) -> str:
             lines.append(f"- {item.note.title} — blocked by: {blockers}")
     else:
         lines.append("_Nothing blocked._")
+    if plan.moved:
+        lines += ["", "## What moved", ""]
+        lines += [f"- {entry}" for entry in plan.moved]
     lines += ["", "## By goal / project", ""]
     for root_id in plan.root_ids:
         lines += _render_tree(plan, root_id, 0)

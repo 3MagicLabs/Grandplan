@@ -25,12 +25,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from grandplan.adapters.capture import make_windows_capturer, run_hotkey_listener
+from grandplan.adapters.llm_edit_detector import LlmEditDetector
 from grandplan.adapters.llm_reconciler import LlmRelationshipClassifier
 from grandplan.adapters.llm_update_detector import LlmUpdateDetector
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OllamaOrganizer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
 from grandplan.app.coordinator import CaptureCoordinator, CaptureStatus, Committed, Stage
 from grandplan.app.review import ReviewState
+from grandplan.core.edit_detect import EditDetector, HeuristicEditDetector
 from grandplan.core.embed import HashingEmbedder
 from grandplan.core.index_location import migrate_legacy_index
 from grandplan.core.models import Source
@@ -80,6 +82,11 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     # --llm (with a heuristic fallback); otherwise the deterministic cue-based baseline.
     detector: UpdateDetector = (
         LlmUpdateDetector(model=model) if use_llm else HeuristicUpdateDetector()
+    )
+    # PR-C: recognise detail-edit captures ("launch slipped to Q3", "rename X to Y") so they edit
+    # the matched note's fields instead of creating a duplicate (LLM under --llm, heuristic fallback).
+    edit_detector: EditDetector = (
+        LlmEditDetector(model=model) if use_llm else HeuristicEditDetector()
     )
     # Persistent index: rehydrates prior notes/embeddings/edges so a new capture links against
     # the whole vault history, not just this session (SPEC US-5). Kept OUTSIDE the vault so a
@@ -134,10 +141,10 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
             pending_reviews.discard(request)
 
     def reproject(_result: Committed) -> None:
-        # Refresh the actionable plan + graph so the "grand plan" stays current (runs on the
-        # worker thread, off the UI thread). A status update re-projects too: a `done` capture
-        # makes its task leave "Now" and unblock dependents (PR-B/ADR-0008).
-        write_projections(repo, vault_dir)
+        # Refresh the plan + graph AND re-render the note files from derived state, so a status
+        # update / edit shows up everywhere (a `done` capture leaves "Now"; an edit updates the
+        # note's title/body/due + its History section). Runs on the worker thread (PR-B/PR-C).
+        write_projections(repo, vault_dir, originals=originals)
 
     coordinator = CaptureCoordinator(
         capturer=make_windows_capturer(),
@@ -152,6 +159,7 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         on_status=bridge.status_changed.emit,
         after_commit=reproject,
         detector=detector,
+        edit_detector=edit_detector,
     )
 
     def quit_app() -> None:
@@ -190,6 +198,14 @@ def _show_review(state: ReviewState) -> bool:  # pragma: no cover - Qt dialog
             QtWidgets.QLabel(
                 f"<b>Update</b>: mark “{state.update_target_title}” as "
                 f"<b>{state.update_status}</b> (no new note will be created)."
+            )
+        )
+    if state.is_edit:
+        # PR-C: this capture is a detail edit — approving edits the matched note's fields in place.
+        layout.addWidget(
+            QtWidgets.QLabel(
+                f"<b>Edit</b> “{state.edit_target_title}”: <b>{state.edit_summary}</b> "
+                "(no new note will be created)."
             )
         )
     layout.addWidget(QtWidgets.QLabel(f"<b>{state.title}</b>  ({state.note_type})"))
