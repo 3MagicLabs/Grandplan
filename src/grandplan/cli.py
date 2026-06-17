@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from grandplan.adapters.ollama_organizer import OllamaOrganizer
+from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OllamaOrganizer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
 from grandplan.core.embed import HashingEmbedder
 from grandplan.core.graph import export_graph
@@ -183,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="use local sentence-transformer embeddings (needs the 'embeddings' extra)",
     )
-    organize.add_argument("--model", default="llama3.2:3b", help="Ollama model name for --llm")
+    organize.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model name for --llm")
 
     gui = subparsers.add_parser(
         "gui", help="Launch the tray GUI (Windows; needs the windows,gui extras)."
@@ -193,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
     gui.add_argument(
         "--embeddings", action="store_true", help="use local sentence-transformer embeddings"
     )
-    gui.add_argument("--model", default="llama3.2:3b", help="Ollama model name for --llm")
+    gui.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model name for --llm")
 
     args = parser.parse_args(argv)
     if args.command == "gui":

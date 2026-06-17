@@ -12,11 +12,13 @@ Both implement (or drive) existing core ports, so the gated core does not change
 
 - **Python 3.10+** (3.12 recommended) — <https://www.python.org/downloads/windows/>
 - **Git** — <https://git-scm.com/download/win>
-- *(For real local AI)* **Ollama for Windows** — <https://ollama.com/download>, then pull a small model:
+- *(For real local AI)* **Ollama for Windows** — <https://ollama.com/download>, then pull the default model:
   ```cmd
-  ollama pull llama3.2:3b
+  ollama pull qwen2.5:7b
   ```
-  Ollama serves a local API at `http://localhost:11434` and runs **offline** once the model is pulled.
+  A smaller/faster alternative is `ollama pull llama3.2:3b` (then pass `--model llama3.2:3b`); a
+  stronger one is `gemma2:9b`. Ollama serves a local API at `http://localhost:11434` and runs
+  **offline** once the model is pulled.
 
 ## 2. Get the code and install
 
@@ -61,7 +63,7 @@ python -m grandplan organize your-notes.txt -o my-vault --llm --embeddings
 
 - `--llm` organizes with a local Ollama model (falls back to the offline baseline if Ollama isn't running).
 - `--embeddings` uses local sentence-transformer embeddings (needs the `embeddings` extra installed).
-- `--model NAME` selects the Ollama model (default `llama3.2:3b`).
+- `--model NAME` selects the Ollama model (default `qwen2.5:7b`; e.g. `--model gemma2:9b` or `--model llama3.2:3b`).
 
 Launch the **tray app** (after `pip install -e ".[windows,gui,llm,embeddings]"`):
 

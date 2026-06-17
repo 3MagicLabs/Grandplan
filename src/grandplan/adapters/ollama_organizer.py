@@ -1,13 +1,17 @@
 """OllamaOrganizer — a local-LLM Organizer adapter (offline, via Ollama).
 
 Drop-in for the `Organizer` port: asks a local model (Ollama on localhost:11434) for a note's
-**title, type, and tags** as JSON, then validates and maps them. The captured original is
-**never rewritten** by the model — the note body stays the verbatim-stripped original; the
-model only proposes metadata (correctness-first). On any model/parse failure it falls back to
-the HeuristicOrganizer so the pipeline never breaks.
+**title, type, tags, and an organized body** as JSON, then validates and maps them. The model
+*summarizes and organizes* the capture into a clean atomic note (SPEC US-3) — but the captured
+Original is **never destroyed**: it is preserved verbatim and rendered in the note's "Source
+(original)" block (US-2), so enhancement is lossless. On malformed output the call is retried
+once with a stricter instruction; on repeated failure it falls back to the HeuristicOrganizer so
+the pipeline never breaks. If the model omits a body, the verbatim original is kept as the body
+(never an invalid note).
 
-The HTTP call is injected (`chat`), so parsing/validation/fallback are unit-tested here; running
-a real Ollama + pulled model integration-tests it on the user's machine (`pip install grandplan[llm]`).
+The HTTP call is injected (`chat`), so parsing/validation/retry/fallback are unit-tested here;
+running a real Ollama + pulled model integration-tests it on the user's machine
+(`pip install grandplan[llm]`).
 """
 
 from __future__ import annotations
@@ -20,17 +24,32 @@ from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.ports import Organizer
 
 ChatClient = Callable[[str, str], str]
-_DEFAULT_MODEL = "llama3.2:3b"
+# A stronger small model than llama3.2:3b for better titles/structure; swap with --model
+# (e.g. gemma2:9b). All local/offline via Ollama. `ollama pull qwen2.5:7b`.
+DEFAULT_MODEL = "qwen2.5:7b"
 _MAX_TITLE = 80
 _VALID_TYPES = {note_type.value: note_type for note_type in NoteType}
 
+_INSTRUCTION = (
+    "You organize a captured note into a clean, self-contained atomic note. "
+    'Return ONLY a JSON object with keys: "title" (concise, specific, no quotes), '
+    '"type" (one of: ' + ", ".join(_VALID_TYPES) + "), "
+    '"tags" (array of 1-5 short lowercase topical tags), and '
+    '"body" (a clean Markdown rewrite: a one-line summary, then the key points as bullets; '
+    "you may clarify phrasing, organize structure, and note implied next steps, but DO NOT "
+    "invent facts, names, numbers, or commitments not in the note). "
+    "Do not echo the original verbatim text — it is preserved separately."
+)
 
-def build_prompt(text: str) -> str:
-    return (
-        'You organize a captured note. Return ONLY JSON with keys "title" (short string), '
-        '"type" (one of: ' + ", ".join(_VALID_TYPES) + '), and "tags" (array of short strings). '
-        "Do not rewrite or echo the note body.\n\nNOTE:\n" + text
+
+def build_prompt(text: str, *, strict: bool = False) -> str:
+    repair = (
+        "\n\nIMPORTANT: your previous reply was not valid. Reply with ONLY a single valid JSON "
+        "object and nothing else."
+        if strict
+        else ""
     )
+    return f"{_INSTRUCTION}{repair}\n\nNOTE:\n{text}"
 
 
 def parse_proposed(raw: str, original: Original) -> ProposedNote:
@@ -45,10 +64,13 @@ def parse_proposed(raw: str, original: Original) -> ProposedNote:
         if isinstance(tags_raw, list)
         else ()
     )
+    # Use the model's organized body when present; otherwise keep the verbatim original so the
+    # note is never invalid (US-3) and never lossy (the Original is rendered in full regardless).
+    body = str(data.get("body") or "").strip() or original.text.strip()
     return ProposedNote(
         original_id=original.id,
         title=title,
-        body=original.text.strip(),
+        body=body,
         type=note_type,
         tags=tags,
     )
@@ -78,7 +100,7 @@ class OllamaOrganizer:
     def __init__(
         self,
         *,
-        model: str = _DEFAULT_MODEL,
+        model: str = DEFAULT_MODEL,
         chat: ChatClient = _ollama_chat,
         fallback: Organizer | None = None,
     ) -> None:
@@ -87,10 +109,18 @@ class OllamaOrganizer:
         self._fallback: Organizer = fallback or HeuristicOrganizer()
 
     def organize(self, original: Original) -> ProposedNote:
+        # Validate-and-retry (SPEC US-3): try once, then once more with a stricter instruction;
+        # only then degrade to the deterministic baseline so the pipeline never breaks.
+        for strict in (False, True):
+            proposed = self._attempt(original, strict=strict)
+            if proposed is not None:
+                return proposed
+        return self._fallback.organize(original)
+
+    def _attempt(self, original: Original, *, strict: bool) -> ProposedNote | None:
+        """One organize attempt; returns None on any model/parse/transport failure."""
         try:
-            raw = self._chat(self._model, build_prompt(original.text))
+            raw = self._chat(self._model, build_prompt(original.text, strict=strict))
             return parse_proposed(raw, original)
-        except Exception:  # noqa: BLE001 - never break the pipeline; fall back to the baseline
-            # Any model/parse/transport failure (bad JSON, model not pulled, Ollama not
-            # running -> ConnectionError) degrades to the deterministic HeuristicOrganizer.
-            return self._fallback.organize(original)
+        except Exception:  # noqa: BLE001 - bad JSON, model not pulled, or Ollama not running
+            return None

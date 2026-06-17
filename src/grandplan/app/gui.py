@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from grandplan.adapters.capture import make_windows_capturer, run_hotkey_listener
-from grandplan.adapters.ollama_organizer import OllamaOrganizer
+from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OllamaOrganizer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
 from grandplan.app.review import ReviewState, approve, discard, start_review
 from grandplan.core.embed import HashingEmbedder
@@ -39,7 +39,7 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     hotkey: str = _DEFAULT_HOTKEY,
     use_llm: bool = False,
     use_embeddings: bool = False,
-    model: str = "llama3.2:3b",
+    model: str = DEFAULT_MODEL,
 ) -> int:
     from PySide6 import QtCore, QtWidgets
 

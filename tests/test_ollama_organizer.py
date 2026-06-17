@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from grandplan.adapters.ollama_organizer import OllamaOrganizer, build_prompt, parse_proposed
@@ -47,6 +49,40 @@ def test_organizer_uses_llm_response_when_valid() -> None:
     note = OllamaOrganizer(chat=chat).organize(_original())
     assert note.title == "From LLM"
     assert note.type is NoteType.TASK
+
+
+def test_organizer_uses_enhanced_body_from_llm() -> None:
+    enhanced = "**Summary:** ship it.\n\n- step one\n- step two"
+
+    def chat(model: str, prompt: str) -> str:
+        return json.dumps({"title": "Launch", "type": "project", "tags": ["x"], "body": enhanced})
+
+    note = OllamaOrganizer(chat=chat).organize(_original("raw messy capture text"))
+    assert note.body == enhanced  # the model's organized body, not the verbatim original
+    assert note.title == "Launch"
+
+
+def test_organizer_keeps_verbatim_body_when_model_omits_it() -> None:
+    def chat(model: str, prompt: str) -> str:
+        return '{"title": "T", "type": "idea", "tags": []}'  # no body key
+
+    original = _original("keep me exactly")
+    note = OllamaOrganizer(chat=chat).organize(original)
+    assert note.body == original.text.strip()  # never invalid — falls back to verbatim body
+
+
+def test_organizer_retries_once_on_malformed_then_succeeds() -> None:
+    calls: list[str] = []
+
+    def flaky(model: str, prompt: str) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return "not json at all"  # first attempt malformed
+        return json.dumps({"title": "Recovered", "type": "task", "tags": [], "body": "ok"})
+
+    note = OllamaOrganizer(chat=flaky).organize(_original())
+    assert note.title == "Recovered"  # repaired on the second attempt, not the heuristic fallback
+    assert len(calls) == 2
 
 
 def test_organizer_falls_back_on_client_failure() -> None:
