@@ -46,3 +46,12 @@ module = [
   "PySide6.*",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The GUI adapter subclasses a Qt class (QObject) for signal marshalling. In the gate environment
+# the optional [gui] extra (PySide6) isn't installed, so PySide6 resolves to Any and strict mode's
+# disallow_subclassing_any would reject it — even though it typechecks fine where PySide6 IS present.
+# Scope the relaxation to this one module so the typecheck is identical with or without the extra
+# (CI/dev parity); everything else stays strict.
+module = ["grandplan.app.gui"]
+disallow_subclassing_any = false

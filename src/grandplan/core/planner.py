@@ -8,6 +8,7 @@ Pure core — no IO except `write_plan`.
 
 from __future__ import annotations
 
+import heapq
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -179,17 +180,19 @@ def _toposort(notes: dict[str, Note], deps: dict[str, set[str]]) -> tuple[list[s
         for prereq in deps[nid]:
             dependents[prereq].append(nid)
 
-    queue = sorted(nid for nid in notes if indegree[nid] == 0)
+    # Min-heap keyed on note id: pops the smallest ready id at each step (same deterministic order
+    # as the previous sort-and-pop-front), but in O((V+E) log V) instead of re-sorting the frontier
+    # on every pop (the old O(V^2 log V) that grew with the whole vault on each re-projection).
+    ready = [nid for nid in notes if indegree[nid] == 0]
+    heapq.heapify(ready)
     order: list[str] = []
-    while queue:
-        current = queue.pop(0)
+    while ready:
+        current = heapq.heappop(ready)
         order.append(current)
-        newly_ready = []
         for dependent in dependents[current]:
             indegree[dependent] -= 1
             if indegree[dependent] == 0:
-                newly_ready.append(dependent)
-        queue = sorted(queue + newly_ready)
+                heapq.heappush(ready, dependent)
 
     cycle = sorted(nid for nid in notes if indegree[nid] > 0)
     return order, cycle

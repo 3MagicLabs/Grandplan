@@ -17,16 +17,20 @@ running a real Ollama + pulled model integration-tests it on the user's machine
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 
 from grandplan.core.models import NoteType, Original, ProposedNote
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.ports import Organizer
 
+logger = logging.getLogger(__name__)
+
 ChatClient = Callable[[str, str], str]
-# A stronger small model than llama3.2:3b for better titles/structure; swap with --model
-# (e.g. gemma2:9b). All local/offline via Ollama. `ollama pull qwen2.5:7b`.
-DEFAULT_MODEL = "qwen2.5:7b"
+# Default sized for the project's "runs on 16 GB RAM, no GPU" constraint (ADR-0006): llama3.2:3b
+# (~2 GB resident) keeps capture memory-safe on modest hardware. Swap in a stronger model with
+# --model on machines with headroom (e.g. qwen2.5:7b ~5 GB, gemma2:9b). All local/offline via Ollama.
+DEFAULT_MODEL = "llama3.2:3b"
 _MAX_TITLE = 80
 _VALID_TYPES = {note_type.value: note_type for note_type in NoteType}
 
@@ -122,5 +126,8 @@ class OllamaOrganizer:
         try:
             raw = self._chat(self._model, build_prompt(original.text, strict=strict))
             return parse_proposed(raw, original)
-        except Exception:  # noqa: BLE001 - bad JSON, model not pulled, or Ollama not running
+        except Exception as exc:  # noqa: BLE001 - bad JSON, model not pulled, or Ollama not running
+            # Surface the degradation (US-7 observability): silent fallback hid a misconfigured or
+            # unreachable Ollama. WARNING, not ERROR — the pipeline still degrades gracefully.
+            logger.warning("LLM organize attempt failed (strict=%s); falling back: %s", strict, exc)
             return None

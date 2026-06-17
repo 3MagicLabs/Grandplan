@@ -39,14 +39,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `.grandplan/index.jsonl`; the GUI reloads it on startup so captures link against the whole
   vault history, not just the current session.
 - **LLM enhances the body (US-3):** the model now summarizes + organizes the body (verbatim
-  original preserved in the Source block) with validate-and-retry; default model `qwen2.5:7b`
-  (swappable via `--model`, e.g. `gemma2:9b`).
+  original preserved in the Source block) with validate-and-retry.
 - **Actionable, visual plan (US-7/US-8):** `Plan.md` embeds a Mermaid map (dependencies,
   hierarchy, semantic links); `write_projections` regenerates `Plan.md` + `graph.json` on every
   GUI save. End-to-end offline pipeline test added.
 
+### Fixed (capture stability & observability — ADR-0006)
+- **Serialized, bounded captures (no more system crash):** extracted the tray GUI's untestable
+  orchestration into a Qt-free, fully unit-tested `CaptureCoordinator`. Captures now run on a single
+  background worker drained from a queue capped at one pending; back-to-back hotkeys can no longer
+  **re-enter the modal dialog and stack concurrent LLM/embedding pipelines** (the memory blow-up that
+  could OOM an uncapped WSL2 VM and freeze the host), nor are they silently coalesced/dropped. Excess
+  presses are refused with a visible "busy" notification.
+- **Progress visibility (US-7):** the coordinator emits a `CaptureStatus` for every stage
+  (`capturing → analyzing → awaiting review → committing → saved/discarded/failed → idle`) to the
+  tray tooltip/notifications and the log — no more silent multi-second gap with no feedback.
+- **Responsive UI:** all heavy work (LLM, embeddings, vault write, plan/graph re-projection) runs off
+  the Qt main thread; only the review dialog and tray updates touch it.
+- **Memory-safe default model:** default lowered from `qwen2.5:7b` (~5 GB) to `llama3.2:3b` (~2 GB)
+  to honor the "runs on 16 GB RAM, no GPU" constraint; stronger models stay opt-in via `--model`.
+- **Visible LLM fallback:** `OllamaOrganizer` now logs a WARNING when an attempt fails (was a silent
+  degrade that hid a misconfigured/unreachable Ollama).
+- **Faster re-projection:** `Planner` toposort uses a heap (O((V+E) log V)) instead of re-sorting the
+  frontier on every pop, so regenerating the plan no longer scales poorly with vault size.
+- **WSL2 memory cap** documented as a hard prerequisite (`docs/WINDOWS.md`) — the backstop against a
+  runaway VM starving the host.
+
 ### Notes
-- The full **MVP app is structurally complete and gated** (278 tests, green gate + CI): capture →
+- The full **MVP app is structurally complete and gated** (302 tests, green gate + CI): capture →
   organize (baseline or local LLM) → review/approve → linked, de-duplicated Markdown vault → Plan.md.
 - **Final step is runtime verification on Windows**: install `grandplan[windows,gui,llm,embeddings]`
   + Ollama, run `python -m grandplan gui -o my-vault --llm --embeddings`, and confirm the
