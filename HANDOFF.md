@@ -42,8 +42,14 @@ The MVP is complete, gated, and running on the user's native-Windows machine. Re
   `Resource` (link/image/file/placeholder) extracted from the capture (organizer; LLM + heuristic),
   carried as a creation-time field on the note, rendered natively in the note `.md` (`## Resources` +
   frontmatter `resources:`). The `resource` event kind + attach flow are PR-E. Contract: `SPEC-PR-D.md`.
+- **PR-E** (branch `feat/pr-e-attach-flow`, stacked on PR-D) — artifact-attach flow: a `resource`
+  **event** kind + `add_resource`/`resources_of` (folded into `current_note`) + a `grandplan attach
+  <path|url>` CLI that semantic-matches the note an artifact fulfils and attaches it (re-rendering the
+  note `.md` with the resource + history; the attach shows in the "what moved" digest). `attach` only
+  *records* the ref (no fetch). Deferred: capture-driven attach in the review dialog; propagation to
+  related notes. Contract: `SPEC-PR-E.md`.
 
-Gate: **489 tests, 98% coverage**, all green; CI mirrors it.
+Gate: **506 tests, 98% coverage**, all green; CI mirrors it.
 
 ## Operational notes for the user's machine
 - Run on **native Windows** (Python 3.12 from python.org, not Anaconda), `--llm --embeddings`, model `llama3.2:3b`.
@@ -98,7 +104,13 @@ CI-merged (the loop used for #36–#42):
    note_store serializes (old records → `()`); vault renders a `## Resources` section + frontmatter
    `resources:`. SPEC-PR-D.md. Gate: **489 tests, 98% cov**. Deferred to PR-E: the `resource` **event**
    kind + `resources_of` + the `grandplan attach` capture-driven attach-to-existing-note flow.
-5. **PR-E** `grandplan attach <path|url>` + capture-driven artifact attach (parse vault → match → attach → mark progress → propagate to related notes).
+5. **PR-E — artifact-attach flow** ✅ **DONE** (branch `feat/pr-e-attach-flow`, stacked on PR-D):
+   `resource` event kind (`NoteEvent.kind` += "resource") + `add_resource`/`resources_of` on both
+   repos (derived into `current_note`); `core/resources.py` `classify_reference`/`describe_reference`;
+   `core/attach.py` `attach()` (single best semantic match, threshold 0.30, only records the ref);
+   `grandplan attach <ref> -o <vault> [--describe] [--embeddings]` CLI (persistent index + re-project).
+   SPEC-PR-E.md. Gate: **506 tests, 98% cov**. Deferred: capture-driven attach in the review dialog;
+   propagation to related notes; auto status bump.
 6. **PR-F** voice capture (offline STT) behind the `Capturer` port.
 
 ### Invariants to honor (don't regress)

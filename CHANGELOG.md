@@ -76,6 +76,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   frontmatter `resources:` list. The index serializes them (old records load as empty). The
   `resource` *event* kind + `resources_of` + the `grandplan attach` flow are PR-E. Contract:
   `SPEC-PR-D.md`.
+- **Artifact-attach flow (PR-E):** a `resource` **event** kind makes attachments first-class — a
+  real artifact (file path or URL) is attached to the existing note it fulfils as an append-only
+  event (`add_resource`), with the derived `resources_of(note_id)` = creation-time resources +
+  attachments folded into `current_note`, so the note `.md` (and the "what moved" digest) show it.
+  New **`grandplan attach <path|url> -o <vault>`** command: classifies the ref, semantic-matches the
+  note it fulfils (`--describe` to guide it, `--embeddings` to match a ST-built vault), attaches, and
+  re-renders. Lossless (the note is never mutated) and safe (the ref is only recorded, never fetched).
+  Deferred to later: capture-driven attach in the review dialog; propagation to related notes.
+  Contract: `SPEC-PR-E.md`.
 
 ### Changed (connected-vault & enhancement milestone)
 - **Windows-runtime fixes:** create `<vault>/.grandplan/` on first capture (was a `FileNotFoundError`);

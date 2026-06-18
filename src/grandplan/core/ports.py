@@ -18,6 +18,7 @@ from grandplan.core.models import (
     Original,
     ProposedNote,
 )
+from grandplan.core.resources import Resource
 
 
 class Organizer(Protocol):
@@ -72,8 +73,16 @@ class NoteRepository(Protocol):
         """`current_note` for every stored note — the derived view the projections render."""
         ...
 
+    def add_resource(self, note_id: str, resource: Resource, *, at: str | None = None) -> None:
+        """Attach a resource to a note as an event (PR-E); idempotent + orphan-guarded."""
+        ...
+
+    def resources_of(self, note_id: str) -> tuple[Resource, ...]:
+        """Derived resources: the note's creation-time resources + attached ones (PR-D/PR-E)."""
+        ...
+
     def history_of(self, note_id: str) -> tuple[NoteEvent, ...]:
-        """This note's events (status + edit) in order — its "git log"."""
+        """This note's events (status + edit + resource) in order — its "git log"."""
         ...
 
     def events(self) -> tuple[NoteEvent, ...]:

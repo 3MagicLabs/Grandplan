@@ -234,3 +234,32 @@ def test_capture_with_a_url_renders_a_resource_link_and_persists(tmp_path: Path)
     write_projections(repo, vault, originals=originals)  # re-render keeps the resource
     reopened = JsonlNoteRepository(_index(vault)).get_note(result.note.id)
     assert reopened is not None and reopened.resources  # persisted across the reopen
+
+
+def test_attach_flow_records_a_resource_event_and_re_renders(tmp_path: Path) -> None:
+    """PR-E end-to-end: attach an artifact to the note it fulfils → a `resource` event re-renders the
+    note `.md` (Resources + History) and survives a reopen, with no new note."""
+    from grandplan.core.attach import attach
+
+    vault = tmp_path / "vault"
+    repo = JsonlNoteRepository(_index(vault))
+    originals = JsonlOriginalStore(_inbox(vault))
+    first = approve(
+        _start("build the resume website", repo, originals),
+        repo=repo,
+        vault=MarkdownVaultWriter(vault),
+    )
+    assert not isinstance(first, (StatusUpdateResult, EditResult))
+    write_projections(repo, vault, originals=originals)
+
+    result = attach("/Users/me/resume-final.pdf", repo=repo, embedder=HashingEmbedder())
+    assert result is not None and result.note.id == first.note.id
+    write_projections(repo, vault, originals=originals)
+
+    # Reopen: the resource event persisted, derived onto the note; still one note; rendered in the .md.
+    repo2 = JsonlNoteRepository(_index(vault))
+    assert len(repo2.notes()) == 1
+    assert any(r.ref == "/Users/me/resume-final.pdf" for r in repo2.resources_of(first.note.id))
+    note_md = next(p for p in vault.glob("*.md") if p.name != "Plan.md").read_text(encoding="utf-8")
+    assert "## Resources" in note_md and "resume-final.pdf" in note_md
+    assert "## History" in note_md and "+file:" in note_md  # the attach shows as progress

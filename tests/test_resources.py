@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from grandplan.core.resources import Resource, ResourceKind, extract_resources
+from grandplan.core.resources import (
+    Resource,
+    ResourceKind,
+    classify_reference,
+    describe_reference,
+    extract_resources,
+)
 
 
 def test_extracts_an_external_link() -> None:
@@ -72,3 +78,31 @@ def test_no_false_placeholder(text: str) -> None:
 
 def test_plain_text_has_no_resources() -> None:
     assert extract_resources("a perfectly ordinary note about coffee") == ()
+
+
+# -- PR-E: classify / describe a single reference -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("ref", "kind"),
+    [
+        ("https://example.com/page", ResourceKind.LINK),
+        ("https://cdn.x/i.png", ResourceKind.IMAGE),
+        ("/Users/me/plan.pdf", ResourceKind.FILE),
+        ("~/pics/a.jpg", ResourceKind.IMAGE),
+    ],
+)
+def test_classify_reference(ref: str, kind: ResourceKind) -> None:
+    assert classify_reference(ref) == Resource(kind, ref)
+
+
+@pytest.mark.parametrize(
+    ("ref", "words"),
+    [
+        ("/Users/me/resume-final.pdf", "resume final"),
+        ("https://github.com/me/trading-bot", "trading bot"),
+        ("./notes/q3_plan.md", "q3 plan"),
+    ],
+)
+def test_describe_reference(ref: str, words: str) -> None:
+    assert describe_reference(ref) == words

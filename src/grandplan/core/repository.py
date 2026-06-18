@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from grandplan.core.models import Edge, Note, NoteEdit, NoteEvent, NoteStatus, apply_edit
+from grandplan.core.resources import Resource, ResourceKind
 
 
 class InMemoryNoteRepository:
@@ -53,6 +54,33 @@ class InMemoryNoteRepository:
             return  # unknown note or no-op → no event (idempotent + orphan-guarded)
         self._events.append(NoteEvent(note_id=note_id, kind="edit", at=at, edit=edit))
 
+    def add_resource(self, note_id: str, resource: Resource, *, at: str | None = None) -> None:
+        if self._notes.get(note_id) is None:
+            return  # unknown note → no orphan event (PR-E)
+        if (resource.kind, resource.ref) in {(r.kind, r.ref) for r in self.resources_of(note_id)}:
+            return  # already attached → idempotent
+        self._events.append(NoteEvent(note_id=note_id, kind="resource", at=at, resource=resource))
+
+    def resources_of(self, note_id: str) -> tuple[Resource, ...]:
+        """Derived resources: the note's creation-time resources (PR-D) + attached ones (PR-E),
+        deduped by (kind, ref), order-stable."""
+        note = self._notes.get(note_id)
+        if note is None:
+            return ()
+        out: list[Resource] = []
+        seen: set[tuple[ResourceKind, str]] = set()
+        attached = (
+            event.resource
+            for event in self._events
+            if event.note_id == note_id and event.kind == "resource" and event.resource is not None
+        )
+        for resource in (*note.resources, *attached):
+            key = (resource.kind, resource.ref)
+            if key not in seen:
+                seen.add(key)
+                out.append(resource)
+        return tuple(out)
+
     def status_of(self, note_id: str) -> NoteStatus | None:
         latest: NoteStatus | None = None
         for event in self._events:
@@ -75,6 +103,9 @@ class InMemoryNoteRepository:
         status = self.status_of(note_id)
         if status is not None and status is not note.status:
             note = replace(note, status=status)
+        resources = self.resources_of(note_id)  # creation + attached (PR-E)
+        if resources != note.resources:
+            note = replace(note, resources=resources)
         return note
 
     def current_notes(self) -> tuple[Note, ...]:

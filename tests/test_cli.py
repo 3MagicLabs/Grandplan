@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from grandplan.cli import main, organize_text
-from grandplan.core.models import NoteType, Original, ProposedNote, Source
+from grandplan.core.models import Note, NoteType, Original, ProposedNote, Source
 
 
 def _block_import(monkeypatch: pytest.MonkeyPatch, module: str) -> None:
@@ -39,6 +39,37 @@ schedule the first planning meeting
 
 Research neural networks and machine learning for the project
 """
+
+
+def test_attach_command_matches_a_note_and_records_a_resource(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # PR-E: `grandplan attach <ref> -o <vault>` attaches the artifact to the note it fulfils.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))  # keep the index out of real $HOME
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.embed import HashingEmbedder
+    from grandplan.core.note_store import JsonlNoteRepository
+    from grandplan.core.resources import ResourceKind
+
+    vault = tmp_path / "vault"
+    index = migrate_legacy_index(vault) / "index.jsonl"
+    seed = JsonlNoteRepository(index)
+    note = Note(
+        id="r1", original_id="o", title="build the resume website", body="b", type=NoteType.TASK
+    )
+    seed.add_note(note, HashingEmbedder().embed(note.title))
+
+    code = main(["attach", "/Users/me/resume-final.pdf", "-o", str(vault)])
+
+    assert code == 0
+    reopened = JsonlNoteRepository(index)
+    resources = reopened.resources_of("r1")
+    assert len(resources) == 1 and resources[0].kind is ResourceKind.FILE
+
+
+def test_attach_command_reports_no_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    assert main(["attach", "/tmp/x.pdf", "-o", str(tmp_path / "empty-vault")]) == 1  # no notes
 
 
 def test_organize_text_writes_vault_graph_and_plan(tmp_path: Path) -> None:

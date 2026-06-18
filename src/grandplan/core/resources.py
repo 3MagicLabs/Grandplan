@@ -88,3 +88,23 @@ def extract_resources(text: str) -> tuple[Resource, ...]:
         add(ResourceKind.PLACEHOLDER, placeholder.group("art").lower())
 
     return tuple(out)
+
+
+def classify_reference(ref: str, *, label: str = "") -> Resource:
+    """Classify a single bare reference (a URL or path) into a Resource (PR-E `attach`)."""
+    ref = ref.strip()
+    if _is_image(ref):
+        kind = ResourceKind.IMAGE
+    elif ref.startswith(("http://", "https://")):
+        kind = ResourceKind.LINK
+    else:
+        kind = ResourceKind.FILE
+    return Resource(kind=kind, ref=ref, label=label)
+
+
+def describe_reference(ref: str) -> str:
+    """Derive matchable words from a reference: its last path/URL segment, sans extension, with
+    separators turned to spaces (e.g. `/docs/resume-final.pdf` → "resume final")."""
+    tail = re.split(r"[\\/]", ref.strip().rstrip("/\\"))[-1]
+    tail = re.sub(r"\.\w{1,6}$", "", tail)  # drop a file extension
+    return re.sub(r"[-_.]+", " ", tail).strip()

@@ -200,19 +200,23 @@ def apply_edit(note: Note, edit: NoteEdit) -> Note:
 
 @dataclass(frozen=True)
 class NoteEvent:
-    """One entry in a note's history — its "git log" (PR-C). A status change or a field edit."""
+    """One entry in a note's history — its "git log". A status change, a field edit, or an attached
+    resource (PR-C/PR-E)."""
 
     note_id: str
-    kind: Literal["status", "edit"]  # a status change or a field edit
+    kind: Literal["status", "edit", "resource"]  # a status change, a field edit, or an attachment
     at: str | None = None  # caller-supplied timestamp (the capture's `created`); None if unknown
     status: NoteStatus | None = None
     edit: NoteEdit | None = None
+    resource: Resource | None = None
 
     def summary(self) -> str:
-        """A compact human-readable description, e.g. `status → done` or `edit: due → Q3`."""
+        """A compact human-readable description, e.g. `status → done` or `+file: resume.pdf`."""
         if self.kind == "status" and self.status is not None:
             return f"status → {self.status.value}"
         if self.kind == "edit" and self.edit is not None:
             parts = ", ".join(f"{field} → {value}" for field, value in self.edit.changes())
             return f"edit: {parts}" if parts else "edit"
+        if self.kind == "resource" and self.resource is not None:
+            return f"+{self.resource.kind.value}: {self.resource.ref}"
         return self.kind

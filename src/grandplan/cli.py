@@ -20,15 +20,18 @@ from pathlib import Path
 
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OllamaOrganizer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
+from grandplan.core.attach import attach
 from grandplan.core.embed import HashingEmbedder
+from grandplan.core.index_location import migrate_legacy_index
 from grandplan.core.models import NoteStatus, Source
+from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.pipeline import assess, commit, propose
 from grandplan.core.ports import Embedder, Organizer
 from grandplan.core.project import write_projections
 from grandplan.core.reconcile import SimilarityReconciler
 from grandplan.core.repository import InMemoryNoteRepository
-from grandplan.core.store import InMemoryOriginalStore
+from grandplan.core.store import InMemoryOriginalStore, JsonlOriginalStore
 from grandplan.core.vault import MarkdownVaultWriter
 
 _PARAGRAPH = re.compile(r"\n\s*\n")
@@ -130,6 +133,25 @@ def _run_organize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_attach(args: argparse.Namespace) -> int:
+    """`grandplan attach <ref> -o <vault>`: attach an artifact to the note it fulfils (PR-E)."""
+    vault_dir = Path(args.vault)
+    # The persistent index the GUI maintains — kept outside the (cloud-synced) vault (PR #41).
+    index_root = migrate_legacy_index(vault_dir)
+    repo = JsonlNoteRepository(index_root / "index.jsonl")
+    originals = JsonlOriginalStore(index_root / "inbox.jsonl")
+    # The query must be embedded with the SAME embedder that built the stored note embeddings.
+    embedder: Embedder = SentenceTransformerEmbedder() if args.embeddings else HashingEmbedder()
+    result = attach(args.ref, repo=repo, embedder=embedder, description=args.describe or None)
+    if result is None:
+        print(f"no note matched {args.ref!r} — try --describe to guide the match", file=sys.stderr)
+        return 1
+    # Re-render so the matched note's .md shows the new resource + history (PR-C/PR-D).
+    write_projections(repo, vault_dir, originals=originals)
+    print(f"attached {result.resource.kind.value} to '{result.note.title}': {result.resource.ref}")
+    return 0
+
+
 def _missing_gui_dependency(args: argparse.Namespace) -> str | None:
     """A user-facing error if a requested optional backend isn't installed (else None).
 
@@ -187,6 +209,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     organize.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model name for --llm")
 
+    attach_cmd = subparsers.add_parser(
+        "attach", help="Attach an artifact (file path or URL) to the note it fulfils."
+    )
+    attach_cmd.add_argument("ref", help="a file path or URL to attach")
+    attach_cmd.add_argument("-o", "--vault", required=True, help="the vault directory")
+    attach_cmd.add_argument(
+        "--describe", default="", help="text to match the note on (default: words from the ref)"
+    )
+    attach_cmd.add_argument(
+        "--embeddings",
+        action="store_true",
+        help="match with sentence-transformer embeddings (use if the vault was built with them)",
+    )
+
     gui = subparsers.add_parser(
         "gui", help="Launch the tray GUI (Windows; needs the windows,gui extras)."
     )
@@ -200,6 +236,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "gui":
         return _run_gui(args)
+    if args.command == "attach":
+        return _run_attach(args)
     return _run_organize(args)
 
 

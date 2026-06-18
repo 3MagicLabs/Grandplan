@@ -68,6 +68,11 @@ class JsonlNoteRepository:
             self._mem.record_edit(
                 str(record["note_id"]), _edit_from_dict(record["edit"]), at=record.get("at")
             )
+        elif kind == "resource":
+            # Replay an attached resource (PR-E); derived resources = creation + attachments.
+            self._mem.add_resource(
+                str(record["note_id"]), _resource_from_dict(record["resource"]), at=record.get("at")
+            )
         else:
             # An unknown/corrupt record kind would otherwise be silently dropped — surface it so a
             # forward-incompatible or damaged line can't disappear without a trace.
@@ -115,6 +120,26 @@ class JsonlNoteRepository:
         if at is not None:
             record["at"] = at
         self._append(record)
+
+    def add_resource(self, note_id: str, resource: Resource, *, at: str | None = None) -> None:
+        if self._mem.get_note(note_id) is None:
+            return  # unknown note → no orphan event
+        if (resource.kind, resource.ref) in {
+            (r.kind, r.ref) for r in self._mem.resources_of(note_id)
+        }:
+            return  # already attached → idempotent, no event
+        self._mem.add_resource(note_id, resource, at=at)
+        record: dict[str, object] = {
+            "kind": "resource",
+            "note_id": note_id,
+            "resource": _resource_to_dict(resource),
+        }
+        if at is not None:
+            record["at"] = at
+        self._append(record)
+
+    def resources_of(self, note_id: str) -> tuple[Resource, ...]:
+        return self._mem.resources_of(note_id)
 
     def current_note(self, note_id: str) -> Note | None:
         return self._mem.current_note(note_id)

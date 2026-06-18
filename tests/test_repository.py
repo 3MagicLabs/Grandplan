@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from grandplan.core.models import Edge, EdgeKind, Note, NoteEdit, NoteStatus, NoteType
 from grandplan.core.repository import InMemoryNoteRepository
+from grandplan.core.resources import Resource, ResourceKind
 
 
 def _note(note_id: str) -> Note:
@@ -139,3 +140,38 @@ def test_current_notes_returns_one_derived_note_per_stored_note() -> None:
     repo.add_note(_note("n1"), (1.0,))
     repo.record_edit("n1", NoteEdit(title="renamed"))
     assert {n.id: n.title for n in repo.current_notes()} == {"n1": "renamed"}
+
+
+# -- PR-E: resource attach events ---------------------------------------------------------------
+
+_LINK = Resource(ResourceKind.LINK, "https://example.com")
+_FILE = Resource(ResourceKind.FILE, "/docs/plan.pdf")
+
+
+def _note_with(note_id: str, *resources: Resource) -> Note:
+    from dataclasses import replace
+
+    return replace(_note(note_id), resources=tuple(resources))
+
+
+def test_add_resource_derives_into_resources_of_and_current_note() -> None:
+    repo = InMemoryNoteRepository()
+    repo.add_note(_note_with("n1", _LINK), (1.0,))  # one creation-time resource
+    repo.add_resource("n1", _FILE, at="t1")  # attach another
+
+    assert repo.resources_of("n1") == (_LINK, _FILE)  # creation + attached, order-stable
+    current = repo.current_note("n1")
+    assert current is not None and current.resources == (_LINK, _FILE)
+    (event,) = [e for e in repo.history_of("n1") if e.kind == "resource"]
+    assert event.resource == _FILE and event.at == "t1"
+
+
+def test_add_resource_is_idempotent_and_orphan_guarded() -> None:
+    repo = InMemoryNoteRepository()
+    repo.add_note(_note_with("n1", _LINK), (1.0,))
+    repo.add_resource("n1", _LINK)  # already present (creation) → no event
+    repo.add_resource("n1", _FILE)
+    repo.add_resource("n1", _FILE)  # duplicate attach → no event
+    repo.add_resource("missing", _FILE)  # unknown note → no event
+    assert [e.resource for e in repo.events()] == [_FILE]
+    assert repo.resources_of("missing") == ()

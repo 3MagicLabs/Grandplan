@@ -163,6 +163,23 @@ def test_edit_persists_all_field_kinds(tmp_path: Path) -> None:
     assert current.body == "rewritten body" and current.tags == ("x", "y")
 
 
+def test_resource_event_persists_and_rehydrates(tmp_path: Path) -> None:
+    # PR-E: an attached resource is an event; derived resources survive a reopen.
+    path = tmp_path / "index.jsonl"
+    repo = JsonlNoteRepository(path)
+    repo.add_note(_note("a1", "First"), (1.0, 0.0))
+    repo.add_resource("a1", Resource(ResourceKind.FILE, "/docs/a1.pdf"), at="2026-06-17T00:00:00Z")
+    repo.add_resource("a1", Resource(ResourceKind.FILE, "/docs/a1.pdf"))  # duplicate → no event
+
+    reopened = JsonlNoteRepository(path)
+    assert reopened.resources_of("a1") == (Resource(ResourceKind.FILE, "/docs/a1.pdf"),)
+    current = reopened.current_note("a1")
+    assert current is not None and current.resources == (
+        Resource(ResourceKind.FILE, "/docs/a1.pdf"),
+    )
+    assert path.read_text(encoding="utf-8").count('"kind": "resource"') == 1  # idempotent on disk
+
+
 def test_status_event_timestamp_rehydrates(tmp_path: Path) -> None:
     path = tmp_path / "index.jsonl"
     repo = JsonlNoteRepository(path)
