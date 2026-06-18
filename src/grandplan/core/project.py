@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -45,18 +46,51 @@ _TYPE_COLORS: dict[str, int] = {
 
 
 def write_obsidian_config(vault_dir: Path) -> Path | None:
-    """Write `.obsidian/graph.json` colouring graph nodes by note type — but NEVER clobber the
-    user's own graph settings (write only if absent). Returns the path written, or None if skipped."""
+    """Colour the Obsidian graph by note type via `.obsidian/graph.json`'s `colorGroups`.
+
+    Non-destructive: if the user already has a graph config, only **fill in** its colour groups when
+    they're empty/absent (preserving all their other settings); never overwrite colours they chose.
+    """
     config = vault_dir / ".obsidian" / "graph.json"
-    if config.exists():
-        return None
-    config.parent.mkdir(parents=True, exist_ok=True)
     groups = [
         {"query": f"tag:#type/{note_type}", "color": {"a": 1, "rgb": rgb}}
         for note_type, rgb in _TYPE_COLORS.items()
     ]
+    if config.exists():
+        try:
+            data = json.loads(config.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None  # unreadable/foreign config → leave it alone
+        if not isinstance(data, dict) or data.get("colorGroups"):
+            return None  # the user already set colour groups → respect them
+        data["colorGroups"] = groups  # fill the empty/missing groups, keep everything else
+        config.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return config
+    config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(json.dumps({"colorGroups": groups}, indent=2), encoding="utf-8")
     return config
+
+
+# A bare note-id filename (`<16-hex>.md`) — what Obsidian creates as an empty stub when a user
+# clicks an unresolved `[[id]]` link. We resolve links now, so these are leftover clutter.
+_PHANTOM_NOTE = re.compile(r"^[0-9a-f]{16}\.md$")
+
+
+def remove_phantom_link_files(vault_dir: Path) -> int:
+    """Delete EMPTY `<id>.md` stubs Obsidian created from old phantom `[[id]]` links. Safe: only a
+    bare-id filename, no grandplan frontmatter, and empty content — never a real note or user file."""
+    removed = 0
+    for md in vault_dir.glob("*.md"):
+        if not _PHANTOM_NOTE.match(md.name) or read_note_id(md) is not None:
+            continue
+        try:
+            empty = not md.read_text(encoding="utf-8", errors="ignore").strip()
+        except OSError:
+            continue
+        if empty:
+            md.unlink()
+            removed += 1
+    return removed
 
 
 def write_projections(
@@ -71,6 +105,7 @@ def write_projections(
     """
     vault_dir.mkdir(parents=True, exist_ok=True)
     write_obsidian_config(vault_dir)  # colour the graph by type (non-destructive)
+    remove_phantom_link_files(vault_dir)  # sweep empty `<id>.md` stubs from old phantom links
     graph_path = export_graph(repo, _safe_target(vault_dir / "graph.json", _is_grandplan_graph))
     plan_path = write_plan(repo, _safe_target(vault_dir / "Plan.md", _is_grandplan_plan))
     # The Masterplan MOC (notes stratified by horizon); foreign same-named file is preserved.

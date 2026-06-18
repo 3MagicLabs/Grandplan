@@ -145,6 +145,44 @@ def test_note_without_a_stored_original_is_skipped_not_rendered_lossy(tmp_path: 
     assert sorted(p.name for p in vault.glob("*.md")) == ["Masterplan.md", "Plan.md"]  # no notes
 
 
+def test_graph_colours_fill_empty_groups_but_respect_user_groups(tmp_path: Path) -> None:
+    from grandplan.core.project import write_obsidian_config
+
+    vault = tmp_path / "vault"
+    cfg = vault / ".obsidian" / "graph.json"
+    cfg.parent.mkdir(parents=True)
+
+    # An existing config with EMPTY colour groups (the real-world case) → we fill it, keep settings.
+    cfg.write_text(json.dumps({"colorGroups": [], "scale": 0.7, "showOrphans": True}), "utf-8")
+    write_obsidian_config(vault)
+    data = json.loads(cfg.read_text("utf-8"))
+    assert len(data["colorGroups"]) == 8 and data["scale"] == 0.7  # filled, other settings kept
+
+    # A config where the user already chose colours → untouched.
+    cfg.write_text(json.dumps({"colorGroups": [{"query": "tag:#mine", "color": {}}]}), "utf-8")
+    write_obsidian_config(vault)
+    assert json.loads(cfg.read_text("utf-8"))["colorGroups"] == [
+        {"query": "tag:#mine", "color": {}}
+    ]
+
+
+def test_phantom_id_stub_files_are_swept(tmp_path: Path) -> None:
+    from grandplan.core.project import remove_phantom_link_files
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "5d2da2de0e4dec45.md").write_text("", encoding="utf-8")  # empty Obsidian phantom stub
+    (vault / "abc123def4567890.md").write_text("   \n", encoding="utf-8")  # whitespace-only stub
+    (vault / "real-note.md").write_text("# Real\nkeep me", encoding="utf-8")  # real file → keep
+    (vault / "0123456789abcdef.md").write_text(
+        "I typed notes here", encoding="utf-8"
+    )  # non-empty → keep
+
+    assert remove_phantom_link_files(vault) == 2
+    assert not (vault / "5d2da2de0e4dec45.md").exists()
+    assert (vault / "real-note.md").exists() and (vault / "0123456789abcdef.md").exists()
+
+
 def test_orphan_sweep_never_touches_foreign_files(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     vault.mkdir()
