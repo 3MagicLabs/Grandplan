@@ -38,7 +38,12 @@ The MVP is complete, gated, and running on the user's native-Windows machine. Re
   `SPEC-PR-C.md`. Also: log-and-skip on unknown `index.jsonl` record kinds (closes the deferred
   corrupt-record hardening); `NoteEvent.kind` is a `Literal`.
 
-Gate: **464 tests, 98% coverage**, all green; CI mirrors it.
+- **PR-D** (branch `feat/pr-d-resource-references`, stacked on PR-C) — resource references: a
+  `Resource` (link/image/file/placeholder) extracted from the capture (organizer; LLM + heuristic),
+  carried as a creation-time field on the note, rendered natively in the note `.md` (`## Resources` +
+  frontmatter `resources:`). The `resource` event kind + attach flow are PR-E. Contract: `SPEC-PR-D.md`.
+
+Gate: **489 tests, 98% coverage**, all green; CI mirrors it.
 
 ## Operational notes for the user's machine
 - Run on **native Windows** (Python 3.12 from python.org, not Anaconda), `--llm --embeddings`, model `llama3.2:3b`.
@@ -86,7 +91,13 @@ CI-merged (the loop used for #36–#42):
    `CaptureResult | StatusUpdateResult | EditResult`; coordinator/gui/cli wired. SPEC-PR-C.md is the
    contract. Gate: **464 tests, 98% cov**. Deferred to **PR-D+**: clearing a field (due→None); a
    "create a new note instead" dialog button when a match is wrong.
-4. **PR-D** resource references (frontmatter `resources:`/`links:`, render Obsidian links/embeds/placeholders; organizer extracts URLs/paths).
+4. **PR-D — resource references (schema + render)** ✅ **DONE** (branch `feat/pr-d-resource-references`,
+   stacked on PR-C): `core/resources.py` (`Resource`/`ResourceKind` link/image/file/placeholder +
+   `extract_resources`); creation-time `resources` field on `ProposedNote`/`Note` (not in the `id`);
+   Heuristic + Ollama organizers extract (LLM `resources` JSON + heuristic fallback; refs sanitized);
+   note_store serializes (old records → `()`); vault renders a `## Resources` section + frontmatter
+   `resources:`. SPEC-PR-D.md. Gate: **489 tests, 98% cov**. Deferred to PR-E: the `resource` **event**
+   kind + `resources_of` + the `grandplan attach` capture-driven attach-to-existing-note flow.
 5. **PR-E** `grandplan attach <path|url>` + capture-driven artifact attach (parse vault → match → attach → mark progress → propagate to related notes).
 6. **PR-F** voice capture (offline STT) behind the `Capturer` port.
 

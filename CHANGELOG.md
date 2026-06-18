@@ -67,6 +67,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   - Hardening: unknown/corrupt `index.jsonl` record kinds are now logged-and-skipped on rehydrate
     instead of silently dropped; `NoteEvent.kind` is a typed `Literal`.
   - Contract: `SPEC-PR-C.md`.
+- **Resource references (PR-D):** a capture's artifacts — external **links**, **images**, local
+  **files**, and **placeholder** expectations ("make a resume website") — are extracted by the
+  organizer (`HeuristicOrganizer` regexes + the `OllamaOrganizer`'s `resources` JSON, with a heuristic
+  fallback and ref sanitization) and carried as a **creation-time field** on the note (never part of
+  the content-addressed `id`). They **render natively in Obsidian**: a `## Resources` section
+  (`[label](url)`, `![[image]]`/`![label](url)`, `[[file]]`, and a visible placeholder) plus a
+  frontmatter `resources:` list. The index serializes them (old records load as empty). The
+  `resource` *event* kind + `resources_of` + the `grandplan attach` flow are PR-E. Contract:
+  `SPEC-PR-D.md`.
 
 ### Changed (connected-vault & enhancement milestone)
 - **Windows-runtime fixes:** create `<vault>/.grandplan/` on first capture (was a `FileNotFoundError`);

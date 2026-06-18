@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 
 from grandplan.core.models import Horizon, NoteType, Original, ProposedNote
+from grandplan.core.resources import extract_resources
 
 _WORD = re.compile(r"[0-9a-z']+")
 _MAX_TITLE = 80
@@ -70,6 +71,7 @@ class HeuristicOrganizer:
             type=_infer_type(text),
             tags=_keywords(text),
             horizon=Horizon.ACTION,
+            resources=extract_resources(text),  # links/files/images/placeholders (PR-D)
         )
 
 

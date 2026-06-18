@@ -82,6 +82,44 @@ def test_read_note_id_round_trips(tmp_path: Path) -> None:
     assert read_note_id(tmp_path / "missing.md") is None
 
 
+# -- PR-D: resource references ------------------------------------------------------------------
+
+
+def _with_resources(*resources: object):  # type: ignore[no-untyped-def]
+    from dataclasses import replace
+
+    return replace(_note(), resources=tuple(resources))
+
+
+def test_resources_render_natively_and_list_in_frontmatter() -> None:
+    from grandplan.core.resources import Resource, ResourceKind
+
+    note = _with_resources(
+        Resource(ResourceKind.LINK, "https://example.com", "site"),
+        Resource(ResourceKind.IMAGE, "https://cdn.x/i.png"),
+        Resource(ResourceKind.IMAGE, "~/pics/a.png"),
+        Resource(ResourceKind.FILE, "/Users/me/plan.pdf"),
+        Resource(ResourceKind.FILE, "notes"),
+        Resource(ResourceKind.PLACEHOLDER, "resume"),
+    )
+    md = render_markdown(note, _original(), ())
+    assert "## Resources" in md
+    assert "- [site](https://example.com)" in md
+    assert "- ![image](https://cdn.x/i.png)" in md  # external image → markdown embed
+    assert "- ![[~/pics/a.png]]" in md  # local image path → Obsidian embed
+    assert "- [/Users/me/plan.pdf](/Users/me/plan.pdf)" in md  # path file → markdown link
+    assert "- [[notes]]" in md  # bare name → wikilink
+    assert "⬜ resume" in md  # placeholder rendered visibly
+    # Frontmatter lists the concrete refs (not placeholders).
+    front = md.split("\n---", 1)[0]
+    assert '"https://example.com"' in front and '"/Users/me/plan.pdf"' in front
+    assert "resume" not in front  # placeholders aren't concrete refs
+
+
+def test_no_resources_section_when_empty() -> None:
+    assert "## Resources" not in render_markdown(_note(), _original(), ())
+
+
 def test_render_preserves_backticks_with_expanded_fence() -> None:
     md = render_markdown(_note(), _original("inline ``` triple backticks ```"), ())
     assert "inline ``` triple backticks ```" in md

@@ -22,6 +22,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from grandplan.core.models import Edge, Note, NoteEvent, NoteStatus, Original
+from grandplan.core.resources import Resource, ResourceKind
 
 _SLUG = re.compile(r"[^0-9a-z]+")
 # Obsidian tag charset: letters, digits, '_', '-', '/'. Everything else is collapsed to '-'.
@@ -80,10 +81,25 @@ def render_markdown(
     wikilinks = _wikilinks(note.id, links, targets or {})
     if wikilinks:
         parts += ["", "## Links", *wikilinks]
+    if note.resources:
+        parts += ["", "## Resources", "", *[_resource_line(r) for r in note.resources]]
     if history:
         parts += ["", "## History", "", *_history_lines(history)]
     parts += ["", "## Source (original)", "", _fenced(original.text)]
     return "\n".join(parts) + "\n"
+
+
+def _resource_line(resource: Resource) -> str:
+    """Render a resource as native Obsidian: a link/embed for URLs, a wikilink/embed for files."""
+    ref = resource.ref
+    if resource.kind is ResourceKind.PLACEHOLDER:
+        return f"- ⬜ {ref} _(placeholder — to be attached)_"
+    is_url = ref.startswith(("http://", "https://"))
+    if resource.kind is ResourceKind.IMAGE:
+        return f"- ![{resource.label or 'image'}]({ref})" if is_url else f"- ![[{ref}]]"
+    if resource.kind is ResourceKind.FILE and not is_url and "/" not in ref and "\\" not in ref:
+        return f"- [[{ref}]]"  # a bare vault name resolves as a wikilink
+    return f"- [{resource.label or ref}]({ref})"  # external link, or a file path as a markdown link
 
 
 def _history_lines(history: tuple[NoteEvent, ...]) -> list[str]:
@@ -118,6 +134,10 @@ def _frontmatter(note: Note, original: Original, status: NoteStatus | None = Non
         fields["contexts"] = list(note.contexts)
     if note.collections:
         fields["collections"] = list(note.collections)
+    # Concrete resource refs (not placeholders) → a queryable frontmatter list (PR-D).
+    concrete = [r.ref for r in note.resources if r.kind is not ResourceKind.PLACEHOLDER]
+    if concrete:
+        fields["resources"] = concrete
     fields["created"] = original.created
     # Flattened so Obsidian's property editor shows clean scalars (not a raw JSON object).
     fields["source_app"] = original.source.app

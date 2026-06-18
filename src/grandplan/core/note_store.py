@@ -28,6 +28,7 @@ from grandplan.core.models import (
     apply_edit,
 )
 from grandplan.core.repository import InMemoryNoteRepository
+from grandplan.core.resources import Resource, ResourceKind
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,7 @@ def _note_to_dict(note: Note) -> dict[str, object]:
         "contexts": list(note.contexts),
         "due": note.due,
         "collections": list(note.collections),
+        "resources": [_resource_to_dict(resource) for resource in note.resources],
     }
 
 
@@ -171,6 +173,20 @@ def _note_from_dict(data: Any) -> Note:
         contexts=tuple(str(c) for c in data.get("contexts", [])),
         due=None if data.get("due") is None else str(data["due"]),
         collections=tuple(str(c) for c in data.get("collections", [])),
+        # Absent in pre-PR-D index records → () (backward compatible).
+        resources=tuple(_resource_from_dict(r) for r in data.get("resources", [])),
+    )
+
+
+def _resource_to_dict(resource: Resource) -> dict[str, object]:
+    return {"kind": resource.kind.value, "ref": resource.ref, "label": resource.label}
+
+
+def _resource_from_dict(data: Any) -> Resource:
+    return Resource(
+        kind=ResourceKind(str(data["kind"])),
+        ref=str(data["ref"]),
+        label=str(data.get("label", "")),
     )
 
 

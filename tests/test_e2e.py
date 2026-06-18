@@ -212,3 +212,25 @@ def test_capture_driven_edit_re_renders_note_and_survives_reopen(tmp_path: Path)
 
     plan = (vault / "Plan.md").read_text(encoding="utf-8")
     assert "## What moved" in plan and "edit: title → bounty hunter" in plan
+
+
+def test_capture_with_a_url_renders_a_resource_link_and_persists(tmp_path: Path) -> None:
+    """PR-D end-to-end: a capture mentioning a URL produces a note whose `.md` renders it in a
+    `## Resources` section, and the resource persists across a reopen + re-projection."""
+    vault = tmp_path / "vault"
+    repo = JsonlNoteRepository(_index(vault))
+    originals = JsonlOriginalStore(_inbox(vault))
+
+    result = approve(
+        _start("check the repo https://github.com/me/proj for the API", repo, originals),
+        repo=repo,
+        vault=MarkdownVaultWriter(vault),
+    )
+    assert not isinstance(result, (StatusUpdateResult, EditResult))  # a real new note
+    note_md = result.path.read_text(encoding="utf-8")
+    assert "## Resources" in note_md
+    assert "[https://github.com/me/proj](https://github.com/me/proj)" in note_md
+
+    write_projections(repo, vault, originals=originals)  # re-render keeps the resource
+    reopened = JsonlNoteRepository(_index(vault)).get_note(result.note.id)
+    assert reopened is not None and reopened.resources  # persisted across the reopen

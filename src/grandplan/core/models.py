@@ -14,6 +14,8 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Literal
 
+from grandplan.core.resources import Resource
+
 
 @dataclass(frozen=True)
 class Source:
@@ -104,6 +106,7 @@ class ProposedNote:
     type: NoteType
     tags: tuple[str, ...] = ()
     horizon: Horizon = Horizon.ACTION
+    resources: tuple[Resource, ...] = ()  # extracted links/files/images/placeholders (PR-D)
 
 
 @dataclass(frozen=True)
@@ -121,6 +124,7 @@ class Note:
     contexts: tuple[str, ...] = ()
     due: str | None = None
     collections: tuple[str, ...] = ()
+    resources: tuple[Resource, ...] = ()  # referenced/expected artifacts (PR-D); not part of the id
 
     @staticmethod
     def from_proposed(proposed: ProposedNote) -> Note:
@@ -135,6 +139,7 @@ class Note:
             type=proposed.type,
             tags=proposed.tags,
             horizon=proposed.horizon,
+            resources=proposed.resources,
         )
 
 

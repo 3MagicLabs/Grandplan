@@ -23,6 +23,7 @@ from collections.abc import Callable
 from grandplan.core.models import NoteType, Original, ProposedNote
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.ports import Organizer
+from grandplan.core.resources import Resource, ResourceKind, extract_resources
 
 logger = logging.getLogger(__name__)
 
@@ -33,15 +34,20 @@ ChatClient = Callable[[str, str], str]
 DEFAULT_MODEL = "llama3.2:3b"
 _MAX_TITLE = 80
 _VALID_TYPES = {note_type.value: note_type for note_type in NoteType}
+_VALID_RESOURCE_KINDS = {kind.value: kind for kind in ResourceKind}
 
 _INSTRUCTION = (
     "You organize a captured note into a clean, self-contained atomic note. "
     'Return ONLY a JSON object with keys: "title" (concise, specific, no quotes), '
     '"type" (one of: ' + ", ".join(_VALID_TYPES) + "), "
-    '"tags" (array of 1-5 short lowercase topical tags), and '
+    '"tags" (array of 1-5 short lowercase topical tags), '
     '"body" (a clean Markdown rewrite: a one-line summary, then the key points as bullets; '
     "you may clarify phrasing, organize structure, and note implied next steps, but DO NOT "
-    "invent facts, names, numbers, or commitments not in the note). "
+    "invent facts, names, numbers, or commitments not in the note), and "
+    '"resources" (array of any referenced artifacts as {"kind": one of '
+    + ", ".join(_VALID_RESOURCE_KINDS)
+    + ', "ref": the URL/path or, for a placeholder, a short description, "label": optional}; '
+    "use 'placeholder' for an artifact the note says should be made but does not exist yet). "
     "Do not echo the original verbatim text — it is preserved separately."
 )
 
@@ -77,7 +83,27 @@ def parse_proposed(raw: str, original: Original) -> ProposedNote:
         body=body,
         type=note_type,
         tags=tags,
+        resources=_parse_resources(data.get("resources"), original.text),
     )
+
+
+def _parse_resources(raw: object, text: str) -> tuple[Resource, ...]:
+    """Validate the model's `resources` array (skipping malformed entries); fall back to the
+    deterministic extractor when the model omits it or returns nothing usable (PR-D)."""
+    parsed: list[Resource] = []
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            kind = _VALID_RESOURCE_KINDS.get(str(item.get("kind", "")).strip().lower())
+            # Collapse all whitespace (incl. newlines) so a model-supplied value can't inject a new
+            # Markdown line/heading into the rendered `## Resources` section.
+            ref = " ".join(str(item.get("ref") or "").split())
+            if kind is None or not ref:
+                continue
+            label = " ".join(str(item.get("label") or "").split())
+            parsed.append(Resource(kind=kind, ref=ref, label=label))
+    return tuple(parsed) if parsed else extract_resources(text)
 
 
 def _first_line(text: str) -> str:

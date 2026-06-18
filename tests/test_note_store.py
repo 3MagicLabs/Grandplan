@@ -11,6 +11,7 @@ from pathlib import Path
 
 from grandplan.core.models import Edge, EdgeKind, Note, NoteEdit, NoteStatus, NoteType
 from grandplan.core.note_store import JsonlNoteRepository
+from grandplan.core.resources import Resource, ResourceKind
 
 
 def _note(note_id: str, title: str) -> Note:
@@ -53,6 +54,35 @@ def test_append_only_and_idempotent(tmp_path: Path) -> None:
     reopened = JsonlNoteRepository(path)
     assert len(reopened.notes()) == 1
     assert len(reopened.edges()) == 1
+
+
+def test_note_resources_round_trip_and_old_records_default_empty(tmp_path: Path) -> None:
+    # PR-D: a note's resources persist and rehydrate; a pre-PR-D record (no key) loads as ().
+    path = tmp_path / "index.jsonl"
+    repo = JsonlNoteRepository(path)
+    note = Note(
+        id="r1",
+        original_id="o",
+        title="With links",
+        body="b",
+        type=NoteType.IDEA,
+        resources=(
+            Resource(ResourceKind.LINK, "https://example.com", "site"),
+            Resource(ResourceKind.PLACEHOLDER, "resume"),
+        ),
+    )
+    repo.add_note(note, (1.0,))
+    assert JsonlNoteRepository(path).get_note("r1") == note  # full round-trip incl. resources
+
+    # A legacy note record without the "resources" key still loads (→ empty), proving back-compat.
+    legacy = path.parent / "legacy.jsonl"
+    legacy.write_text(
+        '{"kind":"note","note":{"id":"x","original_id":"o","title":"t","body":"b",'
+        '"type":"idea","status":"inbox","horizon":"action"},"embedding":[1.0]}\n',
+        encoding="utf-8",
+    )
+    loaded = JsonlNoteRepository(legacy).get_note("x")
+    assert loaded is not None and loaded.resources == ()
 
 
 def test_creates_missing_parent_dir(tmp_path: Path) -> None:

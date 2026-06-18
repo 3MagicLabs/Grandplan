@@ -39,6 +39,20 @@ def test_from_proposed_carries_fields() -> None:
     assert note.horizon is Horizon.ACTION
 
 
+def test_from_proposed_carries_resources_without_changing_the_id() -> None:
+    from grandplan.core.resources import Resource, ResourceKind
+
+    resources = (Resource(ResourceKind.LINK, "https://example.com"),)
+    plain = Note.from_proposed(_proposed())
+    with_res = Note.from_proposed(
+        ProposedNote(
+            original_id="orig", title="Idea", body="body", type=NoteType.IDEA, resources=resources
+        )
+    )
+    assert with_res.resources == resources
+    assert with_res.id == plain.id  # resources are not part of the content-addressed identity
+
+
 def test_edge_is_hashable_and_equal() -> None:
     e1 = Edge("a", "b", EdgeKind.DEPENDS_ON)
     e2 = Edge("a", "b", EdgeKind.DEPENDS_ON)

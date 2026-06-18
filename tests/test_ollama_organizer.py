@@ -37,6 +37,41 @@ def test_parse_unknown_type_defaults_to_idea() -> None:
     assert parse_proposed('{"title": "x", "type": "bogus"}', _original()).type is NoteType.IDEA
 
 
+def test_parse_maps_resources_and_skips_invalid_entries() -> None:
+    from grandplan.core.resources import Resource, ResourceKind
+
+    raw = json.dumps(
+        {
+            "title": "x",
+            "resources": [
+                {"kind": "link", "ref": "https://example.com", "label": "site"},
+                {"kind": "bogus", "ref": "ignored"},  # invalid kind → skipped
+                {"kind": "file", "ref": ""},  # empty ref → skipped
+                "not-an-object",  # malformed entry → skipped
+            ],
+        }
+    )
+    assert parse_proposed(raw, _original()).resources == (
+        Resource(ResourceKind.LINK, "https://example.com", "site"),
+    )
+
+
+def test_resource_ref_newlines_are_stripped_to_prevent_markdown_injection() -> None:
+    raw = json.dumps(
+        {"title": "x", "resources": [{"kind": "link", "ref": "https://x.com\n# evil"}]}
+    )
+    (resource,) = parse_proposed(raw, _original()).resources
+    assert "\n" not in resource.ref
+
+
+def test_absent_resources_falls_back_to_heuristic_extraction() -> None:
+    from grandplan.core.resources import Resource, ResourceKind
+
+    original = _original("ship it — see https://github.com/a/b")
+    note = parse_proposed('{"title": "x"}', original)  # model omitted "resources"
+    assert Resource(ResourceKind.LINK, "https://github.com/a/b") in note.resources
+
+
 def test_parse_invalid_json_raises() -> None:
     with pytest.raises(ValueError, match="."):
         parse_proposed("not json at all", _original())

@@ -30,6 +30,15 @@ def test_body_preserves_stripped_text_and_links_original() -> None:
     assert proposed.original_id == original.id
 
 
+def test_organizer_extracts_resources_from_the_capture() -> None:
+    from grandplan.core.resources import Resource, ResourceKind
+
+    proposed = HeuristicOrganizer().organize(
+        _capture("read the GitHub repo https://github.com/a/b")
+    )
+    assert Resource(ResourceKind.LINK, "https://github.com/a/b") in proposed.resources
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
