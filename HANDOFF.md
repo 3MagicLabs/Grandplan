@@ -14,8 +14,19 @@ The MVP is complete, gated, and running on the user's native-Windows machine. Re
 - **#40** clean note filenames (id → frontmatter/aliases, alias-based links), valid Obsidian tags, richer frontmatter.
 - **#41** index moved OUT of the (OneDrive-)synced vault to `~/.grandplan/<vault>` (`GRANDPLAN_HOME` overridable) + one-time migration.
 - **#42** wired `LlmRelationshipClassifier` into the GUI with two-tier linking (`llm_top_k`).
+- **#43** docs: ADR-0008 (event-sourced "git for ideas" + resources) + this HANDOFF.
+- **#44** PR-A — event-sourced **status** substrate (see the phased plan below): `status` events in
+  `index.jsonl`, `set_status`/`status_of` on both repos, Planner derives status (`Plan.status_by_id`),
+  vault/graph render derived status. Contract: `SPEC-PR-A.md`.
+- **PR-B** (branch `feat/pr-b-capture-driven-status-updates`) — capture-driven status updates: a
+  progress capture ("done: …", "started …", "up next …", "reopen …") is detected as an **update**,
+  matched to the relevant note by embedding similarity, proposed in the review dialog, and on approve
+  appends a `status` event (no duplicate note; original never mutated; raw capture kept in inbox).
+  New `UpdateDetector` port + `HeuristicUpdateDetector` (word-boundary cues → DONE/ACTIVE/NEXT,
+  reopen→ACTIVE) + Ollama `LlmUpdateDetector` (heuristic fallback); `start_review`/`approve` branch
+  to a `StatusUpdate`/`StatusUpdateResult`; coordinator + GUI wired. Contract: `SPEC-PR-B.md`.
 
-Gate: **342 tests, 97% coverage**, all green; CI mirrors it.
+Gate: **402 tests, 97% coverage**, all green; CI mirrors it.
 
 ## Operational notes for the user's machine
 - Run on **native Windows** (Python 3.12 from python.org, not Anaconda), `--llm --embeddings`, model `llama3.2:3b`.
@@ -40,7 +51,19 @@ CI-merged (the loop used for #36–#42):
    a malformed/corrupt `status`/`note`/`edge` record (pre-existing for all kinds) — wrap with
    log-and-skip in a focused hardening PR; (c) `set_status` on an unknown `note_id` stores an orphan
    event — guard once PR-B's match-then-update path exists.
-2. **PR-B** capture-driven status updates (match note → propose → approve → append `status`).
+2. **PR-B — capture-driven status updates** ✅ **DONE** (branch
+   `feat/pr-b-capture-driven-status-updates`): `core/update_detect.py` (`UpdateDetector` port +
+   deterministic `HeuristicUpdateDetector`, word-boundary cue matching → DONE/ACTIVE/NEXT, reopen→
+   ACTIVE); `adapters/llm_update_detector.py` (Ollama-backed, injected client, JSON-validated,
+   heuristic fallback); `app/review.py` gains `StatusUpdate`/`StatusUpdateResult`, `start_review`
+   runs detector+similarity match (`match_threshold` 0.5, idempotent + fail-safe), `approve` branches
+   to `repo.set_status` (no `add_note`, no vault write); `app/coordinator.py` injects the detector and
+   returns `CaptureResult | StatusUpdateResult`; `app/gui.py` wires the detector (LLM under `--llm`,
+   else heuristic) and shows the update in the review dialog. SPEC-PR-B.md is the contract. Gate:
+   **402 tests, 97% cov**, ruff/mypy/bandit green. Deferred to **PR-C** (per the SPEC + PR-A
+   follow-ups): re-render the matched note's `.md` frontmatter on a status event (today the `.md`
+   frontmatter is stale until re-created; Plan.md/graph.json already reflect the new status); a
+   "create a new note instead" button when the match is wrong (today: discard + re-capture).
 3. **PR-C** `edit` events + per-note history + "what moved" digest in `Plan.md`.
 4. **PR-D** resource references (frontmatter `resources:`/`links:`, render Obsidian links/embeds/placeholders; organizer extracts URLs/paths).
 5. **PR-E** `grandplan attach <path|url>` + capture-driven artifact attach (parse vault → match → attach → mark progress → propagate to related notes).

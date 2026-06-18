@@ -30,12 +30,23 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 
-from grandplan.app.review import ReviewState, approve, discard, start_review
+from grandplan.app.review import (
+    PendingReview,
+    ReviewState,
+    StatusUpdateResult,
+    approve,
+    discard,
+    start_review,
+)
 from grandplan.core.models import Source
 from grandplan.core.pipeline import CaptureResult
 from grandplan.core.ports import Capturer, Embedder, NoteRepository, Organizer, VaultWriter
 from grandplan.core.reconcile import Reconciler
 from grandplan.core.store import OriginalStore
+from grandplan.core.update_detect import UpdateDetector
+
+# Either capture outcome: a new note, or a status update to an existing one (PR-B/ADR-0008).
+Committed = CaptureResult | StatusUpdateResult
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +80,27 @@ class CaptureStatus:
 
 ReviewFn = Callable[[ReviewState], bool]
 StatusFn = Callable[[CaptureStatus], None]
-CommitHook = Callable[[CaptureResult], None]
+CommitHook = Callable[[Committed], None]
 Clock = Callable[[], str]
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _committing_detail(pending: PendingReview) -> str:
+    """Human-readable COMMITTING detail: a status update reads differently from a new note."""
+    update = pending.update
+    if update is not None:
+        return f"marking '{update.target.title}' as {update.status.value}"
+    return "saving the note"
+
+
+def _saved_detail(result: Committed) -> str:
+    """Human-readable SAVED detail for either outcome (a status update has no file path)."""
+    if isinstance(result, StatusUpdateResult):
+        return f"{result.target.title} → {result.status.value}"
+    return str(result.path)
 
 
 # A single token meaning "process one capture"; identity is all that matters.
@@ -99,6 +125,7 @@ class CaptureCoordinator:
         clock: Clock = _utc_now_iso,
         on_status: StatusFn | None = None,
         after_commit: CommitHook | None = None,
+        detector: UpdateDetector | None = None,
         max_pending: int = 1,
     ) -> None:
         if max_pending < 1:
@@ -115,6 +142,7 @@ class CaptureCoordinator:
         self._clock = clock
         self._on_status = on_status
         self._after_commit = after_commit
+        self._detector = detector  # PR-B: detect capture-driven status updates (None = off)
         self._queue: queue.Queue[object] = queue.Queue(maxsize=max_pending)
         self._shutdown = threading.Event()
         self._thread: threading.Thread | None = None
@@ -136,11 +164,12 @@ class CaptureCoordinator:
             )
             return False
 
-    def process_one(self, timeout: float | None = None) -> CaptureResult | None:
+    def process_one(self, timeout: float | None = None) -> Committed | None:
         """Process a single queued capture. Blocks up to `timeout` for one to arrive.
 
-        Returns the committed result, or None if nothing was queued / it was discarded / empty /
-        failed. Drives both the worker loop and the (thread-free) unit tests; once `start()` has
+        Returns the committed result (a new note or a status update), or None if nothing was queued
+        / it was discarded / empty / failed. Drives both the worker loop and the (thread-free) unit
+        tests; once `start()` has
         spun the worker, only that worker may call it — concurrent external calls would race a
         second `_process()` over the (non-thread-safe) repo, so they are refused.
         """
@@ -181,7 +210,7 @@ class CaptureCoordinator:
         while not self._shutdown.is_set():
             self.process_one(timeout=_POLL_INTERVAL)
 
-    def _process(self) -> CaptureResult | None:
+    def _process(self) -> Committed | None:
         try:
             self._emit(Stage.CAPTURING, "reading the selection")
             text = self._capturer.capture()
@@ -198,15 +227,16 @@ class CaptureCoordinator:
                 reconciler=self._reconciler,
                 repo=self._repo,
                 originals=self._originals,
+                detector=self._detector,
             )
             self._emit(Stage.AWAITING_REVIEW, pending.state.title)
             if not self._review(pending.state):
                 discard(pending)
                 self._emit(Stage.DISCARDED, "discarded — raw capture kept in the inbox")
                 return None
-            self._emit(Stage.COMMITTING, "saving the note")
+            self._emit(Stage.COMMITTING, _committing_detail(pending))
             result = approve(pending, repo=self._repo, vault=self._vault)
-            self._emit(Stage.SAVED, str(result.path))
+            self._emit(Stage.SAVED, _saved_detail(result))
             self._run_after_commit(result)
             return result
         except Exception as exc:  # noqa: BLE001 - one bad capture must not kill the worker
@@ -216,7 +246,7 @@ class CaptureCoordinator:
         finally:
             self._emit(Stage.IDLE, "ready")
 
-    def _run_after_commit(self, result: CaptureResult) -> None:
+    def _run_after_commit(self, result: Committed) -> None:
         """Run the post-commit hook (e.g. plan/graph re-projection) without failing the save."""
         if self._after_commit is None:
             return

@@ -26,20 +26,21 @@ from pathlib import Path
 
 from grandplan.adapters.capture import make_windows_capturer, run_hotkey_listener
 from grandplan.adapters.llm_reconciler import LlmRelationshipClassifier
+from grandplan.adapters.llm_update_detector import LlmUpdateDetector
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OllamaOrganizer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
-from grandplan.app.coordinator import CaptureCoordinator, CaptureStatus, Stage
+from grandplan.app.coordinator import CaptureCoordinator, CaptureStatus, Committed, Stage
 from grandplan.app.review import ReviewState
 from grandplan.core.embed import HashingEmbedder
 from grandplan.core.index_location import migrate_legacy_index
 from grandplan.core.models import Source
 from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
-from grandplan.core.pipeline import CaptureResult
 from grandplan.core.ports import Embedder, Organizer
 from grandplan.core.project import write_projections
 from grandplan.core.reconcile import SimilarityReconciler
 from grandplan.core.store import JsonlOriginalStore
+from grandplan.core.update_detect import HeuristicUpdateDetector, UpdateDetector
 from grandplan.core.vault import MarkdownVaultWriter
 
 _DEFAULT_HOTKEY = "<ctrl>+<alt>+g"
@@ -74,6 +75,12 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     # (builds_on/refines/supersedes/contradicts); without it, the cosine baseline (relates/duplicate).
     classifier = LlmRelationshipClassifier(model=model) if use_llm else None
     reconciler = SimilarityReconciler(classifier=classifier)
+    # PR-B: recognise progress-update captures ("done: ...", "started ...") so they update the
+    # matched note's status instead of creating a duplicate. The LLM detector judges intent under
+    # --llm (with a heuristic fallback); otherwise the deterministic cue-based baseline.
+    detector: UpdateDetector = (
+        LlmUpdateDetector(model=model) if use_llm else HeuristicUpdateDetector()
+    )
     # Persistent index: rehydrates prior notes/embeddings/edges so a new capture links against
     # the whole vault history, not just this session (SPEC US-5). Kept OUTSIDE the vault so a
     # cloud sync (OneDrive/Dropbox) can't churn/conflict the internal index; migrates any legacy
@@ -126,9 +133,10 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         finally:
             pending_reviews.discard(request)
 
-    def reproject(_result: CaptureResult) -> None:
+    def reproject(_result: Committed) -> None:
         # Refresh the actionable plan + graph so the "grand plan" stays current (runs on the
-        # worker thread, off the UI thread).
+        # worker thread, off the UI thread). A status update re-projects too: a `done` capture
+        # makes its task leave "Now" and unblock dependents (PR-B/ADR-0008).
         write_projections(repo, vault_dir)
 
     coordinator = CaptureCoordinator(
@@ -143,6 +151,7 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         source=Source(app="grandplan", title="capture"),
         on_status=bridge.status_changed.emit,
         after_commit=reproject,
+        detector=detector,
     )
 
     def quit_app() -> None:
@@ -175,6 +184,14 @@ def _show_review(state: ReviewState) -> bool:  # pragma: no cover - Qt dialog
     dialog = QtWidgets.QDialog()
     dialog.setWindowTitle("grandplan — review capture")
     layout = QtWidgets.QVBoxLayout(dialog)
+    if state.is_status_update:
+        # PR-B: this capture is a progress update — approving marks the matched note, not a new note.
+        layout.addWidget(
+            QtWidgets.QLabel(
+                f"<b>Update</b>: mark “{state.update_target_title}” as "
+                f"<b>{state.update_status}</b> (no new note will be created)."
+            )
+        )
     layout.addWidget(QtWidgets.QLabel(f"<b>{state.title}</b>  ({state.note_type})"))
     if state.is_probable_duplicate:
         layout.addWidget(QtWidgets.QLabel("⚠ Looks like a duplicate of an existing note."))

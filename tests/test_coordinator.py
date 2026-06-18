@@ -14,13 +14,15 @@ from pathlib import Path
 import pytest
 
 from grandplan.app.coordinator import CaptureCoordinator, CaptureStatus, Stage
-from grandplan.app.review import ReviewState
+from grandplan.app.review import ReviewState, StatusUpdateResult
 from grandplan.core.embed import HashingEmbedder
-from grandplan.core.models import Source
+from grandplan.core.models import NoteStatus, Source
 from grandplan.core.organize import HeuristicOrganizer
+from grandplan.core.pipeline import CaptureResult
 from grandplan.core.reconcile import SimilarityReconciler
 from grandplan.core.repository import InMemoryNoteRepository
 from grandplan.core.store import InMemoryOriginalStore
+from grandplan.core.update_detect import HeuristicUpdateDetector
 from grandplan.core.vault import MarkdownVaultWriter
 
 _SOURCE = Source(app="grandplan", title="capture")
@@ -52,6 +54,7 @@ def _make(
     review,  # type: ignore[no-untyped-def]
     on_status=None,  # type: ignore[no-untyped-def]
     after_commit=None,  # type: ignore[no-untyped-def]
+    detector=None,  # type: ignore[no-untyped-def]
     max_pending: int = 1,
 ) -> tuple[CaptureCoordinator, InMemoryNoteRepository, InMemoryOriginalStore]:
     repo = InMemoryNoteRepository()
@@ -69,6 +72,7 @@ def _make(
         clock=lambda: "2026-06-16T00:00:00+00:00",
         on_status=on_status,
         after_commit=after_commit,
+        detector=detector,
         max_pending=max_pending,
     )
     return coord, repo, originals
@@ -105,6 +109,37 @@ def test_approve_commits_writes_vault_and_reports_full_stage_sequence(tmp_path: 
         Stage.SAVED,
         Stage.IDLE,
     ]
+
+
+def test_capture_driven_status_update_applies_event_without_new_note(tmp_path: Path) -> None:
+    """PR-B: an update capture matches the existing note and (on approve) flips its derived status
+    via a `status` event — no second note, full stage sequence, after_commit re-projection runs."""
+    statuses: list[CaptureStatus] = []
+    committed: list[object] = []
+    coord, repo, _ = _make(
+        tmp_path,
+        capturer=SeqCapturer(
+            ["build the bug bounty finder tool", "done building the bug bounty finder tool"]
+        ),
+        review=lambda state: True,
+        on_status=statuses.append,
+        after_commit=committed.append,
+        detector=HeuristicUpdateDetector(),
+    )
+
+    coord.submit()
+    first = coord.process_one(timeout=0)
+    coord.submit()
+    second = coord.process_one(timeout=0)
+
+    assert isinstance(first, CaptureResult)
+    assert isinstance(second, StatusUpdateResult)
+    assert repo.status_of(first.note.id) is NoteStatus.DONE  # event-sourced status applied
+    assert len(repo.notes()) == 1  # the update added NO note
+    assert len(committed) == 2  # re-projection ran for the note AND the update
+    stages = _stages(statuses)
+    assert stages[-1] is Stage.IDLE
+    assert stages.count(Stage.SAVED) == 2  # both the create and the update report SAVED
 
 
 def test_discard_writes_nothing_but_keeps_inbox(tmp_path: Path) -> None:

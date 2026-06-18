@@ -10,14 +10,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from grandplan.app.review import approve, start_review
+from grandplan.app.review import StatusUpdateResult, approve, start_review
 from grandplan.core.embed import HashingEmbedder
-from grandplan.core.models import Source
+from grandplan.core.models import NoteStatus, Source
 from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.project import write_projections
 from grandplan.core.reconcile import SimilarityReconciler
 from grandplan.core.store import JsonlOriginalStore
+from grandplan.core.update_detect import HeuristicUpdateDetector
 from grandplan.core.vault import MarkdownVaultWriter
 
 _SOURCE = Source(app="grandplan", title="capture")
@@ -82,3 +83,78 @@ def test_full_pipeline_connects_persists_and_plans(tmp_path: Path) -> None:
     graph = json.loads((vault / "graph.json").read_text(encoding="utf-8"))
     assert len(graph["nodes"]) == 2
     assert len(graph["edges"]) >= 1
+
+
+def _index(vault: Path) -> Path:
+    return vault / ".grandplan" / "index.jsonl"
+
+
+def _inbox(vault: Path) -> Path:
+    return vault / ".grandplan" / "inbox.jsonl"
+
+
+def _start(text: str, repo: JsonlNoteRepository, originals: JsonlOriginalStore, *, detector=None):  # type: ignore[no-untyped-def]
+    return start_review(
+        text,
+        created=_CREATED,
+        source=_SOURCE,
+        organizer=HeuristicOrganizer(),
+        embedder=HashingEmbedder(),
+        reconciler=SimilarityReconciler(),
+        repo=repo,
+        originals=originals,
+        detector=detector,
+    )
+
+
+def test_capture_driven_status_update_survives_reopen_and_reprojects(tmp_path: Path) -> None:
+    """PR-B end-to-end: a later 'done ...' capture matches a seeded task and (on approve) flips its
+    derived status to DONE — event-sourced (no second note), persisted across a reopen, removing the
+    task from Plan.md's "Now"."""
+    vault = tmp_path / "vault"
+    writer = MarkdownVaultWriter(vault)
+
+    # Session 1: seed an actionable task and project it — it shows up under "Now".
+    repo1 = JsonlNoteRepository(_index(vault))
+    originals1 = JsonlOriginalStore(_inbox(vault))
+    first = approve(
+        _start("finish the bug bounty finder tool", repo1, originals1),
+        repo=repo1,
+        vault=writer,
+        link_related=True,
+    )
+    assert not isinstance(first, StatusUpdateResult)  # a real new note
+    write_projections(repo1, vault)
+    now_before = (
+        (vault / "Plan.md")
+        .read_text(encoding="utf-8")
+        .split("## Now", 1)[1]
+        .split("## Blocked", 1)[0]
+    )
+    assert first.note.title in now_before
+
+    # Session 2 (fresh repo rehydrated from disk): a "done" capture matches the task → status update.
+    repo2 = JsonlNoteRepository(_index(vault))
+    originals2 = JsonlOriginalStore(_inbox(vault))
+    pending = _start(
+        "done with the bug bounty finder tool",
+        repo2,
+        originals2,
+        detector=HeuristicUpdateDetector(),
+    )
+    assert pending.update is not None and pending.update.status is NoteStatus.DONE
+    result = approve(pending, repo=repo2, vault=writer)
+    assert isinstance(result, StatusUpdateResult)
+    write_projections(repo2, vault)
+
+    # Session 3 (reopen): the status event persisted; derived status is DONE; still ONE note.
+    repo3 = JsonlNoteRepository(_index(vault))
+    assert len(repo3.notes()) == 1  # the update created no second note (lossless/event-sourced)
+    assert repo3.status_of(first.note.id) is NoteStatus.DONE
+    now_after = (
+        (vault / "Plan.md")
+        .read_text(encoding="utf-8")
+        .split("## Now", 1)[1]
+        .split("## Blocked", 1)[0]
+    )
+    assert first.note.title not in now_after  # the completed task left "Now"

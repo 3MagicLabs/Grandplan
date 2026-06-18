@@ -28,6 +28,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - PySide6 tray GUI (`app.gui.run_app`) + `grandplan gui` subcommand: hotkey → capture → review →
   Save/Discard, bound to the view-model (Qt code is a scaffold, verified on Windows).
 
+### Added (event-sourced "git for ideas" — ADR-0008)
+- **Status event substrate (PR-A, #44):** `index.jsonl` becomes a true event log — a status change
+  is an appended `status` event (`set_status`/`status_of` on both repos, idempotent), current status
+  is **derived** (last-write-wins), and the Planner/vault/graph all read the derived status so the
+  three projections never disagree. The stored note is never mutated (lossless/append-only). Contract:
+  `SPEC-PR-B`'s sibling `SPEC-PR-A.md`.
+- **Capture-driven status updates (PR-B):** a capture that reports progress ("done: built the
+  resume", "started the landing page", "up next …", "reopen …") is recognised as an **update** to the
+  relevant existing note, not a new idea. The flow: detect update-intent → match the note by
+  embedding similarity → propose the status change in the **same review dialog** → on approval append
+  a `status` event and re-project — **no duplicate note, the original never mutated**, the raw capture
+  still kept in the inbox. A `done` update makes the task leave "Now" and unblock its dependents.
+  - `UpdateDetector` port (Strategy): deterministic `HeuristicUpdateDetector` (word-boundary cue
+    matching → DONE/ACTIVE/NEXT, plus `reopen` → ACTIVE) is the offline baseline; an Ollama-backed
+    `LlmUpdateDetector` (injected client, JSON-validated, **heuristic fallback** on any failure)
+    judges intent under `--llm`. Wired into the tray GUI and the `CaptureCoordinator`.
+  - Fail-safe + idempotent: an update is proposed only on a confident single match above threshold
+    and only when it actually changes the derived status; otherwise the normal new-note flow runs.
+  - Contract: `SPEC-PR-B.md`.
+
 ### Changed (connected-vault & enhancement milestone)
 - **Windows-runtime fixes:** create `<vault>/.grandplan/` on first capture (was a `FileNotFoundError`);
   the GUI fails cleanly / degrades on missing optional deps instead of crashing the tray.
