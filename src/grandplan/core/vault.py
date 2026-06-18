@@ -129,7 +129,15 @@ def _frontmatter(note: Note, original: Original, status: NoteStatus | None = Non
     # Planning properties — emitted only when set, to keep frontmatter uncluttered.
     if note.due is not None:
         fields["due"] = note.due
-    fields["tags"] = _sanitize_tags(note.tags)
+    # Structural tags (type/status/horizon) make the note queryable AND let the Obsidian graph
+    # colour nodes by kind (see core.project.write_obsidian_config) — so the graph isn't all one
+    # colour. Prepended to the user's topical tags; nested tags (`type/idea`) are valid in Obsidian.
+    structural = [
+        f"type/{note.type.value}",
+        f"status/{(status or note.status).value}",
+        f"horizon/{note.horizon.value}",
+    ]
+    fields["tags"] = structural + [t for t in _sanitize_tags(note.tags) if t not in structural]
     if note.contexts:
         fields["contexts"] = list(note.contexts)
     if note.collections:
@@ -156,14 +164,13 @@ def _wikilinks(note_id: str, links: tuple[Edge, ...], targets: Mapping[str, Note
         if edge.source_id != note_id:
             continue
         target = targets.get(edge.target_id)
-        # Alias-based link: resolves via the target's `aliases: ["<id>"]` and displays the title,
-        # independent of the (clean) filename.
-        link = (
-            f"[[{edge.target_id}|{target.title}]]"
-            if target is not None
-            else f"[[{edge.target_id}]]"
-        )
-        rendered.append(f"- {edge.kind.value} {link}")
+        # Skip a link whose target note isn't known: a bare `[[<id>]]` can't resolve, so Obsidian
+        # renders it as a phantom node *named by the id* — exactly the "ids as connected notes"
+        # clutter. Better no link than a fake one. Resolved links use the target's `aliases:["<id>"]`
+        # and display the title.
+        if target is None:
+            continue
+        rendered.append(f"- {edge.kind.value} [[{edge.target_id}|{target.title}]]")
     return rendered
 
 

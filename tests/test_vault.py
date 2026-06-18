@@ -126,12 +126,13 @@ def test_render_preserves_backticks_with_expanded_fence() -> None:
     assert "````" in md  # fence expanded beyond the inner run
 
 
-def test_render_includes_links_section() -> None:
+def test_unresolved_link_is_skipped_not_rendered_as_a_phantom() -> None:
+    # A link whose target note isn't known must be DROPPED — a bare [[id]] shows as a phantom
+    # node in Obsidian (the "ids as connected notes" clutter). No target → no Links section.
     edge = Edge("abc123", "target9", EdgeKind.DEPENDS_ON)
     md = render_markdown(_note(), _original(), (edge,))
-    assert "## Links" in md
-    # Without a resolved target, fall back to a bare-id link (still resolvable via alias).
-    assert "depends_on [[target9]]" in md
+    assert "[[target9]]" not in md
+    assert "## Links" not in md
 
 
 def _target() -> Note:

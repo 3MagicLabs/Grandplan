@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 
 from grandplan.core.models import NoteType, Original, ProposedNote
@@ -62,11 +63,23 @@ def build_prompt(text: str, *, strict: bool = False) -> str:
     return f"{_INSTRUCTION}{repair}\n\nNOTE:\n{text}"
 
 
+# A model refusal/apology must not become a note title/body — detect and reject so the caller
+# retries then falls back to the deterministic organizer (which keeps the user's actual text).
+_REFUSAL = re.compile(
+    r"\b(?:i (?:cannot|can't|can not|am unable|'m unable|am sorry|'m sorry|am not able)"
+    r"|as an ai\b|unable to (?:assist|help|comply|provide|fulf[il]l)"
+    r"|cannot (?:assist|help|comply|fulf[il]l|provide))",
+    re.IGNORECASE,
+)
+
+
 def parse_proposed(raw: str, original: Original) -> ProposedNote:
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError("expected a JSON object")
     title = (str(data.get("title") or "").strip() or _first_line(original.text))[:_MAX_TITLE]
+    if _REFUSAL.search(title) or _REFUSAL.search(str(data.get("body") or "")[:120]):
+        raise ValueError("model output looks like a refusal/error, not a note")
     note_type = _VALID_TYPES.get(str(data.get("type", "")).strip().lower(), NoteType.IDEA)
     tags_raw = data.get("tags", [])
     tags = (

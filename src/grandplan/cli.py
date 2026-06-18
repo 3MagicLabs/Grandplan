@@ -152,6 +152,24 @@ def _run_attach(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_rerender(args: argparse.Namespace) -> int:
+    """`grandplan rerender -o <vault>`: re-render every note from the index with the current format —
+    resolves old phantom `[[id]]` links, adds type/status tags, and writes the graph colour config."""
+    vault_dir = Path(args.vault)
+    index_root = migrate_legacy_index(vault_dir)
+    index_path = index_root / "index.jsonl"
+    if not index_path.exists():
+        print(f"no index found for {vault_dir} (nothing to re-render)", file=sys.stderr)
+        return 1
+    repo = JsonlNoteRepository(index_path)
+    originals = JsonlOriginalStore(index_root / "inbox.jsonl")
+    write_projections(repo, vault_dir, originals=originals)
+    print(
+        f"re-rendered {len(repo.notes())} note(s) in {vault_dir} (links resolved, graph coloured)"
+    )
+    return 0
+
+
 def _missing_gui_dependency(args: argparse.Namespace) -> str | None:
     """A user-facing error if a requested optional backend isn't installed (else None).
 
@@ -223,6 +241,11 @@ def main(argv: list[str] | None = None) -> int:
         help="match with sentence-transformer embeddings (use if the vault was built with them)",
     )
 
+    rerender = subparsers.add_parser(
+        "rerender", help="Re-render all notes (fix old links, add tags, colour the graph)."
+    )
+    rerender.add_argument("-o", "--vault", required=True, help="the vault directory")
+
     gui = subparsers.add_parser(
         "gui", help="Launch the tray GUI (Windows; needs the windows,gui extras)."
     )
@@ -238,6 +261,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_gui(args)
     if args.command == "attach":
         return _run_attach(args)
+    if args.command == "rerender":
+        return _run_rerender(args)
     return _run_organize(args)
 
 

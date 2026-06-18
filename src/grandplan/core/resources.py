@@ -20,19 +20,6 @@ _URL = re.compile(r"""https?://[^\s<>"')\]]+""")
 # A local file path: a real path prefix (`/`, `~/`, `./`, `../`, `C:\`) at a token boundary, then a
 # file extension. The leading `(?<!\S)` stops it from biting a slash in the middle of another token.
 _PATH = re.compile(r"""(?<!\S)(?:[A-Za-z]:\\|~?/|\.\.?/)[^\s<>"'\[\]]*\.\w{1,6}""")
-# Creation-intent → a placeholder. The artifact noun follows the verb either directly ("build app")
-# or after an article + up to two adjectives ("create a landing page"). Requiring an *article* before
-# any adjectives is what rejects the "make sure the page loads" idiom ("sure" is not an article).
-_ARTIFACT = (
-    r"doc(?:ument)?|page|site|website|resume|cv|deck|slides?|pdf|report|spreadsheet|sheet|"
-    r"diagram|mockup|design|essay|letter|presentation|paper|plan|proposal|readme|app|script"
-)
-_PLACEHOLDER = re.compile(
-    rf"\b(?:make|create|build|write|draft|design|need)\s+"
-    rf"(?:(?:a|an|the|my|some|new)\s+(?:\w+\s+){{0,2}}?)?"
-    rf"(?P<art>{_ARTIFACT})\b",
-    re.IGNORECASE,
-)
 _URL_TRAILING = ".,;:!?)]}>\"'"
 
 
@@ -83,10 +70,9 @@ def extract_resources(text: str) -> tuple[Resource, ...]:
         ref = match.group(0)
         add(ResourceKind.IMAGE if _is_image(ref) else ResourceKind.FILE, ref)
 
-    placeholder = _PLACEHOLDER.search(masked)
-    if placeholder is not None:
-        add(ResourceKind.PLACEHOLDER, placeholder.group("art").lower())
-
+    # NOTE: heuristic placeholder extraction is intentionally OFF — matching "make/create a <noun>"
+    # over ordinary prose produced noisy, meaningless placeholders. Placeholders now come only from
+    # the LLM organizer (which judges real "artifact-to-be-made" intent) or an explicit attach.
     return tuple(out)
 
 

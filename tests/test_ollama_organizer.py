@@ -37,6 +37,15 @@ def test_parse_unknown_type_defaults_to_idea() -> None:
     assert parse_proposed('{"title": "x", "type": "bogus"}', _original()).type is NoteType.IDEA
 
 
+def test_refusal_output_is_rejected_then_falls_back_to_heuristic() -> None:
+    refusal = json.dumps({"title": "I cannot assist with that request"})
+    with pytest.raises(ValueError, match="refusal"):
+        parse_proposed(refusal, _original())
+
+    note = OllamaOrganizer(chat=lambda m, p: refusal).organize(_original())  # retries → heuristic
+    assert "cannot assist" not in note.title.lower()  # the refusal never became the note
+
+
 def test_parse_maps_resources_and_skips_invalid_entries() -> None:
     from grandplan.core.resources import Resource, ResourceKind
 

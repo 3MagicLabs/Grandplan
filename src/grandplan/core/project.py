@@ -30,6 +30,34 @@ logger = logging.getLogger(__name__)
 # A marker line render_plan() always emits, used to recognise a grandplan-generated Plan.md.
 _PLAN_MARKER = "Generated projection of the knowledge graph"
 
+# Distinct Obsidian graph-node colours per note type, so the graph isn't one undifferentiated
+# colour. Keyed on the `type/<type>` tag the vault writer emits. RGB packed as Obsidian expects.
+_TYPE_COLORS: dict[str, int] = {
+    "goal": 0x9C27B0,  # purple
+    "project": 0x2196F3,  # blue
+    "task": 0x4CAF50,  # green
+    "decision": 0xFF9800,  # orange
+    "question": 0xF44336,  # red
+    "reference": 0x009688,  # teal
+    "entity": 0xE91E63,  # pink
+    "idea": 0x9E9E9E,  # grey
+}
+
+
+def write_obsidian_config(vault_dir: Path) -> Path | None:
+    """Write `.obsidian/graph.json` colouring graph nodes by note type — but NEVER clobber the
+    user's own graph settings (write only if absent). Returns the path written, or None if skipped."""
+    config = vault_dir / ".obsidian" / "graph.json"
+    if config.exists():
+        return None
+    config.parent.mkdir(parents=True, exist_ok=True)
+    groups = [
+        {"query": f"tag:#type/{note_type}", "color": {"a": 1, "rgb": rgb}}
+        for note_type, rgb in _TYPE_COLORS.items()
+    ]
+    config.write_text(json.dumps({"colorGroups": groups}, indent=2), encoding="utf-8")
+    return config
+
 
 def write_projections(
     repo: NoteRepository, vault_dir: Path, *, originals: OriginalStore | None = None
@@ -42,6 +70,7 @@ def write_projections(
     omit it to keep the lighter graph+plan-only behaviour.
     """
     vault_dir.mkdir(parents=True, exist_ok=True)
+    write_obsidian_config(vault_dir)  # colour the graph by type (non-destructive)
     graph_path = export_graph(repo, _safe_target(vault_dir / "graph.json", _is_grandplan_graph))
     plan_path = write_plan(repo, _safe_target(vault_dir / "Plan.md", _is_grandplan_plan))
     if originals is not None:

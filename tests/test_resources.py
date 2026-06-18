@@ -57,22 +57,15 @@ def test_duplicate_references_are_deduped() -> None:
 
 
 @pytest.mark.parametrize(
-    ("text", "ref"),
+    "text",
     [
-        ("I need to make a resume website", "resume"),
-        ("write a report on the launch", "report"),
-        ("create a landing page for the product", "page"),
+        "I need to make a resume website",  # heuristic no longer guesses placeholders from prose
+        "write a report on the launch",
+        "make sure the page loads",
+        "I read a great document yesterday",
     ],
 )
-def test_creation_intent_yields_a_placeholder(text: str, ref: str) -> None:
-    assert extract_resources(text) == (Resource(ResourceKind.PLACEHOLDER, ref),)
-
-
-@pytest.mark.parametrize(
-    "text",
-    ["make sure the page loads", "just a passing thought", "I read a great document yesterday"],
-)
-def test_no_false_placeholder(text: str) -> None:
+def test_prose_does_not_yield_heuristic_placeholders(text: str) -> None:
     assert all(r.kind is not ResourceKind.PLACEHOLDER for r in extract_resources(text))
 
 

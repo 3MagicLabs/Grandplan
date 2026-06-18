@@ -72,6 +72,24 @@ def test_attach_command_reports_no_match(tmp_path: Path, monkeypatch: pytest.Mon
     assert main(["attach", "/tmp/x.pdf", "-o", str(tmp_path / "empty-vault")]) == 1  # no notes
 
 
+def test_rerender_command_resolves_links_and_writes_graph_colours(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    from grandplan.core.embed import HashingEmbedder
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.note_store import JsonlNoteRepository
+
+    vault = tmp_path / "vault"
+    repo = JsonlNoteRepository(migrate_legacy_index(vault) / "index.jsonl")
+    a = Note(id="a1", original_id="oa", title="alpha note", body="b", type=NoteType.TASK)
+    repo.add_note(a, HashingEmbedder().embed("alpha"))
+
+    assert main(["rerender", "-o", str(vault)]) == 0
+    assert (vault / ".obsidian" / "graph.json").exists()  # graph colours written
+    assert main(["rerender", "-o", str(tmp_path / "no-such-vault")]) == 1  # no index → error
+
+
 def test_organize_text_writes_vault_graph_and_plan(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     summary = organize_text(_MESSY, source=_SOURCE, created=_CREATED, vault_dir=vault)
