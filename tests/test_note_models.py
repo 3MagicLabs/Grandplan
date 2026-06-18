@@ -13,6 +13,7 @@ from grandplan.core.models import (
     NoteType,
     ProposedNote,
     apply_edit,
+    default_horizon,
 )
 
 
@@ -51,6 +52,13 @@ def test_from_proposed_carries_resources_without_changing_the_id() -> None:
     )
     assert with_res.resources == resources
     assert with_res.id == plain.id  # resources are not part of the content-addressed identity
+
+
+def test_default_horizon_follows_type() -> None:
+    assert default_horizon(NoteType.GOAL) is Horizon.GOAL
+    assert default_horizon(NoteType.PROJECT) is Horizon.PROJECT
+    assert default_horizon(NoteType.TASK) is Horizon.ACTION
+    assert default_horizon(NoteType.IDEA) is Horizon.ACTION
 
 
 def test_edge_is_hashable_and_equal() -> None:

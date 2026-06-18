@@ -103,7 +103,9 @@ def test_originals_re_render_notes_with_derived_status_edits_and_history(tmp_pat
 
     write_projections(repo, vault, originals=originals)
 
-    note_md = next(p for p in vault.glob("*.md") if p.name != "Plan.md").read_text(encoding="utf-8")
+    note_md = next(
+        p for p in vault.glob("*.md") if p.name not in ("Plan.md", "Masterplan.md")
+    ).read_text(encoding="utf-8")
     assert 'status: "done"' in note_md  # derived status now in the note file (PR-A/B deferred item)
     assert 'due: "2026-09-01"' in note_md  # edited field
     assert "## History" in note_md and "status → done" in note_md and "edit: due" in note_md
@@ -113,7 +115,7 @@ def test_without_originals_notes_are_not_re_rendered(tmp_path: Path) -> None:
     # Back-compatible: omitting `originals` keeps the lighter graph + Plan-only behaviour.
     vault = tmp_path / "vault"
     write_projections(_repo(), vault)  # no originals
-    assert [p.name for p in vault.glob("*.md")] == ["Plan.md"]  # no per-note file written
+    assert sorted(p.name for p in vault.glob("*.md")) == ["Masterplan.md", "Plan.md"]  # no notes
 
 
 def test_title_edit_re_render_leaves_no_orphan_file(tmp_path: Path) -> None:
@@ -128,7 +130,7 @@ def test_title_edit_re_render_leaves_no_orphan_file(tmp_path: Path) -> None:
     write_projections(repo, vault, originals=originals)  # re-render under the new slug
 
     assert not (vault / "do-the-thing.md").exists()  # the stale old-title file was swept
-    notes = sorted(p.name for p in vault.glob("*.md") if p.name != "Plan.md")
+    notes = sorted(p.name for p in vault.glob("*.md") if p.name not in ("Plan.md", "Masterplan.md"))
     assert len(notes) == 1  # exactly one note file — the old-title file was swept, not orphaned
     body = (vault / notes[0]).read_text(encoding="utf-8")
     assert "# Do the renamed thing" in body
@@ -140,7 +142,7 @@ def test_note_without_a_stored_original_is_skipped_not_rendered_lossy(tmp_path: 
     repo = _repo()  # note t1 references original "o1"
     originals = InMemoryOriginalStore()  # ...which is absent here
     write_projections(repo, vault, originals=originals)
-    assert [p.name for p in vault.glob("*.md")] == ["Plan.md"]  # no note file written
+    assert sorted(p.name for p in vault.glob("*.md")) == ["Masterplan.md", "Plan.md"]  # no notes
 
 
 def test_orphan_sweep_never_touches_foreign_files(tmp_path: Path) -> None:

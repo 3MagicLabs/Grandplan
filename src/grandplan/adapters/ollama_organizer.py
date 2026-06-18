@@ -21,7 +21,7 @@ import logging
 import re
 from collections.abc import Callable
 
-from grandplan.core.models import NoteType, Original, ProposedNote
+from grandplan.core.models import NoteType, Original, ProposedNote, default_horizon
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.ports import Organizer
 from grandplan.core.resources import Resource, ResourceKind, extract_resources
@@ -96,6 +96,7 @@ def parse_proposed(raw: str, original: Original) -> ProposedNote:
         body=body,
         type=note_type,
         tags=tags,
+        horizon=default_horizon(note_type),  # goals/projects rise above the action band
         resources=_parse_resources(data.get("resources"), original.text),
     )
 

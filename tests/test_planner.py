@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from grandplan.core.models import Edge, EdgeKind, Horizon, Note, NoteEdit, NoteStatus, NoteType
-from grandplan.core.planner import build_plan, render_plan, write_plan
+from grandplan.core.planner import build_plan, render_masterplan, render_plan, write_plan
 from grandplan.core.repository import InMemoryNoteRepository
 
 
@@ -58,6 +58,20 @@ def test_plan_uses_edited_title_and_lists_what_moved(tmp_path: Path) -> None:
     # Most-recent first: the DONE status event leads, then the edit.
     assert plan.moved[0].startswith("finalize the spec: status → done")
     assert any("edit: title → finalize the spec" in line for line in plan.moved)
+
+
+def test_masterplan_groups_roots_by_horizon_top_down() -> None:
+    repo = _repo(
+        [
+            _note("G", note_type=NoteType.GOAL, horizon=Horizon.GOAL, title="World peace"),
+            _note("P", note_type=NoteType.PROJECT, horizon=Horizon.PROJECT, title="Launch the app"),
+            _note("A", note_type=NoteType.TASK, horizon=Horizon.ACTION, title="Write the tests"),
+        ],
+        [],
+    )
+    md = render_masterplan(build_plan(repo))
+    assert md.index("## Goals") < md.index("## Projects") < md.index("## Actions & ideas")
+    assert "World peace" in md and "Launch the app" in md and "Write the tests" in md
 
 
 def test_no_events_means_no_what_moved_section() -> None:

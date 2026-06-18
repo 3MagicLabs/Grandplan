@@ -152,6 +152,19 @@ class Edge:
     kind: EdgeKind
 
 
+# A note's horizon (altitude) follows from its type: goals and projects sit above the action band,
+# so the plan/masterplan can stratify them (SPEC §11.1) instead of everything being one flat level.
+_TYPE_HORIZON: dict[NoteType, Horizon] = {
+    NoteType.GOAL: Horizon.GOAL,
+    NoteType.PROJECT: Horizon.PROJECT,
+}
+
+
+def default_horizon(note_type: NoteType) -> Horizon:
+    """The horizon a note of `note_type` belongs to (goal → Goal, project → Project, else Action)."""
+    return _TYPE_HORIZON.get(note_type, Horizon.ACTION)
+
+
 # Order in which a NoteEdit's set fields are rendered/summarised (stable, deterministic).
 _EDITABLE_FIELDS: tuple[str, ...] = ("title", "body", "tags", "due")
 

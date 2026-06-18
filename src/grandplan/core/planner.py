@@ -217,6 +217,52 @@ def write_plan(repo: NoteRepository, path: Path) -> Path:
     return path
 
 
+# Horizon bands for the masterplan, top (long-term) → bottom (concrete), per SPEC §11.1.
+_HORIZON_BANDS: tuple[tuple[Horizon, str], ...] = (
+    (Horizon.MASTERPLAN, "Masterplan"),
+    (Horizon.GOAL, "Goals"),
+    (Horizon.PROJECT, "Projects"),
+    (Horizon.ACTION, "Actions & ideas"),
+)
+
+_MASTERPLAN_MARKER = "Your knowledge organized by horizon"
+
+
+def render_masterplan(plan: Plan) -> str:
+    """A `Masterplan.md` MOC: top-level notes grouped by horizon (Goal/Project/Action), each with its
+    `part_of` children nested beneath — the stratified view of the whole graph (SPEC §11.1)."""
+    lines = [
+        "# Masterplan",
+        "",
+        f"> {_MASTERPLAN_MARKER} — a projection of the graph (edit the notes, not this file).",
+        "",
+    ]
+    roots_by_horizon: dict[Horizon, list[str]] = {}
+    for (
+        root_id
+    ) in plan.root_ids:  # already sorted by (horizon, title, id); roots = no part_of parent
+        roots_by_horizon.setdefault(plan.by_id[root_id].horizon, []).append(root_id)
+
+    wrote_section = False
+    for horizon, label in _HORIZON_BANDS:
+        ids = roots_by_horizon.get(horizon, ())
+        if not ids:
+            continue
+        wrote_section = True
+        lines += [f"## {label}", ""]
+        for root_id in ids:
+            lines += _render_tree(plan, root_id, 0)
+        lines.append("")
+    if not wrote_section:
+        lines += ["_No notes yet._", ""]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_masterplan(repo: NoteRepository, path: Path) -> Path:
+    path.write_text(render_masterplan(build_plan(repo)), encoding="utf-8")
+    return path
+
+
 def _actionable(note: Note, status: NoteStatus) -> bool:
     # `status` is the derived current status (ADR-0008), not necessarily the note's creation status.
     # NEEDS_REVIEW is excluded: a note flagged by an unresolved contradiction (US-10) must be

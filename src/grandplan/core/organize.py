@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from grandplan.core.models import Horizon, NoteType, Original, ProposedNote
+from grandplan.core.models import NoteType, Original, ProposedNote, default_horizon
 from grandplan.core.resources import extract_resources
 
 _WORD = re.compile(r"[0-9a-z']+")
@@ -64,13 +64,14 @@ class HeuristicOrganizer:
 
     def organize(self, original: Original) -> ProposedNote:
         text = original.text
+        note_type = _infer_type(text)
         return ProposedNote(
             original_id=original.id,
             title=_title(text),
             body=text.strip(),
-            type=_infer_type(text),
+            type=note_type,
             tags=_keywords(text),
-            horizon=Horizon.ACTION,
+            horizon=default_horizon(note_type),  # goals/projects rise above the action band
             resources=extract_resources(text),  # links/files/images/placeholders (PR-D)
         )
 
