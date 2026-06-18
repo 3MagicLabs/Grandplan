@@ -92,14 +92,15 @@ def render_markdown(
 def _resource_line(resource: Resource) -> str:
     """Render a resource as native Obsidian: a link/embed for URLs, a wikilink/embed for files."""
     ref = resource.ref
+    # Resources render as plain Markdown links/embeds — NEVER `[[wikilinks]]`/`![[embeds]]`. A
+    # wikilink to a file that isn't in the vault becomes an unresolved phantom node that clutters
+    # the Obsidian graph (a real bug seen on a live vault); a `[label](ref)` link stays clickable
+    # in the note without ever adding a graph node.
     if resource.kind is ResourceKind.PLACEHOLDER:
         return f"- ⬜ {ref} _(placeholder — to be attached)_"
-    is_url = ref.startswith(("http://", "https://"))
     if resource.kind is ResourceKind.IMAGE:
-        return f"- ![{resource.label or 'image'}]({ref})" if is_url else f"- ![[{ref}]]"
-    if resource.kind is ResourceKind.FILE and not is_url and "/" not in ref and "\\" not in ref:
-        return f"- [[{ref}]]"  # a bare vault name resolves as a wikilink
-    return f"- [{resource.label or ref}]({ref})"  # external link, or a file path as a markdown link
+        return f"- ![{resource.label or 'image'}]({ref})"
+    return f"- [{resource.label or ref}]({ref})"
 
 
 def _history_lines(history: tuple[NoteEvent, ...]) -> list[str]:

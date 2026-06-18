@@ -105,10 +105,11 @@ def test_resources_render_natively_and_list_in_frontmatter() -> None:
     md = render_markdown(note, _original(), ())
     assert "## Resources" in md
     assert "- [site](https://example.com)" in md
-    assert "- ![image](https://cdn.x/i.png)" in md  # external image → markdown embed
-    assert "- ![[~/pics/a.png]]" in md  # local image path → Obsidian embed
-    assert "- [/Users/me/plan.pdf](/Users/me/plan.pdf)" in md  # path file → markdown link
-    assert "- [[notes]]" in md  # bare name → wikilink
+    assert "- ![image](https://cdn.x/i.png)" in md  # markdown embeds, never [[wikilinks]] that
+    assert "- ![image](~/pics/a.png)" in md  # would add phantom nodes to the Obsidian graph
+    assert "- [/Users/me/plan.pdf](/Users/me/plan.pdf)" in md
+    assert "- [notes](notes)" in md  # even a bare name is a plain link, not a graph-polluting [[]]
+    assert "[[" not in md.split("## Resources", 1)[1]  # NO wikilinks anywhere in Resources
     assert "⬜ resume" in md  # placeholder rendered visibly
     # Frontmatter lists the concrete refs (not placeholders).
     front = md.split("\n---", 1)[0]

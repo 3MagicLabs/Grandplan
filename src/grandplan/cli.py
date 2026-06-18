@@ -28,7 +28,7 @@ from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.pipeline import assess, commit, propose
 from grandplan.core.ports import Embedder, Organizer
-from grandplan.core.project import write_projections
+from grandplan.core.project import remove_phantom_link_files, write_projections
 from grandplan.core.reconcile import SimilarityReconciler
 from grandplan.core.repository import InMemoryNoteRepository
 from grandplan.core.store import InMemoryOriginalStore, JsonlOriginalStore
@@ -163,9 +163,11 @@ def _run_rerender(args: argparse.Namespace) -> int:
         return 1
     repo = JsonlNoteRepository(index_path)
     originals = JsonlOriginalStore(index_root / "inbox.jsonl")
+    swept = remove_phantom_link_files(vault_dir)  # empty `<id>.md` stubs from old phantom links
     write_projections(repo, vault_dir, originals=originals)
     print(
-        f"re-rendered {len(repo.notes())} note(s) in {vault_dir} (links resolved, graph coloured)"
+        f"re-rendered {len(repo.notes())} note(s) in {vault_dir} "
+        f"(links resolved, graph coloured, {swept} phantom stub(s) removed)"
     )
     return 0
 
