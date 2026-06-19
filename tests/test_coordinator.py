@@ -354,3 +354,32 @@ def _wait_until(predicate, timeout: float = 5.0) -> None:  # type: ignore[no-unt
 
 # Guard against accidental import-time threading surprises.
 assert threading.active_count() >= 1
+
+
+def test_stop_keeps_worker_reference_when_join_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Robustness: if stop()'s join times out (a stalled worker), the thread ref must be KEPT so a
+    # later start() can't spawn a second worker racing the same non-thread-safe state.
+    import grandplan.app.coordinator as coordinator_module
+
+    monkeypatch.setattr(coordinator_module, "_JOIN_TIMEOUT", 0.05)
+    release = threading.Event()
+
+    def blocking_review(state: ReviewState) -> bool:
+        release.wait(2.0)  # hold the worker inside the review decision
+        return False
+
+    coord, _, _ = _make(
+        tmp_path, capturer=SeqCapturer(["a note to review"]), review=blocking_review
+    )
+    coord.start()
+    assert coord.submit()
+    time.sleep(0.3)  # let the worker reach the blocking review
+
+    coord.stop()  # join times out — the worker is still blocked
+    assert coord._thread is not None  # ref kept → no double-spawn on a later start()
+
+    release.set()  # release the worker so it can finish and observe the shutdown flag
+    coord.stop()
+    assert coord._thread is None  # clean stop now clears the ref

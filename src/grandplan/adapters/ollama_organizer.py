@@ -51,6 +51,11 @@ ChatClient = Callable[[str, str], str]
 # (~2 GB resident) keeps capture memory-safe on modest hardware. Swap in a stronger model with
 # --model on machines with headroom (e.g. qwen2.5:7b ~5 GB, gemma2:9b). All local/offline via Ollama.
 DEFAULT_MODEL = "llama3.2:3b"
+# Hard wall-clock cap (seconds) on ONE local-LLM call. Without it the underlying httpx client has no
+# timeout, so a stalled/loading model pins the capture worker forever and breaks clean shutdown
+# (robustness audit, HIGH). On timeout the call raises → the adapter's except catches it and falls
+# back to the deterministic baseline (or raises OrganizerUnavailable under require=True).
+OLLAMA_TIMEOUT_S = 60.0
 _MAX_TITLE = 80
 _VALID_TYPES = {note_type.value: note_type for note_type in NoteType}
 _VALID_RESOURCE_KINDS = {kind.value: kind for kind in ResourceKind}
@@ -153,7 +158,7 @@ def _ollama_chat(model: str, prompt: str) -> str:  # pragma: no cover - needs a 
         import ollama
     except ImportError as exc:
         raise RuntimeError("ollama not installed; `pip install grandplan[llm]`") from exc
-    response = ollama.chat(
+    response = ollama.Client(timeout=OLLAMA_TIMEOUT_S).chat(
         model=model, messages=[{"role": "user", "content": prompt}], format="json"
     )
     return str(response["message"]["content"])

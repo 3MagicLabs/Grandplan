@@ -216,7 +216,12 @@ class CaptureCoordinator:
         thread = self._thread
         if thread is not None:
             thread.join(timeout=_JOIN_TIMEOUT)
-            self._thread = None
+            # Only release the reference if the worker actually stopped. If the join timed out (e.g. a
+            # stalled LLM call), the thread is still draining the queue — clearing the ref would let a
+            # later start() spawn a SECOND worker racing the same non-thread-safe repo/vault. Keep the
+            # ref so start() sees it alive and refuses to double-spawn (robustness fix).
+            if not thread.is_alive():
+                self._thread = None
 
     # -- internals ------------------------------------------------------------------------------
 

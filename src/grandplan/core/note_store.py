@@ -83,26 +83,29 @@ class JsonlNoteRepository:
         with self._path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+    # Durability invariant (robustness): persist to the JSONL FIRST, then update memory — so a disk
+    # error (full/permission) surfaces as an exception and the in-memory state never diverges from
+    # disk (no phantom note that silently vanishes on the next restart's replay).
     def add_note(self, note: Note, embedding: tuple[float, ...]) -> None:
         if self._mem.get_note(note.id) is not None:
             return  # append-only + idempotent on identical content
-        self._mem.add_note(note, embedding)
         self._append({"kind": "note", "note": _note_to_dict(note), "embedding": list(embedding)})
+        self._mem.add_note(note, embedding)
 
     def add_edge(self, edge: Edge) -> None:
         if edge in self._mem.edges():
             return
-        self._mem.add_edge(edge)
         self._append({"kind": "edge", "edge": _edge_to_dict(edge)})
+        self._mem.add_edge(edge)
 
     def set_status(self, note_id: str, status: NoteStatus, *, at: str | None = None) -> None:
         if self._mem.status_of(note_id) is status:
             return  # no state change → no event (append-only + idempotent, like add_note/add_edge)
-        self._mem.set_status(note_id, status, at=at)
         record: dict[str, object] = {"kind": "status", "note_id": note_id, "status": status.value}
         if at is not None:
             record["at"] = at
         self._append(record)
+        self._mem.set_status(note_id, status, at=at)
 
     def status_of(self, note_id: str) -> NoteStatus | None:
         return self._mem.status_of(note_id)
@@ -111,7 +114,6 @@ class JsonlNoteRepository:
         current = self._mem.current_note(note_id)
         if current is None or apply_edit(current, edit) == current:
             return  # unknown note or no-op → no event (idempotent + orphan-guarded)
-        self._mem.record_edit(note_id, edit, at=at)
         record: dict[str, object] = {
             "kind": "edit",
             "note_id": note_id,
@@ -120,6 +122,7 @@ class JsonlNoteRepository:
         if at is not None:
             record["at"] = at
         self._append(record)
+        self._mem.record_edit(note_id, edit, at=at)
 
     def add_resource(self, note_id: str, resource: Resource, *, at: str | None = None) -> None:
         if self._mem.get_note(note_id) is None:
@@ -128,7 +131,6 @@ class JsonlNoteRepository:
             (r.kind, r.ref) for r in self._mem.resources_of(note_id)
         }:
             return  # already attached → idempotent, no event
-        self._mem.add_resource(note_id, resource, at=at)
         record: dict[str, object] = {
             "kind": "resource",
             "note_id": note_id,
@@ -137,6 +139,7 @@ class JsonlNoteRepository:
         if at is not None:
             record["at"] = at
         self._append(record)
+        self._mem.add_resource(note_id, resource, at=at)
 
     def resources_of(self, note_id: str) -> tuple[Resource, ...]:
         return self._mem.resources_of(note_id)

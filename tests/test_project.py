@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from grandplan.core.models import Note, NoteEdit, NoteStatus, NoteType, Original, Source
 from grandplan.core.project import write_projections
 from grandplan.core.repository import InMemoryNoteRepository
@@ -248,3 +250,21 @@ def test_orphan_sweep_never_touches_foreign_files(tmp_path: Path) -> None:
 
     write_projections(repo, vault, originals=originals)
     assert foreign.read_text(encoding="utf-8") == "# Hand-written, no grandplan id\n"
+
+
+def test_safe_target_bails_out_on_too_many_conflicts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Robustness: an absurd chain of foreign same-named files must raise, never recurse unbounded.
+    import grandplan.core.project as project_module
+
+    monkeypatch.setattr(
+        project_module, "_MAX_DIVERT_DEPTH", 3
+    )  # small limit (avoid OS filename cap)
+    cur = tmp_path / "Plan.md"
+    cur.write_text("foreign", encoding="utf-8")
+    for _ in range(4):
+        cur = cur.with_name(f"{cur.stem}.grandplan{cur.suffix}")
+        cur.write_text("foreign", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="too many conflicting"):
+        project_module._safe_target(tmp_path / "Plan.md", lambda path: False)

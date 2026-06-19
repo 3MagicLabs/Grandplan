@@ -16,7 +16,7 @@ import json
 import logging
 from collections.abc import Callable
 
-from grandplan.adapters.ollama_organizer import DEFAULT_MODEL
+from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OLLAMA_TIMEOUT_S
 from grandplan.core.models import ProposedNote
 from grandplan.core.placement import (
     _DEFAULT_CANDIDATES,
@@ -96,7 +96,7 @@ def _ollama_chat(model: str, prompt: str) -> str:  # pragma: no cover - needs a 
         import ollama
     except ImportError as exc:
         raise RuntimeError("ollama not installed; `pip install grandplan[llm]`") from exc
-    response = ollama.chat(
+    response = ollama.Client(timeout=OLLAMA_TIMEOUT_S).chat(
         model=model, messages=[{"role": "user", "content": prompt}], format="json"
     )
     return str(response["message"]["content"])

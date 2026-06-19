@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from grandplan.core.models import Edge, EdgeKind, Note, NoteEdit, NoteStatus, NoteType
 from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.resources import Resource, ResourceKind
@@ -212,3 +214,19 @@ def test_noop_or_unknown_edit_appends_no_line(tmp_path: Path) -> None:
     repo.record_edit("a1", NoteEdit(title="First"))  # same as current → no-op
     repo.record_edit("ghost", NoteEdit(title="x"))  # unknown note → orphan-guarded
     assert path.read_text(encoding="utf-8") == before
+
+
+def test_disk_write_failure_leaves_no_phantom_in_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Durability (robustness): if the JSONL append fails, the in-memory state must NOT be updated —
+    # otherwise the note looks committed this session but vanishes on the next restart's replay.
+    repo = JsonlNoteRepository(tmp_path / "index.jsonl")
+
+    def boom(record: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(repo, "_append", boom)
+    with pytest.raises(OSError, match="disk full"):
+        repo.add_note(_note("n", "Title"), (1.0,))
+    assert repo.get_note("n") is None  # no phantom: memory only updates after a successful write
