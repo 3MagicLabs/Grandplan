@@ -26,6 +26,7 @@ from grandplan.adapters.ollama_organizer import (
     OllamaOrganizer,
     OrganizerUnavailable,
 )
+from grandplan.adapters.llm_contextual_reconciler import LlmContextualReconciler
 from grandplan.adapters.llm_placer import LlmPlacer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
 from grandplan.core.attach import attach
@@ -39,7 +40,7 @@ from grandplan.core.pipeline import assess, commit, propose
 from grandplan.core.placement import HeuristicPlacer, Placer, record_placement
 from grandplan.core.ports import Embedder, Organizer
 from grandplan.core.project import remove_phantom_link_files, write_projections
-from grandplan.core.reconcile import SimilarityReconciler
+from grandplan.core.reconcile import Reconciler, SimilarityReconciler
 from grandplan.core.report import RunReport, build_run_report, render_report
 from grandplan.core.repository import InMemoryNoteRepository
 from grandplan.core.store import InMemoryOriginalStore, JsonlOriginalStore
@@ -69,18 +70,19 @@ def organize_text(
     organizer: Organizer | None = None,
     embedder: Embedder | None = None,
     placer: Placer | None = None,
+    reconciler: Reconciler | None = None,
 ) -> RunSummary:
     """Run the full core loop over each paragraph of `text` into `vault_dir`.
 
     `placer` (PR-G) proposes structural edges (`part_of`/`depends_on`) for each note against the
-    notes already committed; None = no placement (the default keeps the core tests hermetic — the
-    CLI arg layer supplies the real placer)."""
+    notes already committed; `reconciler` decides how each note relates to existing ones. None for
+    either keeps the deterministic baseline (the CLI arg layer supplies the LLM-backed ones)."""
     active_organizer: Organizer = organizer or HeuristicOrganizer()
     active_embedder: Embedder = embedder or HashingEmbedder()
     originals = InMemoryOriginalStore()
     repo = InMemoryNoteRepository()
     vault = MarkdownVaultWriter(vault_dir)
-    reconciler = SimilarityReconciler()
+    active_reconciler: Reconciler = reconciler or SimilarityReconciler()
 
     committed = 0
     skipped = 0
@@ -88,7 +90,9 @@ def organize_text(
         original, proposed = propose(
             chunk, source, created, organizer=active_organizer, originals=originals
         )
-        assessment = assess(proposed, embedder=active_embedder, repo=repo, reconciler=reconciler)
+        assessment = assess(
+            proposed, embedder=active_embedder, repo=repo, reconciler=active_reconciler
+        )
         if assessment.proposal.is_probable_duplicate:
             skipped += 1
             continue
@@ -156,6 +160,9 @@ def _run_organize(args: argparse.Namespace) -> int:
             organizer=organizer,
             embedder=embedder,
             placer=_make_placer(use_llm, args.model),  # PR-G: structural part_of/depends_on edges
+            reconciler=(
+                LlmContextualReconciler(model=args.model) if use_llm else None
+            ),  # neighborhood-aware relationship classification
         )
     except OrganizerUnavailable as exc:
         print(f"error: {exc}\nnothing was written.", file=sys.stderr)

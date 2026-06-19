@@ -26,7 +26,7 @@ from pathlib import Path
 
 from grandplan.adapters.capture import make_windows_capturer, run_hotkey_listener
 from grandplan.adapters.llm_edit_detector import LlmEditDetector
-from grandplan.adapters.llm_reconciler import LlmRelationshipClassifier
+from grandplan.adapters.llm_contextual_reconciler import LlmContextualReconciler
 from grandplan.adapters.llm_update_detector import LlmUpdateDetector
 from grandplan.adapters.llm_placer import LlmPlacer
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OllamaOrganizer
@@ -43,7 +43,7 @@ from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.placement import HeuristicPlacer, Placer
 from grandplan.core.ports import Embedder, Organizer
 from grandplan.core.project import write_projections
-from grandplan.core.reconcile import SimilarityReconciler
+from grandplan.core.reconcile import Reconciler, SimilarityReconciler
 from grandplan.core.store import JsonlOriginalStore
 from grandplan.core.update_detect import HeuristicUpdateDetector, UpdateDetector
 from grandplan.core.vault import MarkdownVaultWriter
@@ -82,10 +82,12 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         OllamaOrganizer(model=model, require=True) if use_llm else HeuristicOrganizer()
     )
     embedder: Embedder = SentenceTransformerEmbedder() if use_embeddings else HashingEmbedder()
-    # Under --llm, the LLM classifies the top-k most-similar candidates into richer typed links
-    # (builds_on/refines/supersedes/contradicts); without it, the cosine baseline (relates/duplicate).
-    classifier = LlmRelationshipClassifier(model=model) if use_llm else None
-    reconciler = SimilarityReconciler(classifier=classifier)
+    # Under --llm, the LLM reconciles a new capture against the WHOLE most-similar neighborhood in
+    # one call (sees each related note's content + status) → richer typed links
+    # (builds_on/refines/supersedes/contradicts/duplicate); without it, the cosine baseline.
+    reconciler: Reconciler = (
+        LlmContextualReconciler(model=model) if use_llm else SimilarityReconciler()
+    )
     # PR-B: recognise progress-update captures ("done: ...", "started ...") so they update the
     # matched note's status instead of creating a duplicate. The LLM detector judges intent under
     # --llm (with a heuristic fallback); otherwise the deterministic cue-based baseline.
