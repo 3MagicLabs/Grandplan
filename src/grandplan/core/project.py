@@ -51,11 +51,19 @@ _TYPE_COLORS: dict[str, int] = {
 }
 
 
-def write_obsidian_config(vault_dir: Path) -> Path | None:
-    """Colour the Obsidian graph by note type via `.obsidian/graph.json`'s `colorGroups`.
+# Generated MOC / guide files are clutter in the *meaning* graph (they're views, not knowledge), so
+# the default Obsidian graph filter hides them — leaving only real notes and their typed connections.
+_GENERATED_FILES = ("Plan.md", "Masterplan.md", "Timeline.md", "graph.json", "_grandplan-guide.md")
+_GRAPH_FILTER = " ".join(f'-path:"{name}"' for name in _GENERATED_FILES)
 
-    Non-destructive: if the user already has a graph config, only **fill in** its colour groups when
-    they're empty/absent (preserving all their other settings); never overwrite colours they chose.
+
+def write_obsidian_config(vault_dir: Path) -> Path | None:
+    """Colour the graph by note type AND hide generated MOC files, via `.obsidian/graph.json`.
+
+    Colour-by-type makes each node's KIND legible at a glance (goal/project/task/idea/…); the search
+    filter removes the generated views so the graph shows only real notes and their true connections.
+    Non-destructive: only fills in `colorGroups` / `search` when the user hasn't set them — never
+    overwrites their choices.
     """
     config = vault_dir / ".obsidian" / "graph.json"
     groups = [
@@ -67,14 +75,71 @@ def write_obsidian_config(vault_dir: Path) -> Path | None:
             data = json.loads(config.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None  # unreadable/foreign config → leave it alone
-        if not isinstance(data, dict) or data.get("colorGroups"):
-            return None  # the user already set colour groups → respect them
-        data["colorGroups"] = groups  # fill the empty/missing groups, keep everything else
+        if not isinstance(data, dict):
+            return None
+        changed = False
+        if not data.get("colorGroups"):
+            data["colorGroups"] = groups  # fill empty/missing groups, keep everything else
+            changed = True
+        if not data.get("search"):
+            data["search"] = _GRAPH_FILTER  # hide generated files, respect a user-set filter
+            changed = True
+        if not changed:
+            return None  # the user already configured both → respect them
         config.write_text(json.dumps(data, indent=2), encoding="utf-8")
         return config
     config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text(json.dumps({"colorGroups": groups}, indent=2), encoding="utf-8")
+    config.write_text(
+        json.dumps({"colorGroups": groups, "search": _GRAPH_FILTER}, indent=2), encoding="utf-8"
+    )
     return config
+
+
+_GUIDE_MARKER = "grandplan vault guide"
+_GUIDE = f"""# How this vault is organised
+
+> {_GUIDE_MARKER} — for you (or another AI) reading and editing these notes. The vault is plain
+> Markdown, so any tool or agent has full read/write access. Edit notes freely.
+
+**Ownership:** you own each note's **body**; grandplan owns the frontmatter / `## Links` / `## History`
+/ `## Source (original)` blocks. grandplan regenerates those on each save but **never clobbers your
+body text** — so another AI can rewrite a note's body and the edit survives.
+
+## Note anatomy
+- `---` frontmatter: `id` (stable identifier — do not change), `type`
+  (idea|reference|task|project|goal|decision|question|entity), `status`
+  (inbox|next|active|done|needs-review|superseded), `horizon` (masterplan|goal|project|action),
+  `tags` (includes structural `type/…`, `status/…`, `horizon/…` used to colour the graph), optional
+  `due`, `resources`.
+- `# Title`, then the body: a one-line summary, key points, and — for actionable notes — a
+  `## Next steps` section of `- [ ]` checklist items.
+- `## Links`: typed relationships as `[[id|title]]`. `## History`: the note's change log.
+  `## Source (original)`: the verbatim capture — never edit this.
+
+## How to relate notes (another AI)
+Add a typed link line under `## Links`, e.g. `- depends_on [[<id>|<title>]]`. Edge kinds:
+`depends_on`, `blocks`, `waiting_on`, `part_of`, `next`, `relates`, `builds_on`, `refines`,
+`supersedes`, `contradicts`, `involves`. These edges drive the plan, timeline, and graph.
+
+## Generated views (don't hand-edit — they are projections of the notes)
+`Plan.md` (now/blocked), `Timeline.md` (feasible schedule), `Masterplan.md` (by horizon),
+`graph.json` (nodes + typed edges). They are hidden from the Obsidian graph so it shows only real
+notes and their true connections.
+"""
+
+
+def write_guide(vault_dir: Path) -> Path:
+    """Write the agent/human guide describing the vault's conventions (foreign file preserved)."""
+    path = _safe_target(vault_dir / "_grandplan-guide.md", _is_grandplan_guide)
+    path.write_text(_GUIDE, encoding="utf-8")
+    return path
+
+
+def _is_grandplan_guide(path: Path) -> bool:
+    try:
+        return _GUIDE_MARKER in path.read_text(encoding="utf-8")[:2048]
+    except OSError:
+        return False
 
 
 # A bare note-id filename (`<16-hex>.md`) — what Obsidian creates as an empty stub when a user
@@ -100,17 +165,26 @@ def remove_phantom_link_files(vault_dir: Path) -> int:
 
 
 def write_projections(
-    repo: NoteRepository, vault_dir: Path, *, originals: OriginalStore | None = None
+    repo: NoteRepository,
+    vault_dir: Path,
+    *,
+    originals: OriginalStore | None = None,
+    preserve_external_body: bool = True,
 ) -> tuple[Path, Path]:
     """Write `graph.json` + `Plan.md` into `vault_dir`; return their paths. Idempotent.
 
     Foreign same-named files are preserved (output is diverted to a `.grandplan` sibling). When
     `originals` is supplied, each note's `.md` is also **re-rendered from its derived state**
     (PR-C) — derived status + edited fields + per-note history — so the vault reflects progress;
-    omit it to keep the lighter graph+plan-only behaviour.
+    omit it to keep the lighter graph+plan-only behaviour. `preserve_external_body` (option B) keeps
+    a note's on-disk body across re-renders so another AI's edits aren't clobbered; pass False to
+    re-organize from scratch (regenerate).
     """
     vault_dir.mkdir(parents=True, exist_ok=True)
-    write_obsidian_config(vault_dir)  # colour the graph by type (non-destructive)
+    write_obsidian_config(
+        vault_dir
+    )  # colour the graph by type + hide generated files (non-destructive)
+    write_guide(vault_dir)  # the agent/human guide to the vault's conventions
     remove_phantom_link_files(vault_dir)  # sweep empty `<id>.md` stubs from old phantom links
     graph_path = export_graph(repo, _safe_target(vault_dir / "graph.json", _is_grandplan_graph))
     plan_path = write_plan(repo, _safe_target(vault_dir / "Plan.md", _is_grandplan_plan))
@@ -119,12 +193,16 @@ def write_projections(
     # The Timeline (feasible execution order from the dependency DAG + due dates).
     write_timeline(repo, _safe_target(vault_dir / "Timeline.md", _is_grandplan_timeline))
     if originals is not None:
-        write_notes(repo, originals, vault_dir)
+        write_notes(repo, originals, vault_dir, preserve_external_body=preserve_external_body)
     return graph_path, plan_path
 
 
 def write_notes(
-    repo: NoteRepository, originals: OriginalStore, vault_dir: Path
+    repo: NoteRepository,
+    originals: OriginalStore,
+    vault_dir: Path,
+    *,
+    preserve_external_body: bool = True,
 ) -> tuple[Path, ...]:
     """Re-render every note's `.md` from its *derived* state (PR-C); return the paths written.
 
@@ -154,7 +232,12 @@ def write_notes(
         # `note` is already the derived current note (its `.status` is the derived status), so the
         # writer's default `status=None` correctly renders the current status — no override needed.
         written[note.id] = writer.write(
-            note, original, links, targets=targets, history=repo.history_of(note.id)
+            note,
+            original,
+            links,
+            targets=targets,
+            history=repo.history_of(note.id),
+            preserve_body=preserve_external_body,
         )
     _remove_renamed_orphans(vault_dir, written)
     return tuple(written.values())

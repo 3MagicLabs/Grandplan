@@ -50,11 +50,23 @@ class MarkdownVaultWriter:
         targets: Mapping[str, Note] | None = None,
         status: NoteStatus | None = None,
         history: tuple[NoteEvent, ...] = (),
+        preserve_body: bool = False,
     ) -> Path:
         self._dir.mkdir(parents=True, exist_ok=True)
         path = self._dir / f"{self._unique_stem(note)}.md"
+        # Ownership split (option B): grandplan owns the frontmatter / Links / History / Source blocks;
+        # the BODY belongs to whoever edits the file (the user or another AI). On a re-render we keep
+        # the on-disk body so an external edit is never clobbered; a fresh note (or a re-organize that
+        # opts out) uses the note's own body.
+        body_override = extract_body(path) if preserve_body and path.exists() else None
         markdown = render_markdown(
-            note, original, links, targets=targets, status=status, history=history
+            note,
+            original,
+            links,
+            targets=targets,
+            status=status,
+            history=history,
+            body_override=body_override,
         )
         path.write_text(markdown, encoding="utf-8")
         return path
@@ -68,6 +80,36 @@ class MarkdownVaultWriter:
         return f"{base}-{note.id[:6]}"  # a different note has this slug → never clobber it
 
 
+# The grandplan-managed section headings, in render order. Everything BEFORE the first of these
+# (after the `# title`) is the agent/user-owned body; these blocks are always regenerated.
+_MANAGED_HEADINGS: tuple[str, ...] = (
+    "## Links",
+    "## Resources",
+    "## History",
+    "## Source (original)",
+)
+
+
+def extract_body(path: Path) -> str | None:
+    """The on-disk body of a note file: the text between the `# title` and the first managed section.
+
+    Used to preserve an externally-edited body across re-renders (option B). Returns None if the file
+    can't be read or has no recognisable structure (then the caller falls back to the note's body).
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    lines = text.splitlines()
+    start = next((i + 1 for i, line in enumerate(lines) if line.startswith("# ")), None)
+    if start is None:
+        return None  # no H1 title → unrecognised; don't risk a wrong body
+    end = next(
+        (i for i in range(start, len(lines)) if lines[i].rstrip() in _MANAGED_HEADINGS), len(lines)
+    )
+    return "\n".join(lines[start:end]).strip()
+
+
 def render_markdown(
     note: Note,
     original: Original,
@@ -76,8 +118,10 @@ def render_markdown(
     targets: Mapping[str, Note] | None = None,
     status: NoteStatus | None = None,
     history: tuple[NoteEvent, ...] = (),
+    body_override: str | None = None,
 ) -> str:
-    parts = [_frontmatter(note, original, status), "", f"# {note.title}", "", note.body.strip()]
+    body = (body_override if body_override is not None else note.body).strip()
+    parts = [_frontmatter(note, original, status), "", f"# {note.title}", "", body]
     wikilinks = _wikilinks(note.id, links, targets or {})
     if wikilinks:
         parts += ["", "## Links", *wikilinks]

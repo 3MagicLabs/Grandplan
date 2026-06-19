@@ -299,7 +299,13 @@ def _run_regenerate(args: argparse.Namespace) -> int:
     temp_path.replace(index_path)
     # Re-render every note + the projections from the fresh index (resolves links, colours the graph).
     remove_phantom_link_files(vault_dir)
-    write_projections(JsonlNoteRepository(index_path), vault_dir, originals=originals)
+    # regenerate re-organizes from scratch, so it deliberately REPLACES note bodies (no preserve).
+    write_projections(
+        JsonlNoteRepository(index_path),
+        vault_dir,
+        originals=originals,
+        preserve_external_body=False,
+    )
     print(
         f"regenerated {committed} note(s) from {len(originals.all())} original(s); "
         f"skipped {skipped} duplicate(s). Old index → index.jsonl.bak"

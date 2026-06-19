@@ -15,7 +15,12 @@ from grandplan.core.models import (
     Original,
     Source,
 )
-from grandplan.core.vault import MarkdownVaultWriter, read_note_id, render_markdown
+from grandplan.core.vault import (
+    MarkdownVaultWriter,
+    extract_body,
+    read_note_id,
+    render_markdown,
+)
 
 
 def _note() -> Note:
@@ -27,6 +32,53 @@ def _note() -> Note:
         type=NoteType.TASK,
         tags=("project",),
     )
+
+
+def _orig() -> Original:
+    return Original(
+        id="o1", text="raw capture", source=Source(app="x"), created="2026-06-17T00:00:00Z"
+    )
+
+
+def test_extract_body_returns_owned_body_excluding_managed_sections(tmp_path: Path) -> None:
+    # A note with a body that itself contains a `## Next steps` heading (which is NOT managed).
+    note = Note(
+        id="abc123",
+        original_id="o1",
+        title="Ship it",
+        body="Summary line.\n\n## Next steps\n- [ ] do A\n- [ ] do B",
+        type=NoteType.TASK,
+        tags=("x",),
+    )
+    path = MarkdownVaultWriter(tmp_path).write(note, _orig(), ())
+    body = extract_body(path)
+    assert body is not None
+    assert "## Next steps" in body and "- [ ] do A" in body  # body kept whole
+    assert "## Source" not in body and "raw capture" not in body  # managed sections excluded
+
+
+def test_preserve_body_keeps_external_edits_across_rerender(tmp_path: Path) -> None:
+    # Option B: another AI rewrites the body on disk; a re-render must NOT clobber it.
+    writer = MarkdownVaultWriter(tmp_path)
+    note = _note()
+    path = writer.write(note, _orig(), ())
+    edited = path.read_text(encoding="utf-8").replace("do the thing", "AGENT-REWROTE-THIS")
+    path.write_text(edited, encoding="utf-8")
+
+    writer.write(note, _orig(), (), preserve_body=True)  # re-render preserving the external body
+    assert "AGENT-REWROTE-THIS" in path.read_text(encoding="utf-8")
+
+    writer.write(
+        note, _orig(), (), preserve_body=False
+    )  # opt out (regenerate) → note body restored
+    assert "do the thing" in path.read_text(encoding="utf-8")
+    assert "AGENT-REWROTE-THIS" not in path.read_text(encoding="utf-8")
+
+
+def test_render_markdown_body_override() -> None:
+    out = render_markdown(_note(), _orig(), (), body_override="OVERRIDDEN BODY")
+    assert "OVERRIDDEN BODY" in out
+    assert "do the thing" not in out
 
 
 def _original(text: str = "verbatim original text") -> Original:

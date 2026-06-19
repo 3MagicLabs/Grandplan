@@ -34,6 +34,44 @@ def test_write_projections_writes_graph_and_plan(tmp_path: Path) -> None:
     assert "- [ ] Do the thing" in plan
 
 
+def test_graph_config_hides_generated_files_and_colours_by_type(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    write_projections(_repo(), vault)
+    config = json.loads((vault / ".obsidian" / "graph.json").read_text(encoding="utf-8"))
+    assert config["colorGroups"]  # coloured by type
+    assert (
+        "-path:" in config["search"] and "Timeline.md" in config["search"]
+    )  # generated files hidden
+
+
+def test_guide_note_is_written(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    write_projections(_repo(), vault)
+    guide = (vault / "_grandplan-guide.md").read_text(encoding="utf-8")
+    assert "grandplan vault guide" in guide
+    assert "depends_on" in guide and "own each note's" in guide  # documents edges + body ownership
+
+
+def test_external_body_edit_survives_reprojection(tmp_path: Path) -> None:
+    # End-to-end option B: edit a note body on disk, re-project, body preserved.
+    vault = tmp_path / "vault"
+    repo, originals = _repo(), InMemoryOriginalStore()
+    originals.add(_original())
+    write_projections(repo, vault, originals=originals)
+    note_file = next(p for p in vault.glob("*.md") if read_id(p) == "t1")
+    note_file.write_text(
+        note_file.read_text(encoding="utf-8").replace("\nb\n", "\nAGENT EDIT\n"), encoding="utf-8"
+    )
+    write_projections(repo, vault, originals=originals)  # default preserves external body
+    assert "AGENT EDIT" in note_file.read_text(encoding="utf-8")
+
+
+def read_id(path: Path) -> str | None:
+    from grandplan.core.vault import read_note_id
+
+    return read_note_id(path)
+
+
 def test_write_projections_creates_missing_vault_dir(tmp_path: Path) -> None:
     target = tmp_path / "nested" / "vault"
     write_projections(_repo(), target)
@@ -104,7 +142,9 @@ def test_originals_re_render_notes_with_derived_status_edits_and_history(tmp_pat
     write_projections(repo, vault, originals=originals)
 
     note_md = next(
-        p for p in vault.glob("*.md") if p.name not in ("Plan.md", "Masterplan.md", "Timeline.md")
+        p
+        for p in vault.glob("*.md")
+        if p.name not in ("Plan.md", "Masterplan.md", "Timeline.md", "_grandplan-guide.md")
     ).read_text(encoding="utf-8")
     assert 'status: "done"' in note_md  # derived status now in the note file (PR-A/B deferred item)
     assert 'due: "2026-09-01"' in note_md  # edited field
@@ -119,7 +159,8 @@ def test_without_originals_notes_are_not_re_rendered(tmp_path: Path) -> None:
         "Masterplan.md",
         "Plan.md",
         "Timeline.md",
-    ]  # no notes
+        "_grandplan-guide.md",
+    ]  # only generated files, no notes
 
 
 def test_title_edit_re_render_leaves_no_orphan_file(tmp_path: Path) -> None:
@@ -137,7 +178,7 @@ def test_title_edit_re_render_leaves_no_orphan_file(tmp_path: Path) -> None:
     notes = sorted(
         p.name
         for p in vault.glob("*.md")
-        if p.name not in ("Plan.md", "Masterplan.md", "Timeline.md")
+        if p.name not in ("Plan.md", "Masterplan.md", "Timeline.md", "_grandplan-guide.md")
     )
     assert len(notes) == 1  # exactly one note file — the old-title file was swept, not orphaned
     body = (vault / notes[0]).read_text(encoding="utf-8")
@@ -154,7 +195,8 @@ def test_note_without_a_stored_original_is_skipped_not_rendered_lossy(tmp_path: 
         "Masterplan.md",
         "Plan.md",
         "Timeline.md",
-    ]  # no notes
+        "_grandplan-guide.md",
+    ]  # only generated files, no notes
 
 
 def test_graph_colours_fill_empty_groups_but_respect_user_groups(tmp_path: Path) -> None:
