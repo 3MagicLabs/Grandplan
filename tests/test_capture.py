@@ -63,3 +63,28 @@ def test_uia_none_falls_back_to_clipboard() -> None:
 
     assert ClipboardCapturer(fake, uia=uia).capture() == "clip selection"
     assert fake.copies == 1
+
+
+def test_no_fresh_selection_never_captures_stale_clipboard() -> None:
+    # Regression: a background process left content on the clipboard and the user highlighted nothing,
+    # so Ctrl+C is a no-op and leaves the clipboard UNCHANGED. We must return None — never the stale
+    # content the user didn't select (the real-world "it captured a background command" bug).
+    class NoSelectionClipboard:
+        """Ctrl+C copies nothing (no selection), so it leaves the clipboard exactly as it was."""
+
+        def __init__(self, content: str) -> None:
+            self.clipboard: str | None = content
+            self.copies = 0
+
+        def read(self) -> str | None:
+            return self.clipboard
+
+        def write(self, text: str) -> None:
+            self.clipboard = text
+
+        def send_copy(self) -> None:
+            self.copies += 1  # no selection → does NOT change the clipboard
+
+    fake = NoSelectionClipboard("STALE BACKGROUND COMMAND")
+    assert ClipboardCapturer(fake).capture() is None  # not the stale content
+    assert fake.clipboard == "STALE BACKGROUND COMMAND"  # prior clipboard restored

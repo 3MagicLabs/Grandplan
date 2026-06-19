@@ -1,8 +1,10 @@
 """Windows selection capture (issue #6) — conforms to the `Capturer` port.
 
-Universal method: save the clipboard → send Ctrl+C → read the selection → **restore** the prior
-clipboard (so we never clobber it). An optional Windows UI Automation probe is tried first — it
-reads the selection directly without touching the clipboard. The clipboard/keyboard backend is
+Universal method: save the clipboard → **clear it** → send Ctrl+C → read the *fresh* selection
+(still empty ⇒ nothing was highlighted, so we capture nothing rather than whatever a background
+process last left on the clipboard) → **restore** the prior clipboard (so we never clobber it). An
+optional Windows UI Automation probe is tried first — it reads the current selection directly from
+the focused control without touching the clipboard at all. The clipboard/keyboard backend is
 injected, so the save/restore/fallback LOGIC is unit-tested here; the real backend
 (pyperclip + pynput + uiautomation) is lazily imported and integration-tested on Windows
 (`pip install grandplan[windows]`).
@@ -10,8 +12,11 @@ injected, so the save/restore/fallback LOGIC is unit-tested here; the real backe
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Protocol
+
+logger = logging.getLogger(__name__)
 
 SelectionProbe = Callable[[], str | None]
 
@@ -34,14 +39,23 @@ class ClipboardCapturer:
         self._uia = uia
 
     def capture(self) -> str | None:
+        # 1) Prefer UI Automation: it reads the CURRENT selection straight from the focused control,
+        #    never touching the clipboard — so it can't pick up stale or background-written content.
         if self._uia is not None:
             selected = self._uia()
             if selected and selected.strip():
                 return selected
+        # 2) Clipboard fallback. CLEAR the clipboard first, THEN copy: if the user has nothing
+        #    highlighted (or Ctrl+C is a no-op, e.g. a terminal where it means SIGINT), the clipboard
+        #    stays empty and we return None — instead of returning whatever a background process last
+        #    left on the clipboard. Only a real Ctrl+C of the current selection re-populates it.
         previous = self._backend.read()
+        self._backend.write(
+            ""
+        )  # clear so "no fresh selection" is distinguishable from stale content
         self._backend.send_copy()
         selected = self._backend.read()
-        self._backend.write(previous if previous is not None else "")
+        self._backend.write(previous if previous is not None else "")  # restore prior clipboard
         if selected and selected.strip():
             return selected
         return None
@@ -87,7 +101,8 @@ def _uia_selection() -> str | None:  # pragma: no cover - needs Windows UI Autom
         ranges = pattern.GetSelection()
         text = "".join(text_range.GetText(-1) for text_range in ranges) if ranges else ""
         return text or None
-    except Exception:
+    except Exception:  # noqa: BLE001 - UIA can fail many ways; fall back to clipboard, but log why
+        logger.debug("UIA selection probe failed; falling back to clipboard capture", exc_info=True)
         return None
 
 
