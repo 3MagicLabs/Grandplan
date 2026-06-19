@@ -53,6 +53,8 @@ class ReviewState:
     is_edit: bool = False
     edit_target_title: str = ""
     edit_summary: str = ""  # human-readable, e.g. "due → Q3; title → CV"
+    # Slice B: status changes this new note implies for EXISTING related notes, applied on approval.
+    proposed_updates: tuple[tuple[str, str], ...] = ()  # (existing note title, new status value)
 
 
 @dataclass(frozen=True)
@@ -170,6 +172,13 @@ def start_review(
         for candidate in proposal.candidates
         if candidate.relationship is not Relationship.DUPLICATE
     )
+    # Slice B: status changes this new note implies for existing notes — shown in the dialog and
+    # applied on approve. Only when it's a NEW note (a status/edit-update capture doesn't add edges).
+    proposed_updates = (
+        tuple((note.title, status.value) for note, status in proposal.status_changes())
+        if update is None and edit is None
+        else ()
+    )
     state = ReviewState(
         original_text=original.text,
         title=proposed.title,
@@ -185,6 +194,7 @@ def start_review(
         is_edit=edit is not None,
         edit_target_title=edit.target.title if edit is not None else "",
         edit_summary=edit.summary() if edit is not None else "",
+        proposed_updates=proposed_updates,
     )
     return PendingReview(
         original=original,
@@ -302,6 +312,11 @@ def approve(
     )
     # PR-G: record the proposed structural edges (part_of/depends_on) after the note exists.
     record_placement(repo, pending.placement, result.note.id)
+    # Slice B: apply the status changes this new note implies for EXISTING related notes — append-only
+    # `status` events (the existing notes are never mutated), idempotent, stamped with the capture's
+    # `created`. The human already approved them by approving this review.
+    for note, new_status in proposal.status_changes():
+        repo.set_status(note.id, new_status, at=occurred)
     return result
 
 

@@ -304,6 +304,11 @@ def _show_review(state: ReviewState) -> bool:  # pragma: no cover - Qt dialog
     if state.links:
         summary = ", ".join(f"{relationship} {title}" for relationship, title in state.links)
         layout.addWidget(QtWidgets.QLabel("Relationships: " + summary))
+    if state.proposed_updates:
+        updates = ", ".join(f"“{title}” → {status}" for title, status in state.proposed_updates)
+        label = QtWidgets.QLabel("Also updating on save: " + updates)
+        label.setWordWrap(True)
+        layout.addWidget(label)
     layout.addWidget(QtWidgets.QLabel("Original (preserved verbatim):"))
     original = QtWidgets.QPlainTextEdit(state.original_text)
     original.setReadOnly(True)

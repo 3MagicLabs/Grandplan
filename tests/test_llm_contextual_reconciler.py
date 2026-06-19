@@ -6,8 +6,9 @@ from grandplan.adapters.llm_contextual_reconciler import (
     LlmContextualReconciler,
     build_reconcile_prompt,
     parse_relationships,
+    parse_status_changes,
 )
-from grandplan.core.models import Note, NoteType, ProposedNote
+from grandplan.core.models import Note, NoteStatus, NoteType, ProposedNote
 from grandplan.core.reconcile import Relationship
 from grandplan.core.repository import InMemoryNoteRepository
 
@@ -77,6 +78,31 @@ def test_reconcile_applies_per_candidate_relationships_in_one_call() -> None:
     assert rels["a"] is Relationship.SUPERSEDES  # supersede drives the old note stale in the plan
     assert rels["b"] is Relationship.RELATED
     assert len(calls) == 1  # the WHOLE neighborhood classified in a single call
+
+
+def test_parse_status_changes_validates_ids_and_statuses() -> None:
+    out = parse_status_changes(
+        '{"relationships": ['
+        '{"id": "a", "status_change": "done"},'
+        '{"id": "x", "status_change": "done"},'  # unknown id → dropped
+        '{"id": "b", "status_change": "bogus"},'  # unknown status → dropped
+        '{"id": "b", "status_change": null}]}',  # null → no change
+        {"a", "b"},
+    )
+    assert out == {"a": NoteStatus.DONE}
+
+
+def test_reconcile_proposes_status_changes_to_existing_notes() -> None:
+    def chat(model: str, prompt: str) -> str:
+        return (
+            '{"relationships": ['
+            '{"id": "a", "relationship": "supersedes", "status_change": "superseded"},'
+            '{"id": "b", "relationship": "related", "status_change": null}]}'
+        )
+
+    proposal = LlmContextualReconciler(chat=chat).reconcile(_proposed(), (1.0, 0.0), _repo())
+    changes = {note.id: status for note, status in proposal.status_changes()}
+    assert changes == {"a": NoteStatus.SUPERSEDED}  # only the note with a real status change
 
 
 def test_falls_back_to_deterministic_reconciler_on_bad_json() -> None:

@@ -22,7 +22,7 @@ import logging
 from collections.abc import Callable
 
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OLLAMA_TIMEOUT_S
-from grandplan.core.models import ProposedNote
+from grandplan.core.models import NoteStatus, ProposedNote
 from grandplan.core.ports import NoteRepository
 from grandplan.core.reconcile import (
     RelatedCandidate,
@@ -36,18 +36,34 @@ logger = logging.getLogger(__name__)
 
 ChatClient = Callable[[str, str], str]
 _VALID = {relationship.value: relationship for relationship in Relationship}
+# Status changes the new note may imply for an EXISTING related note (Slice B). `inbox` excluded —
+# it's the default, not a meaningful change. The user approves every change in the review dialog.
+_STATUS_CHANGES = {
+    status.value: status
+    for status in (
+        NoteStatus.DONE,
+        NoteStatus.ACTIVE,
+        NoteStatus.NEXT,
+        NoteStatus.SUPERSEDED,
+        NoteStatus.NEEDS_REVIEW,
+    )
+}
 _BODY_SNIPPET = 280  # cap each candidate's body in the prompt (CPU-friendly, bounded context)
 
 _INSTRUCTION = (
-    "You decide how a NEW note relates to each EXISTING note in the user's knowledge graph. "
-    "You are given the new note and a numbered list of the most-similar existing notes (with their "
-    "current status). Return ONLY a JSON object "
-    '{"relationships": [{"id": "<existing id>", "relationship": <one of: '
+    "You decide how a NEW note relates to each EXISTING note in the user's knowledge graph, and "
+    "whether the new note implies a STATUS change to any existing note. You are given the new note "
+    "and a numbered list of the most-similar existing notes (with their current status). Return "
+    'ONLY a JSON object {"relationships": [{"id": "<existing id>", "relationship": <one of: '
     + ", ".join(_VALID)
-    + ">}]}. For each existing note, choose: 'duplicate' if it states the same thing; 'supersedes' "
-    "if the new note replaces/obsoletes it; 'refines' if it sharpens or corrects it; 'builds_on' if "
-    "it extends it; 'contradicts' if they genuinely conflict; otherwise 'related'. Use only ids from "
-    "the list; omit a note rather than guess."
+    + '>, "status_change": <one of: '
+    + ", ".join(_STATUS_CHANGES)
+    + ", or null>}]}. relationship: 'duplicate' if same thing; 'supersedes' if the new note "
+    "replaces/obsoletes it; 'refines' if it sharpens/corrects it; 'builds_on' if it extends it; "
+    "'contradicts' if they genuinely conflict; otherwise 'related'. status_change: set it ONLY when "
+    "the new note clearly implies the existing note's status should change (e.g. 'done' if the new "
+    "note completes it, 'superseded' if it obsoletes it, 'needs-review' if it conflicts) — otherwise "
+    "null. Use only ids from the list; omit a note rather than guess."
 )
 
 
@@ -85,6 +101,23 @@ def parse_relationships(raw: str, valid_ids: set[str]) -> dict[str, Relationship
         rel = _VALID.get(str(item.get("relationship", "")).strip().lower())
         if cid in valid_ids and rel is not None:
             out[cid] = rel
+    return out
+
+
+def parse_status_changes(raw: str, valid_ids: set[str]) -> dict[str, NoteStatus]:
+    """Map the model's per-existing-note `status_change` to {id -> NoteStatus} (Slice B), dropping
+    unknown ids / statuses / nulls."""
+    data = json.loads(raw)
+    items = data.get("relationships", []) if isinstance(data, dict) else []
+    out: dict[str, NoteStatus] = {}
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            cid = str(item.get("id", "")).strip()
+            status = _STATUS_CHANGES.get(str(item.get("status_change", "")).strip().lower())
+            if cid in valid_ids and status is not None:
+                out[cid] = status
     return out
 
 
@@ -135,11 +168,11 @@ class LlmContextualReconciler:
             )
             for note, _ in ranked
         ]
+        valid_ids = {cid for cid, *_ in candidates}
         try:
-            relationships = parse_relationships(
-                self._chat(self._model, build_reconcile_prompt(proposed, candidates)),
-                {cid for cid, *_ in candidates},
-            )
+            raw = self._chat(self._model, build_reconcile_prompt(proposed, candidates))
+            relationships = parse_relationships(raw, valid_ids)
+            status_changes = parse_status_changes(raw, valid_ids)  # Slice B
         except Exception as exc:  # noqa: BLE001 - bad JSON, model not pulled, or Ollama not running
             logger.warning("contextual reconcile failed; using similarity fallback: %s", exc)
             return self._fallback.reconcile(proposed, embedding, repo)
@@ -149,6 +182,7 @@ class LlmContextualReconciler:
                     note=note,
                     score=score,
                     relationship=relationships.get(note.id, Relationship.RELATED),
+                    suggested_status=status_changes.get(note.id),
                 )
                 for note, score in ranked
             )

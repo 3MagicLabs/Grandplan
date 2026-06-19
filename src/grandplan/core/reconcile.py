@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
-from grandplan.core.models import EdgeKind, Note, ProposedNote
+from grandplan.core.models import EdgeKind, Note, NoteStatus, ProposedNote
 from grandplan.core.ports import NoteRepository
 
 _DEFAULT_DUPLICATE_THRESHOLD = 0.90
@@ -50,11 +50,17 @@ RELATIONSHIP_EDGE_KIND: dict[Relationship, EdgeKind | None] = {
 
 @dataclass(frozen=True)
 class RelatedCandidate:
-    """An existing note a new capture resembles, with its similarity and classification."""
+    """An existing note a new capture resembles, with its similarity and classification.
+
+    `suggested_status` (Slice B) is a status change the new note implies for THIS existing note
+    (e.g. the capture completes it → `done`, or obsoletes it → `superseded`) — proposed by the
+    context-aware reconciler, surfaced for review, applied append-only on approval. None = no change.
+    """
 
     note: Note
     score: float
     relationship: Relationship
+    suggested_status: NoteStatus | None = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +91,14 @@ class ReconcileProposal:
             if kind is not None:
                 out.append((candidate.note, kind))
         return tuple(out)
+
+    def status_changes(self) -> tuple[tuple[Note, NoteStatus], ...]:
+        """Proposed status changes to EXISTING related notes (Slice B), applied append-only on approval."""
+        return tuple(
+            (candidate.note, candidate.suggested_status)
+            for candidate in self.candidates
+            if candidate.suggested_status is not None
+        )
 
 
 class RelationshipClassifier(Protocol):

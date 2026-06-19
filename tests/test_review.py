@@ -335,3 +335,53 @@ def test_edit_intent_without_match_falls_back_to_new_note(tmp_path: Path) -> Non
     result = approve(pending, repo=repo, vault=vault)
     assert isinstance(result, CaptureResult)
     assert len(repo.notes()) == 2
+
+
+def test_approve_applies_proposed_status_changes_to_existing_notes(tmp_path: Path) -> None:
+    # Slice B: a new note implies an existing related task is done → approving the review applies
+    # that status change to the EXISTING note as an append-only event (the note is never mutated).
+    from grandplan.core.models import Note, NoteType
+    from grandplan.core.reconcile import (
+        ReconcileProposal,
+        Reconciler,
+        RelatedCandidate,
+        Relationship,
+    )
+    from grandplan.core.vault import MarkdownVaultWriter
+
+    repo, originals = InMemoryNoteRepository(), InMemoryOriginalStore()
+    emb = HashingEmbedder()
+    existing = Note(
+        id="task1", original_id="oe", title="Build the API", body="b", type=NoteType.TASK
+    )
+    repo.add_note(existing, emb.embed("build the api"))
+
+    class StubReconciler:  # proposes marking the existing task done
+        def reconcile(self, proposed, embedding, repo) -> ReconcileProposal:  # type: ignore[no-untyped-def]
+            return ReconcileProposal(
+                (
+                    RelatedCandidate(
+                        note=existing,
+                        score=0.9,
+                        relationship=Relationship.RELATED,
+                        suggested_status=NoteStatus.DONE,
+                    ),
+                )
+            )
+
+    reconciler: Reconciler = StubReconciler()
+    pending = start_review(
+        "wrote up the API design now that the build is finished",
+        created=_CREATED,
+        source=_SOURCE,
+        organizer=HeuristicOrganizer(),
+        embedder=emb,
+        reconciler=reconciler,
+        repo=repo,
+        originals=originals,
+    )
+    assert pending.state.proposed_updates == (("Build the API", "done"),)  # surfaced for review
+
+    result = approve(pending, repo=repo, vault=MarkdownVaultWriter(tmp_path / "vault"))
+    assert isinstance(result, CaptureResult)  # the new note was still created
+    assert repo.status_of("task1") is NoteStatus.DONE  # the EXISTING note was updated (append-only)
