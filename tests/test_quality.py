@@ -36,6 +36,39 @@ def test_verbatim_truncated_title_is_flagged() -> None:
     assert any("truncated mid-word" in i for i in issues)
 
 
+def test_actionable_note_without_checklist_is_flagged() -> None:
+    original = _original("ship the analytics dashboard by Friday")
+    note = Note(
+        id="t",
+        original_id="o",
+        title="Ship the analytics dashboard",
+        body="**Summary:** build and release it.",  # enhanced, but no `- [ ]` next steps
+        type=NoteType.TASK,
+        tags=("dashboard",),
+    )
+    issues = note_quality_issues(note, original)
+    assert any("next-step checklist" in i for i in issues)
+
+
+def test_actionable_note_with_checklist_passes() -> None:
+    original = _original("ship the analytics dashboard by Friday")
+    note = Note(
+        id="t",
+        original_id="o",
+        title="Ship the analytics dashboard",
+        body="**Summary:** build it.\n\n## Next steps\n- [ ] wire the API\n- [ ] add charts",
+        type=NoteType.TASK,
+        tags=("dashboard",),
+    )
+    assert note_quality_issues(note, original) == ()
+
+
+def test_idea_note_is_not_required_to_have_a_checklist() -> None:
+    original = _original("an interesting thought about local AI")
+    note = _note(title="Local AI musing", body="**Summary:** worth pondering.", tags=("ai",))
+    assert note_quality_issues(note, original) == ()  # IDEA type → no checklist required
+
+
 def test_unorganized_body_and_missing_tags_are_flagged() -> None:
     raw = "buy milk"
     original = _original(raw)

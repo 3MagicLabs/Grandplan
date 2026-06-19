@@ -60,9 +60,12 @@ _INSTRUCTION = (
     'Return ONLY a JSON object with keys: "title" (concise, specific, no quotes), '
     '"type" (one of: ' + ", ".join(_VALID_TYPES) + "), "
     '"tags" (array of 1-5 short lowercase topical tags), '
-    '"body" (a clean Markdown rewrite: a one-line summary, then the key points as bullets; '
-    "you may clarify phrasing, organize structure, and note implied next steps, but DO NOT "
-    "invent facts, names, numbers, or commitments not in the note), and "
+    '"body" (a clean Markdown rewrite that ENHANCES the note: start with ONE line summarising it, '
+    "then the key points as bullets; and WHEN the note is actionable (a task, project, goal, or "
+    'anything implying work to do) add a "## Next steps" section listing concrete, feasible actions '
+    "as `- [ ]` checklist items — each small enough to act on and ordered logically. Clarify and "
+    "organise the wording, but DO NOT invent facts, names, numbers, or commitments not implied by "
+    "the note), and "
     '"resources" (array of any referenced artifacts as {"kind": one of '
     + ", ".join(_VALID_RESOURCE_KINDS)
     + ', "ref": the URL/path or, for a placeholder, a short description, "label": optional}; '

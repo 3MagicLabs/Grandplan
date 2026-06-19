@@ -9,7 +9,10 @@ offline, deterministic.
 
 from __future__ import annotations
 
-from grandplan.core.models import Note, Original
+from grandplan.core.models import Note, NoteType, Original
+
+# Actionable note types should carry concrete next steps the user (or an agent) can act on.
+_ACTIONABLE_TYPES = frozenset({NoteType.TASK, NoteType.PROJECT, NoteType.GOAL})
 
 # Mirrors the organizers' title cap (organize.py / ollama_organizer.py): a title equal to the
 # original's first line truncated to this length is the heuristic-fallback signature.
@@ -41,6 +44,10 @@ def note_quality_issues(note: Note, original: Original) -> tuple[str, ...]:
     # 4. No topical tags — nothing to group or colour by beyond the structural tags.
     if not note.tags:
         issues.append("no topical tags")
+    # 5. An actionable note (task/project/goal) with no `- [ ]` checklist isn't actually actionable —
+    #    the enhancement step should have produced concrete next steps (RESEARCH §0 "enhance").
+    if note.type in _ACTIONABLE_TYPES and "- [ ]" not in note.body:
+        issues.append("actionable note has no next-step checklist")
     return tuple(issues)
 
 

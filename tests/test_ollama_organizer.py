@@ -26,6 +26,14 @@ def test_build_prompt_includes_text_and_json_instruction() -> None:
     assert "title" in prompt
 
 
+def test_prompt_requires_enhanced_body_with_actionable_next_steps() -> None:
+    # The organizer must ENHANCE and, for actionable notes, ask for `- [ ]` next steps (RESEARCH §0).
+    prompt = build_prompt("finish the report")
+    assert "Next steps" in prompt
+    assert "- [ ]" in prompt
+    assert "ENHANCES" in prompt
+
+
 def test_parse_valid_json_maps_fields_and_keeps_body_verbatim() -> None:
     original = _original()
     note = parse_proposed(

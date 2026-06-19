@@ -42,7 +42,7 @@ def test_report_counts_structural_vs_semantic_edges() -> None:
             id="a",
             original_id="oa",
             title="Goal: ship",
-            body="organized",
+            body="organized\n\n## Next steps\n- [ ] scope the work",
             type=NoteType.GOAL,
             horizon=Horizon.GOAL,
             tags=("ship",),
@@ -50,7 +50,12 @@ def test_report_counts_structural_vs_semantic_edges() -> None:
         "the goal is to ship the product this quarter",
     )
     child = Note(
-        id="b", original_id="ob", title="Task one", body="do it", type=NoteType.TASK, tags=("t",)
+        id="b",
+        original_id="ob",
+        title="Task one",
+        body="do it\n- [ ] start now",
+        type=NoteType.TASK,
+        tags=("t",),
     )
     originals.add(
         Original(

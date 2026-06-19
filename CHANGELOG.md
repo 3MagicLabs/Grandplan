@@ -22,6 +22,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   masterplan/plan now get real hierarchy + dependency sequence instead of only similarity links.
   Append-only (edges only; no note mutated); offline (heuristic pure, LLM localhost-only).
 
+- **Actionable enhancement** — the LLM organizer now ENHANCES each capture and, for actionable
+  notes (task/project/goal), emits a `## Next steps` section with concrete `- [ ]` checklist items
+  (RESEARCH §0 "enhance"). QAS-8 gained a check that flags an actionable note with no next-step
+  checklist, so the report/doctor surface notes that aren't truly actionable.
 - **Agent-operable vault (read) + local MCP server** — `core/query.py` `VaultQuery` exposes the graph
   as JSON (list/get/search notes, plan, masterplan, graph, doctor); `TOOLS`/`dispatch` define + route
   MCP tools (pure, tested). `adapters/mcp_server.py` serves them over **stdio** (`grandplan mcp -o
