@@ -283,6 +283,11 @@ def test_deleted_note_is_not_resurrected_on_reprojection(tmp_path: Path) -> None
 
     assert all(read_id(p) != "t1" for p in vault.glob("*.md"))  # not re-created
     assert repo.current_notes() == ()  # tombstoned → also gone from plan/graph/timeline
+    # The PROJECTIONS must reflect the deletion too — tombstone runs BEFORE they're written, so the
+    # graph has no nodes and the Plan/Timeline don't still list the deleted note (the reported bug).
+    assert json.loads((vault / "graph.json").read_text(encoding="utf-8"))["nodes"] == []
+    assert "Do the thing" not in (vault / "Plan.md").read_text(encoding="utf-8")
+    assert "Do the thing" not in (vault / "Timeline.md").read_text(encoding="utf-8")
 
 
 def test_reconcile_deletions_protects_a_just_committed_note(tmp_path: Path) -> None:

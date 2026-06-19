@@ -183,6 +183,11 @@ def write_projections(
     re-organize from scratch (regenerate).
     """
     vault_dir.mkdir(parents=True, exist_ok=True)
+    # Tombstone user-deleted notes FIRST — before any projection is written — so the graph, Plan,
+    # Masterplan and Timeline all reflect the deletions (otherwise they'd still list the removed
+    # notes, having been written from the pre-tombstone state).
+    if reconcile_deletions and originals is not None:
+        _tombstone_user_deletions(repo, originals, vault_dir, protect_ids)
     write_obsidian_config(
         vault_dir
     )  # colour the graph by type + hide generated files (non-destructive)
@@ -195,14 +200,7 @@ def write_projections(
     # The Timeline (feasible execution order from the dependency DAG + due dates).
     write_timeline(repo, _safe_target(vault_dir / "Timeline.md", _is_grandplan_timeline))
     if originals is not None:
-        write_notes(
-            repo,
-            originals,
-            vault_dir,
-            preserve_external_body=preserve_external_body,
-            reconcile_deletions=reconcile_deletions,
-            protect_ids=protect_ids,
-        )
+        write_notes(repo, originals, vault_dir, preserve_external_body=preserve_external_body)
     return graph_path, plan_path
 
 
@@ -212,8 +210,6 @@ def write_notes(
     vault_dir: Path,
     *,
     preserve_external_body: bool = True,
-    reconcile_deletions: bool = False,
-    protect_ids: frozenset[str] = frozenset(),
 ) -> tuple[Path, ...]:
     """Re-render every note's `.md` from its *derived* state (PR-C); return the paths written.
 
@@ -221,14 +217,9 @@ def write_notes(
     is skipped if its verbatim `Original` is missing (we never write a lossy note). After writing,
     a sweep removes any prior `.md` whose frontmatter `id` belongs to a re-rendered note but sits at
     a different path (a stale file left when a title edit changed the slug) — foreign files (no
-    matching id: `Plan.md`, hand-written notes) are never touched.
-
-    When `reconcile_deletions` is set, a note that is still in the index but whose `.md` the user
-    removed from the vault is **tombstoned** (so it isn't resurrected) — except ids in `protect_ids`
-    (e.g. a note just committed, not yet written). The verbatim Original stays in the inbox (lossless).
+    matching id: `Plan.md`, hand-written notes) are never touched. Deletion reconciliation happens in
+    `write_projections` (before the projections), so by here a deleted note is already tombstoned.
     """
-    if reconcile_deletions:
-        _tombstone_user_deletions(repo, originals, vault_dir, protect_ids)
     writer = MarkdownVaultWriter(vault_dir)
     current = repo.current_notes()
     by_id = {note.id: note for note in current}

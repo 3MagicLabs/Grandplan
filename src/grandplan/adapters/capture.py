@@ -76,13 +76,21 @@ class _WindowsClipboardBackend:  # pragma: no cover - needs Windows + grandplan[
     def send_copy(self) -> None:
         import time
 
+        import pyperclip
         from pynput.keyboard import Controller, Key
 
         keyboard = Controller()
         with keyboard.pressed(Key.ctrl):
             keyboard.press("c")
             keyboard.release("c")
-        time.sleep(0.05)  # let the foreground app populate the clipboard
+        # POLL until the foreground app populates the clipboard, rather than waiting a fixed 50 ms.
+        # The first/cold capture (and slow apps) can take far longer than 50 ms to respond to Ctrl+C;
+        # with the clear-before-copy step that would read an empty clipboard and wrongly report
+        # "nothing selected". When nothing is actually selected, this just polls out and stays empty.
+        for _ in range(30):  # up to ~600 ms
+            time.sleep(0.02)
+            if pyperclip.paste():
+                return
 
 
 def _uia_selection() -> str | None:  # pragma: no cover - needs Windows UI Automation
