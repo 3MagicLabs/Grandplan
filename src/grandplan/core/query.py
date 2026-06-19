@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 from grandplan.core.graph import to_graph
 from grandplan.core.models import Note
-from grandplan.core.planner import Plan, build_plan
+from grandplan.core.planner import Plan, build_plan, build_timeline
 from grandplan.core.ports import Embedder, NoteRepository
 from grandplan.core.report import build_run_report
 from grandplan.core.store import OriginalStore
@@ -83,6 +83,23 @@ class VaultQuery:
     def get_masterplan(self) -> dict[str, object]:
         plan = build_plan(self.repo)
         return {"roots": [self._tree(plan, root_id) for root_id in plan.root_ids]}
+
+    def get_timeline(self) -> dict[str, object]:
+        timeline = build_timeline(self.repo)
+        return {
+            "ready": [self._brief(note) for note in timeline.ready],
+            "waiting": [
+                {
+                    "note": self._brief(item.note),
+                    "blocked_by": [blocker.title for blocker in item.blocked_by],
+                }
+                for item in timeline.waiting
+            ],
+            "scheduled": [
+                {"id": note.id, "title": note.title, "due": note.due} for note in timeline.scheduled
+            ],
+            "conflicts": list(timeline.conflicts),
+        }
 
     def get_graph(self) -> dict[str, object]:
         return to_graph(self.repo)
@@ -169,6 +186,11 @@ TOOLS: tuple[ToolSpec, ...] = (
         "The horizon-stratified hierarchy (goals → projects → actions).",
         _schema({}, []),
     ),
+    ToolSpec(
+        "get_timeline",
+        "Feasible execution order: ready / waiting / scheduled-by-date / conflicts.",
+        _schema({}, []),
+    ),
     ToolSpec("get_graph", "The full JSON knowledge graph: nodes + typed edges.", _schema({}, [])),
     ToolSpec(
         "doctor",
@@ -192,6 +214,8 @@ def dispatch(query: VaultQuery, name: str, arguments: dict[str, object]) -> obje
         return query.get_plan()
     if name == "get_masterplan":
         return query.get_masterplan()
+    if name == "get_timeline":
+        return query.get_timeline()
     if name == "get_graph":
         return query.get_graph()
     if name == "doctor":

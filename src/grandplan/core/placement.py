@@ -34,19 +34,35 @@ _DEFAULT_CANDIDATES = 8  # how many most-similar existing notes a Placer conside
 
 @dataclass(frozen=True)
 class Placement:
-    """How a new note fits the graph: a parent it is part of, and prerequisites it depends on."""
+    """How a new note fits the graph: a parent, prerequisites, what it blocks, and what it waits on.
+
+    All edges are sourced from the new note (new → existing): `part_of` parent, `depends_on`
+    prerequisites (must be done first), `blocks` (existing notes this one holds up), and `waiting_on`
+    (existing notes this one is externally waiting on — a soft dependency for scheduling).
+    """
 
     parent_id: str | None = None
     depends_on: tuple[str, ...] = ()
+    blocks: tuple[str, ...] = ()
+    waiting_on: tuple[str, ...] = ()
 
     def edges(self, note_id: str) -> tuple[Edge, ...]:
-        """The typed structural edges to record for the new note (new → existing)."""
+        """The typed structural edges to record for the new note (new → existing), de-duplicated."""
         out: list[Edge] = []
-        if self.parent_id is not None and self.parent_id != note_id:
+        used: set[str] = {note_id}  # never an edge to itself
+        if self.parent_id is not None and self.parent_id not in used:
             out.append(Edge(note_id, self.parent_id, EdgeKind.PART_OF))
-        for dep in self.depends_on:
-            if dep != note_id and dep != self.parent_id:
-                out.append(Edge(note_id, dep, EdgeKind.DEPENDS_ON))
+            used.add(self.parent_id)
+        # One structural edge per target: depends_on wins over blocks/waiting_on if a model double-lists.
+        for kind, targets in (
+            (EdgeKind.DEPENDS_ON, self.depends_on),
+            (EdgeKind.BLOCKS, self.blocks),
+            (EdgeKind.WAITING_ON, self.waiting_on),
+        ):
+            for target in targets:
+                if target not in used:
+                    out.append(Edge(note_id, target, kind))
+                    used.add(target)
         return tuple(out)
 
 

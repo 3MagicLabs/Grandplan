@@ -263,6 +263,100 @@ def write_masterplan(repo: NoteRepository, path: Path) -> Path:
     return path
 
 
+_TIMELINE_MARKER = "Feasible execution order"
+_FAR_FUTURE = "~"  # sorts after any ISO date, so undated items fall to the end
+
+
+@dataclass(frozen=True)
+class Timeline:
+    """A feasible execution schedule projected from the dependency DAG + due dates (PR: timeline).
+
+    `ready` = actionable + unblocked (do these now); `waiting` = actionable + blocked, with what
+    blocks them; `scheduled` = open actionable notes that carry a due date, in date order;
+    `conflicts` = infeasibilities (a note due before its prerequisite, or a dependency cycle).
+    """
+
+    ready: tuple[Note, ...]
+    waiting: tuple[PlanItem, ...]
+    scheduled: tuple[Note, ...]
+    conflicts: tuple[str, ...]
+
+
+def _due_key(note: Note) -> tuple[str, str]:
+    return (note.due or _FAR_FUTURE, note.title)
+
+
+def build_timeline(repo: NoteRepository) -> Timeline:
+    """Project the graph into a feasible timeline: ready / waiting / scheduled / conflicts."""
+    plan = build_plan(repo)
+    open_actionable = list(plan.now) + [item.note for item in plan.blocked]
+    ready = tuple(sorted(plan.now, key=_due_key))
+    scheduled = tuple(sorted((note for note in open_actionable if note.due), key=_due_key))
+    return Timeline(
+        ready=ready,
+        waiting=plan.blocked,  # already in dependency order, each with its blockers
+        scheduled=scheduled,
+        conflicts=_timeline_conflicts(plan),
+    )
+
+
+def _timeline_conflicts(plan: Plan) -> tuple[str, ...]:
+    """Infeasibilities the user must resolve: due-before-prerequisite, and dependency cycles."""
+    out: list[str] = []
+    for nid, prereqs in plan.deps.items():
+        note = plan.by_id.get(nid)
+        if note is None or not note.due:
+            continue
+        for prereq_id in prereqs:
+            prereq = plan.by_id.get(prereq_id)
+            if prereq is not None and prereq.due and note.due < prereq.due:
+                out.append(
+                    f"{note.title} (due {note.due}) is due before its prerequisite "
+                    f"{prereq.title} (due {prereq.due})"
+                )
+    if plan.cycle:
+        out.append("dependency cycle: " + ", ".join(note.title for note in plan.cycle))
+    return tuple(out)
+
+
+def render_timeline(timeline: Timeline) -> str:
+    lines = [
+        "# Timeline",
+        "",
+        f"> {_TIMELINE_MARKER} — projected from dependencies + due dates. Edit the notes, not this file.",
+        "",
+        "## Ready now",
+        "",
+    ]
+    if timeline.ready:
+        lines += [f"- [ ] {note.title}{_due_suffix(note)}" for note in timeline.ready]
+    else:
+        lines.append("_Nothing is ready — everything is blocked or done._")
+    lines += ["", "## Waiting", ""]
+    if timeline.waiting:
+        for item in timeline.waiting:
+            blockers = ", ".join(blocker.title for blocker in item.blocked_by)
+            lines.append(f"- {item.note.title}{_due_suffix(item.note)} — waiting on: {blockers}")
+    else:
+        lines.append("_Nothing is waiting._")
+    if timeline.scheduled:
+        lines += ["", "## Scheduled by date", ""]
+        lines += [f"- {note.due}: {note.title}" for note in timeline.scheduled]
+    if timeline.conflicts:
+        lines += ["", "## ⚠ Conflicts", ""]
+        lines += [f"- {conflict}" for conflict in timeline.conflicts]
+    return "\n".join(lines) + "\n"
+
+
+def _due_suffix(note: Note) -> str:
+    return f"  (due: {note.due})" if note.due else ""
+
+
+def write_timeline(repo: NoteRepository, path: Path) -> Path:
+    path.write_text(render_timeline(build_timeline(repo)), encoding="utf-8")
+    return path
+
+
 def _actionable(note: Note, status: NoteStatus) -> bool:
     # `status` is the derived current status (ADR-0008), not necessarily the note's creation status.
     # NEEDS_REVIEW is excluded: a note flagged by an unresolved contradiction (US-10) must be
@@ -281,8 +375,14 @@ def _dependencies(repo: NoteRepository, notes: dict[str, Note]) -> dict[str, set
             continue
         if edge.kind is EdgeKind.DEPENDS_ON:
             deps[edge.source_id].add(edge.target_id)
+        elif edge.kind is EdgeKind.WAITING_ON:
+            # waiting_on is a (soft, external) prerequisite for scheduling: the source can't proceed
+            # until the target is done — same effect on the DAG as depends_on (ADR-0007/PR-G).
+            deps[edge.source_id].add(edge.target_id)
         elif edge.kind is EdgeKind.BLOCKS:
-            deps[edge.target_id].add(edge.source_id)
+            deps[edge.target_id].add(
+                edge.source_id
+            )  # source blocks target ⇒ target depends on source
     return deps
 
 

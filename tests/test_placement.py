@@ -21,6 +21,18 @@ def test_placement_edges_builds_part_of_and_depends_on() -> None:
     assert ("d1", "depends_on") in kinds and ("d2", "depends_on") in kinds
 
 
+def test_placement_edges_includes_blocks_and_waiting_on() -> None:
+    edges = Placement(depends_on=("d",), blocks=("x",), waiting_on=("w",)).edges("n")
+    kinds = {(e.target_id, e.kind.value) for e in edges}
+    assert kinds == {("d", "depends_on"), ("x", "blocks"), ("w", "waiting_on")}
+
+
+def test_placement_records_one_relation_per_target() -> None:
+    # The same id listed under multiple relations gets a single edge (depends_on wins, first-listed).
+    edges = Placement(depends_on=("t",), blocks=("t",)).edges("n")
+    assert [(e.target_id, e.kind.value) for e in edges] == [("t", "depends_on")]
+
+
 def test_placement_edges_excludes_self_and_parent_as_dependency() -> None:
     # parent==self is dropped; a dependency equal to self or to the parent is dropped.
     edges = Placement(parent_id="g", depends_on=("n", "g", "d")).edges("n")

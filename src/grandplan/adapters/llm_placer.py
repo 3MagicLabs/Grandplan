@@ -34,9 +34,13 @@ _INSTRUCTION = (
     "You decide how a NEW note fits into an existing knowledge graph. You are given the new note and "
     "a numbered list of candidate existing notes. Return ONLY a JSON object "
     '{"parent": <candidate id the new note is PART OF, or null>, '
-    '"depends_on": [<candidate ids that must be DONE FIRST>]}. '
-    "A parent is a broader goal/project the note belongs under. A dependency is a prerequisite. "
-    "Use only ids from the candidate list; use null / [] when none truly apply — do not force a link."
+    '"depends_on": [<candidate ids that must be DONE FIRST>], '
+    '"blocks": [<candidate ids this new note holds up / must be done before>], '
+    '"waiting_on": [<candidate ids this note is externally waiting on>]}. '
+    "A parent is a broader goal/project the note belongs under. depends_on = prerequisites. "
+    "blocks = notes that cannot proceed until this one is done. waiting_on = something external this "
+    "note awaits. Use only ids from the candidate list; use null / [] when none truly apply — do not "
+    "force a link."
 )
 
 
@@ -65,16 +69,26 @@ def parse_placement(raw: str, valid_ids: set[str]) -> Placement:
     parent = str(parent_raw).strip() if parent_raw not in (None, "") else None
     if parent is not None and parent not in valid_ids:
         parent = None  # a hallucinated parent is no parent
-    deps_raw = data.get("depends_on", [])
-    deps: tuple[str, ...] = ()
-    if isinstance(deps_raw, list):
-        seen: list[str] = []
-        for item in deps_raw:
-            dep = str(item).strip()
-            if dep in valid_ids and dep != parent and dep not in seen:
-                seen.append(dep)
-        deps = tuple(seen)
-    return Placement(parent_id=parent, depends_on=deps)
+    # Each target gets at most ONE structural relation; the parent is excluded from all of them and
+    # the relations don't overlap (first-listed wins), so the recorded edges are unambiguous.
+    claimed: set[str] = {parent} if parent is not None else set()
+    depends_on = _valid_ids(data.get("depends_on"), valid_ids, claimed)
+    blocks = _valid_ids(data.get("blocks"), valid_ids, claimed)
+    waiting_on = _valid_ids(data.get("waiting_on"), valid_ids, claimed)
+    return Placement(parent_id=parent, depends_on=depends_on, blocks=blocks, waiting_on=waiting_on)
+
+
+def _valid_ids(raw: object, valid_ids: set[str], claimed: set[str]) -> tuple[str, ...]:
+    """The ids in `raw` that are real candidates and not already claimed (parent / another relation)."""
+    if not isinstance(raw, list):
+        return ()
+    out: list[str] = []
+    for item in raw:
+        candidate = str(item).strip()
+        if candidate in valid_ids and candidate not in claimed:
+            out.append(candidate)
+            claimed.add(candidate)
+    return tuple(out)
 
 
 def _ollama_chat(model: str, prompt: str) -> str:  # pragma: no cover - needs a running Ollama

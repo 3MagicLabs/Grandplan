@@ -255,7 +255,7 @@ def test_organize_text_writes_vault_graph_and_plan(tmp_path: Path) -> None:
 
     md_files = list(vault.glob("*.md"))
     assert any(p.name == "Plan.md" for p in md_files)
-    note_files = [p for p in md_files if p.name not in ("Plan.md", "Masterplan.md")]
+    note_files = [p for p in md_files if p.name not in ("Plan.md", "Masterplan.md", "Timeline.md")]
     assert len(note_files) == summary.notes
 
 
@@ -319,7 +319,9 @@ def test_organize_text_uses_injected_organizer(tmp_path: Path) -> None:
         vault_dir=vault,
         organizer=_StubOrganizer(),
     )
-    note = next(p for p in vault.glob("*.md") if p.name not in ("Plan.md", "Masterplan.md"))
+    note = next(
+        p for p in vault.glob("*.md") if p.name not in ("Plan.md", "Masterplan.md", "Timeline.md")
+    )
     assert "# STUB TITLE" in note.read_text(encoding="utf-8")
 
 

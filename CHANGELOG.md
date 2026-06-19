@@ -22,6 +22,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   masterplan/plan now get real hierarchy + dependency sequence instead of only similarity links.
   Append-only (edges only; no note mutated); offline (heuristic pure, LLM localhost-only).
 
+- **Completed dependency model + feasible Timeline** — placement now proposes `blocks` and
+  `waiting_on` edges (LLM placer) in addition to `part_of`/`depends_on`; the planner treats
+  `waiting_on` as a scheduling prerequisite. New `Timeline.md` projection (and `get_timeline` MCP
+  tool) orders actionable notes into a feasible schedule — **ready / waiting / scheduled-by-date /
+  ⚠ conflicts** (flags a note due before its prerequisite, and dependency cycles).
 - **Actionable enhancement** — the LLM organizer now ENHANCES each capture and, for actionable
   notes (task/project/goal), emits a `## Next steps` section with concrete `- [ ]` checklist items
   (RESEARCH §0 "enhance"). QAS-8 gained a check that flags an actionable note with no next-step

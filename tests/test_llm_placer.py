@@ -39,6 +39,28 @@ def test_parse_placement_handles_null_parent_and_empty_deps() -> None:
     assert placement == Placement()
 
 
+def test_parse_placement_parses_blocks_and_waiting_on() -> None:
+    placement = parse_placement(
+        '{"parent": null, "depends_on": ["a"], "blocks": ["b"], "waiting_on": ["c"]}',
+        {"a", "b", "c"},
+    )
+    assert placement.depends_on == ("a",)
+    assert placement.blocks == ("b",)
+    assert placement.waiting_on == ("c",)
+
+
+def test_parse_placement_gives_each_target_one_relation() -> None:
+    # parent is excluded from all relations; an id used twice is kept only by the first relation.
+    placement = parse_placement(
+        '{"parent": "a", "depends_on": ["b"], "blocks": ["b", "c"], "waiting_on": ["a"]}',
+        {"a", "b", "c"},
+    )
+    assert placement.parent_id == "a"
+    assert placement.depends_on == ("b",)
+    assert placement.blocks == ("c",)  # 'b' already claimed by depends_on
+    assert placement.waiting_on == ()  # 'a' is the parent
+
+
 def test_llm_placer_uses_valid_model_response() -> None:
     repo, emb = _repo_with_goal()
     placer = LlmPlacer(chat=lambda m, p: '{"parent": "g", "depends_on": []}')

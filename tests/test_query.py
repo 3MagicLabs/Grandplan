@@ -91,6 +91,20 @@ def test_get_masterplan_nests_task_under_goal() -> None:
     assert [c["id"] for c in goal["children"]] == ["t"]  # part_of hierarchy
 
 
+def test_get_timeline_exposes_ready_and_waiting() -> None:
+    repo, originals, emb = InMemoryNoteRepository(), InMemoryOriginalStore(), HashingEmbedder()
+    a = Note(
+        id="a", original_id="oa", title="Design", body="b", type=NoteType.TASK, due="2026-07-01"
+    )
+    b = Note(id="b", original_id="ob", title="Build", body="b", type=NoteType.TASK)
+    repo.add_note(a, emb.embed("design"))
+    repo.add_note(b, emb.embed("build"))
+    repo.add_edge(Edge("b", "a", EdgeKind.DEPENDS_ON))
+    timeline = VaultQuery(repo=repo, originals=originals, embedder=emb).get_timeline()
+    assert [n["id"] for n in timeline["ready"]] == ["a"]  # type: ignore[union-attr]
+    assert timeline["waiting"][0]["note"]["id"] == "b"  # type: ignore[index]
+
+
 def test_get_graph_and_doctor() -> None:
     query = _query()
     graph = query.get_graph()
@@ -129,6 +143,7 @@ def test_tool_registry_is_well_formed() -> None:
         "search_notes",
         "get_plan",
         "get_masterplan",
+        "get_timeline",
         "get_graph",
         "doctor",
     }

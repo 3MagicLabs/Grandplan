@@ -46,8 +46,9 @@ so agent modification is safe, reversible, and offline. Subsumes the "other AIs"
   bridge; Notion/Todoist live sync. Isolated adapters; core egress test still guards the offline path.
 
 ### C. Smarter organization (build on PR-G)
-- `blocks` / `next` / `waiting_on` edges; critical-path scheduling; parallel-batch detection; OKR
-  roll-ups. **Entity extraction** (people/org `entity` nodes + `involves` edges) — seeds intelligence use-cases.
+- ✅ **`blocks` / `waiting_on` edges + feasible `Timeline.md` DONE** (placement + planner +
+  `get_timeline`). Remaining: `next` sequencing, critical-path scheduling, parallel-batch detection,
+  OKR roll-ups. **Entity extraction** (people/org `entity` nodes + `involves` edges) — seeds intelligence use-cases.
 - Contradiction-resolution UX (data exists; no UI). RC5 robust slug-based linking (kill phantom-id nodes).
 
 ### D. Workspaces & capability plugins (SPEC §11.3)

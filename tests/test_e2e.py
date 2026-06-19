@@ -52,7 +52,9 @@ def test_full_pipeline_connects_persists_and_plans(tmp_path: Path) -> None:
     _capture("machine learning notes about neural networks", vault)
     _capture("neural networks and deep learning study", vault)
 
-    notes = sorted(p for p in vault.glob("*.md") if p.name not in ("Plan.md", "Masterplan.md"))
+    notes = sorted(
+        p for p in vault.glob("*.md") if p.name not in ("Plan.md", "Masterplan.md", "Timeline.md")
+    )
     assert len(notes) == 2
 
     # Connection: at least one note carries a RESOLVABLE wikilink (filename stem + title), and
@@ -205,7 +207,9 @@ def test_capture_driven_edit_re_renders_note_and_survives_reopen(tmp_path: Path)
     current = repo3.current_note(first.note.id)
     assert current is not None and current.title == "bounty hunter"
 
-    note_files = [p for p in vault.glob("*.md") if p.name not in ("Plan.md", "Masterplan.md")]
+    note_files = [
+        p for p in vault.glob("*.md") if p.name not in ("Plan.md", "Masterplan.md", "Timeline.md")
+    ]
     assert len(note_files) == 1  # the title edit re-rendered in place — no orphaned old-title file
     note_md = note_files[0].read_text(encoding="utf-8")
     assert "# bounty hunter" in note_md and "## History" in note_md and "edit: title" in note_md
@@ -261,7 +265,7 @@ def test_attach_flow_records_a_resource_event_and_re_renders(tmp_path: Path) -> 
     assert len(repo2.notes()) == 1
     assert any(r.ref == "/Users/me/resume-final.pdf" for r in repo2.resources_of(first.note.id))
     note_md = next(
-        p for p in vault.glob("*.md") if p.name not in ("Plan.md", "Masterplan.md")
+        p for p in vault.glob("*.md") if p.name not in ("Plan.md", "Masterplan.md", "Timeline.md")
     ).read_text(encoding="utf-8")
     assert "## Resources" in note_md and "resume-final.pdf" in note_md
     assert "## History" in note_md and "+file:" in note_md  # the attach shows as progress

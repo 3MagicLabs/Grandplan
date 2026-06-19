@@ -21,7 +21,13 @@ from pathlib import Path
 
 from grandplan.core.graph import export_graph
 from grandplan.core.models import Edge, Note
-from grandplan.core.planner import _MASTERPLAN_MARKER, write_masterplan, write_plan
+from grandplan.core.planner import (
+    _MASTERPLAN_MARKER,
+    _TIMELINE_MARKER,
+    write_masterplan,
+    write_plan,
+    write_timeline,
+)
 from grandplan.core.ports import NoteRepository
 from grandplan.core.store import OriginalStore
 from grandplan.core.vault import MarkdownVaultWriter, read_note_id
@@ -110,6 +116,8 @@ def write_projections(
     plan_path = write_plan(repo, _safe_target(vault_dir / "Plan.md", _is_grandplan_plan))
     # The Masterplan MOC (notes stratified by horizon); foreign same-named file is preserved.
     write_masterplan(repo, _safe_target(vault_dir / "Masterplan.md", _is_grandplan_masterplan))
+    # The Timeline (feasible execution order from the dependency DAG + due dates).
+    write_timeline(repo, _safe_target(vault_dir / "Timeline.md", _is_grandplan_timeline))
     if originals is not None:
         write_notes(repo, originals, vault_dir)
     return graph_path, plan_path
@@ -197,6 +205,14 @@ def _is_grandplan_masterplan(path: Path) -> bool:
     except OSError:
         return False
     return _MASTERPLAN_MARKER in head
+
+
+def _is_grandplan_timeline(path: Path) -> bool:
+    try:
+        head = path.read_text(encoding="utf-8")[:2048]
+    except OSError:
+        return False
+    return _TIMELINE_MARKER in head
 
 
 def _is_grandplan_graph(path: Path) -> bool:
