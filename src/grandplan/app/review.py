@@ -21,6 +21,7 @@ from grandplan.core.models import (
     apply_edit,
 )
 from grandplan.core.pipeline import Assessment, CaptureResult, assess, commit, propose
+from grandplan.core.placement import Placement, Placer, record_placement
 from grandplan.core.ports import Embedder, NoteRepository, Organizer, VaultWriter
 from grandplan.core.reconcile import Reconciler, Relationship
 from grandplan.core.store import OriginalStore
@@ -105,6 +106,7 @@ class PendingReview:
     state: ReviewState
     update: StatusUpdate | None = None  # set when the capture is a status update (PR-B)
     edit: ProposedEdit | None = None  # set when the capture is a detail edit (PR-C)
+    placement: Placement | None = None  # proposed structural edges for a new note (PR-G)
 
 
 def start_review(
@@ -119,6 +121,7 @@ def start_review(
     originals: OriginalStore,
     detector: UpdateDetector | None = None,
     edit_detector: EditDetector | None = None,
+    placer: Placer | None = None,
     match_threshold: float = _DEFAULT_MATCH_THRESHOLD,
 ) -> PendingReview:
     """Capture + organize + reconcile; return display state for review (nothing committed yet).
@@ -153,6 +156,14 @@ def start_review(
             match_threshold=match_threshold,
         )
     )
+    # PR-G: when the capture is a NEW note (not a status/edit update), propose its structural place
+    # in the graph (parent + prerequisites) now — recorded on approve. Runs against the repo before
+    # the new note exists, so it can't be its own parent.
+    placement = (
+        placer.place(proposed, assessment.embedding, repo)
+        if placer is not None and update is None and edit is None
+        else None
+    )
     related = proposal.related_notes
     links = tuple(
         (candidate.relationship.value, candidate.note.title)
@@ -183,6 +194,7 @@ def start_review(
         state=state,
         update=update,
         edit=edit,
+        placement=placement,
     )
 
 
@@ -279,7 +291,7 @@ def approve(
     proposal = pending.assessment.proposal
     links = proposal.links() if link_related else ()
     status = NoteStatus.NEEDS_REVIEW if proposal.requires_review else NoteStatus.INBOX
-    return commit(
+    result = commit(
         pending.original,
         pending.proposed,
         pending.assessment,
@@ -288,6 +300,9 @@ def approve(
         links=links,
         status=status,
     )
+    # PR-G: record the proposed structural edges (part_of/depends_on) after the note exists.
+    record_placement(repo, pending.placement, result.note.id)
+    return result
 
 
 def discard(pending: PendingReview) -> None:

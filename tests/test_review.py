@@ -50,6 +50,47 @@ def test_start_review_shows_state_without_committing() -> None:
     assert originals.get(pending.original.id) is not None  # captured to the inbox
 
 
+def test_placement_proposes_and_records_structural_edge_on_approve(tmp_path: Path) -> None:
+    # PR-G: a new capture is placed under a similar, more-abstract existing note; approve records
+    # the part_of edge (append-only — no note mutated).
+    from grandplan.core.models import EdgeKind, Horizon, Note, NoteType
+    from grandplan.core.placement import HeuristicPlacer
+    from grandplan.core.vault import MarkdownVaultWriter
+
+    repo, originals = InMemoryNoteRepository(), InMemoryOriginalStore()
+    vault = MarkdownVaultWriter(tmp_path / "vault")
+    emb = HashingEmbedder()
+    goal = Note(
+        id="g",
+        original_id="og",
+        title="ship the analytics product roadmap",
+        body="b",
+        type=NoteType.GOAL,
+        horizon=Horizon.GOAL,
+    )
+    repo.add_note(goal, emb.embed("ship the analytics product roadmap"))
+
+    pending = start_review(
+        "ship the analytics product launch checklist task",
+        created=_CREATED,
+        source=_SOURCE,
+        organizer=HeuristicOrganizer(),
+        embedder=emb,
+        reconciler=SimilarityReconciler(),
+        repo=repo,
+        originals=originals,
+        placer=HeuristicPlacer(part_of_threshold=0.15),
+    )
+    assert pending.placement is not None and pending.placement.parent_id == "g"
+
+    result = approve(pending, repo=repo, vault=vault)
+    assert isinstance(result, CaptureResult)
+    assert any(
+        e.source_id == result.note.id and e.target_id == "g" and e.kind is EdgeKind.PART_OF
+        for e in repo.edges()
+    )
+
+
 def test_approve_commits_and_writes_vault(tmp_path: Path) -> None:
     from grandplan.core.vault import MarkdownVaultWriter
 

@@ -42,6 +42,7 @@ from grandplan.app.review import (
 from grandplan.core.edit_detect import EditDetector
 from grandplan.core.models import Source
 from grandplan.core.pipeline import CaptureResult
+from grandplan.core.placement import Placer
 from grandplan.core.ports import Capturer, Embedder, NoteRepository, Organizer, VaultWriter
 from grandplan.core.reconcile import Reconciler
 from grandplan.core.store import OriginalStore
@@ -136,6 +137,7 @@ class CaptureCoordinator:
         after_commit: CommitHook | None = None,
         detector: UpdateDetector | None = None,
         edit_detector: EditDetector | None = None,
+        placer: Placer | None = None,
         max_pending: int = 1,
     ) -> None:
         if max_pending < 1:
@@ -154,6 +156,7 @@ class CaptureCoordinator:
         self._after_commit = after_commit
         self._detector = detector  # PR-B: detect capture-driven status updates (None = off)
         self._edit_detector = edit_detector  # PR-C: detect capture-driven field edits (None = off)
+        self._placer = placer  # PR-G: propose structural edges for a new note (None = off)
         self._queue: queue.Queue[object] = queue.Queue(maxsize=max_pending)
         self._shutdown = threading.Event()
         self._thread: threading.Thread | None = None
@@ -240,6 +243,7 @@ class CaptureCoordinator:
                 originals=self._originals,
                 detector=self._detector,
                 edit_detector=self._edit_detector,
+                placer=self._placer,
             )
             self._emit(Stage.AWAITING_REVIEW, pending.state.title)
             if not self._review(pending.state):

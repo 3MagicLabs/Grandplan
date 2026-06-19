@@ -6,6 +6,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 ### Added
+- **PR-F trustworthy organization** — the local model is now the **default** organizer/placer for
+  `organize`/`gui` (`--no-llm` opts into the offline baseline; `--llm` kept as a no-op). When the
+  model is required and unreachable it **fails loud** (`OrganizerUnavailable`) with guidance instead
+  of silently emitting keyword output; the verbatim capture is preserved first, so nothing is lost.
+- **Diagnostics (QAS-8)** — `core/quality.py` flags un-organized notes (raw/truncated title, verbatim
+  body, no tags); `core/report.py` prints a health report on every `organize`/`regenerate` (notes,
+  horizons, structural-vs-semantic edges, low-quality + isolated notes, "model likely never ran").
+- **`grandplan regenerate`** — rebuild a vault from its lossless inbox originals through the current
+  pipeline (heuristic→LLM quality); atomic + fail-safe, backs up the old index to `index.jsonl.bak`.
+- **`grandplan doctor`** — read-only health report for an existing vault.
+- **PR-G relational organization (keystone)** — a placement stage (`core/placement.py` `Placer` port +
+  `HeuristicPlacer`; `adapters/llm_placer.py` `LlmPlacer`) proposes structural `part_of`/`depends_on`
+  edges for each new note against the existing graph, wired into the CLI and GUI capture flow. The
+  masterplan/plan now get real hierarchy + dependency sequence instead of only similarity links.
+  Append-only (edges only; no note mutated); offline (heuristic pure, LLM localhost-only).
+
+- **Calendar connector (local, offline)** — `grandplan calendar -o <vault>` exports notes with a
+  `due` date to a standards-compliant RFC 5545 `.ics` feed (`grandplan.ics`) any calendar app can
+  subscribe to. Zero egress; pure/deterministic (caller-supplied timestamp). `core/calendar.py`.
+
+### Added (earlier)
 - Project planning spine: `SPEC.md` (requirements), `RESEARCH.md` (prior art / techniques / feasibility).
 - Repository hygiene: README, LICENSE (MIT), `.gitignore`, `.gitattributes`, CONTRIBUTING, ADRs.
 - CI mirroring the borromeo quality gate; Dockerfile for a reproducible core test environment.

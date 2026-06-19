@@ -6,7 +6,12 @@ import json
 
 import pytest
 
-from grandplan.adapters.ollama_organizer import OllamaOrganizer, build_prompt, parse_proposed
+from grandplan.adapters.ollama_organizer import (
+    OllamaOrganizer,
+    OrganizerUnavailable,
+    build_prompt,
+    parse_proposed,
+)
 from grandplan.core.models import NoteType, Original, Source
 
 
@@ -145,3 +150,32 @@ def test_organizer_falls_back_on_connection_error() -> None:
 
     note = OllamaOrganizer(chat=refused).organize(_original("Buy milk and eggs"))
     assert note.title == "Buy milk and eggs"  # HeuristicOrganizer fallback
+
+
+def test_require_mode_raises_instead_of_silently_falling_back() -> None:
+    # PR-F (RC1): when the LLM is required, an unreachable model must FAIL LOUD — never substitute
+    # silent keyword-heuristic output the user can't distinguish from real organization.
+    def boom(model: str, prompt: str) -> str:
+        raise ConnectionError("connection refused: localhost:11434")
+
+    organizer = OllamaOrganizer(model="llama3.2:3b", chat=boom, require=True)
+    with pytest.raises(OrganizerUnavailable) as excinfo:
+        organizer.organize(_original("Buy milk and eggs"))
+    assert excinfo.value.model == "llama3.2:3b"
+    assert "--no-llm" in str(excinfo.value)  # the error tells the user how to proceed
+
+
+def test_require_mode_raises_when_output_never_validates() -> None:
+    # Persistent malformed output (not just transport failure) also fails loud under require=True.
+    organizer = OllamaOrganizer(chat=lambda m, p: "not json", require=True)
+    with pytest.raises(OrganizerUnavailable):
+        organizer.organize(_original())
+
+
+def test_require_mode_still_returns_a_valid_llm_note() -> None:
+    # require=True must not change the happy path: a valid model reply is used as-is.
+    def chat(model: str, prompt: str) -> str:
+        return '{"title": "From LLM", "type": "task", "tags": ["a"]}'
+
+    note = OllamaOrganizer(chat=chat, require=True).organize(_original())
+    assert note.title == "From LLM"

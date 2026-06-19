@@ -28,6 +28,7 @@ from grandplan.adapters.capture import make_windows_capturer, run_hotkey_listene
 from grandplan.adapters.llm_edit_detector import LlmEditDetector
 from grandplan.adapters.llm_reconciler import LlmRelationshipClassifier
 from grandplan.adapters.llm_update_detector import LlmUpdateDetector
+from grandplan.adapters.llm_placer import LlmPlacer
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OllamaOrganizer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
 from grandplan.app.coordinator import CaptureCoordinator, CaptureStatus, Committed, Stage
@@ -38,6 +39,7 @@ from grandplan.core.index_location import migrate_legacy_index
 from grandplan.core.models import Source
 from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
+from grandplan.core.placement import HeuristicPlacer, Placer
 from grandplan.core.ports import Embedder, Organizer
 from grandplan.core.project import write_projections
 from grandplan.core.reconcile import SimilarityReconciler
@@ -65,13 +67,19 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     *,
     vault_dir: Path,
     hotkey: str = _DEFAULT_HOTKEY,
-    use_llm: bool = False,
+    use_llm: bool = True,
     use_embeddings: bool = False,
     model: str = DEFAULT_MODEL,
 ) -> int:
     from PySide6 import QtCore, QtWidgets
 
-    organizer: Organizer = OllamaOrganizer(model=model) if use_llm else HeuristicOrganizer()
+    # PR-F (RC1): the local model is the default and is REQUIRED when selected — a missing/unreachable
+    # model raises `OrganizerUnavailable`, which the coordinator surfaces as a FAILED status while the
+    # verbatim capture stays in the inbox (organize runs after the original is persisted). No silent
+    # keyword garbage. `--no-llm` selects the deterministic baseline deliberately.
+    organizer: Organizer = (
+        OllamaOrganizer(model=model, require=True) if use_llm else HeuristicOrganizer()
+    )
     embedder: Embedder = SentenceTransformerEmbedder() if use_embeddings else HashingEmbedder()
     # Under --llm, the LLM classifies the top-k most-similar candidates into richer typed links
     # (builds_on/refines/supersedes/contradicts); without it, the cosine baseline (relates/duplicate).
@@ -88,6 +96,10 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     edit_detector: EditDetector = (
         LlmEditDetector(model=model) if use_llm else HeuristicEditDetector()
     )
+    # PR-G: place each new note into the graph's structure (part_of parent + depends_on prereqs) so
+    # the plan/masterplan get real hierarchy and sequence — not just similarity links. LLM proposes
+    # parent + dependencies under --llm (heuristic fallback); the heuristic baseline does part_of.
+    placer: Placer = LlmPlacer(model=model) if use_llm else HeuristicPlacer()
     # Persistent index: rehydrates prior notes/embeddings/edges so a new capture links against
     # the whole vault history, not just this session (SPEC US-5). Kept OUTSIDE the vault so a
     # cloud sync (OneDrive/Dropbox) can't churn/conflict the internal index; migrates any legacy
@@ -160,6 +172,7 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         after_commit=reproject,
         detector=detector,
         edit_detector=edit_detector,
+        placer=placer,
     )
 
     def quit_app() -> None:

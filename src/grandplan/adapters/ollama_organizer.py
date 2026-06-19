@@ -28,6 +28,24 @@ from grandplan.core.resources import Resource, ResourceKind, extract_resources
 
 logger = logging.getLogger(__name__)
 
+
+class OrganizerUnavailable(RuntimeError):
+    """The required local model could not produce a valid note (Ollama down / model not pulled).
+
+    Raised only in `require=True` mode (PR-F, RC1): when the user has asked for LLM organization, a
+    silent degradation to the keyword heuristic is a bug — they get this actionable error instead,
+    and the verbatim capture is preserved in the inbox (added before organize runs, `pipeline.propose`).
+    """
+
+    def __init__(self, model: str) -> None:
+        super().__init__(
+            f"local model {model!r} did not return a usable note — is Ollama running and the "
+            f"model pulled? Try `ollama serve` + `ollama pull {model}`, or use the offline "
+            f"baseline (--no-llm)."
+        )
+        self.model = model
+
+
 ChatClient = Callable[[str, str], str]
 # Default sized for the project's "runs on 16 GB RAM, no GPU" constraint (ADR-0006): llama3.2:3b
 # (~2 GB resident) keeps capture memory-safe on modest hardware. Swap in a stronger model with
@@ -147,18 +165,25 @@ class OllamaOrganizer:
         model: str = DEFAULT_MODEL,
         chat: ChatClient = _ollama_chat,
         fallback: Organizer | None = None,
+        require: bool = False,
     ) -> None:
         self._model = model
         self._chat = chat
-        self._fallback: Organizer = fallback or HeuristicOrganizer()
+        # require=True (PR-F, RC1): no fallback — a failure raises `OrganizerUnavailable` so a
+        # missing/unreachable model is loud, never silent keyword garbage. require=False (default)
+        # keeps the deterministic baseline so the offline path and existing behaviour are unchanged.
+        self._fallback: Organizer | None = None if require else (fallback or HeuristicOrganizer())
 
     def organize(self, original: Original) -> ProposedNote:
-        # Validate-and-retry (SPEC US-3): try once, then once more with a stricter instruction;
-        # only then degrade to the deterministic baseline so the pipeline never breaks.
+        # Validate-and-retry (SPEC US-3): try once, then once more with a stricter instruction.
         for strict in (False, True):
             proposed = self._attempt(original, strict=strict)
             if proposed is not None:
                 return proposed
+        # Exhausted: degrade to the deterministic baseline, or — when the LLM was required — fail
+        # loud so the user knows the model didn't run (the capture is already safe in the inbox).
+        if self._fallback is None:
+            raise OrganizerUnavailable(self._model)
         return self._fallback.organize(original)
 
     def _attempt(self, original: Original, *, strict: bool) -> ProposedNote | None:
