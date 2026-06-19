@@ -32,6 +32,7 @@ from grandplan.adapters.llm_placer import LlmPlacer
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OllamaOrganizer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
 from grandplan.app.coordinator import CaptureCoordinator, CaptureStatus, Committed, Stage
+from grandplan.app.progress import ProgressView, progress_for
 from grandplan.app.review import ReviewState
 from grandplan.core.edit_detect import EditDetector, HeuristicEditDetector
 from grandplan.core.embed import HashingEmbedder
@@ -126,12 +127,75 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
 
     bridge = _Bridge()
 
+    class _ProgressPopup(QtWidgets.QWidget):
+        """A small frameless, always-on-top popup that shows the live capture stage + a progress bar.
+
+        Renders a pure `ProgressView` (app.progress) so the user always sees what's happening after
+        hitting the hotkey; auto-hides shortly after a terminal stage (saved / discarded / failed)."""
+
+        def __init__(self) -> None:
+            super().__init__(
+                None,
+                QtCore.Qt.WindowType.FramelessWindowHint
+                | QtCore.Qt.WindowType.WindowStaysOnTopHint
+                | QtCore.Qt.WindowType.Tool,
+            )
+            self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            self.setFixedWidth(340)
+            layout = QtWidgets.QVBoxLayout(self)
+            layout.setContentsMargins(14, 12, 14, 12)
+            self._title = QtWidgets.QLabel("grandplan")
+            self._title.setStyleSheet("font-weight: 600; font-size: 13px;")
+            self._detail = QtWidgets.QLabel("")
+            self._detail.setWordWrap(True)
+            self._detail.setStyleSheet("color: palette(mid);")
+            self._bar = QtWidgets.QProgressBar()
+            self._bar.setTextVisible(False)
+            self._bar.setFixedHeight(8)
+            layout.addWidget(self._title)
+            layout.addWidget(self._detail)
+            layout.addWidget(self._bar)
+            self._hide_timer = QtCore.QTimer(self)
+            self._hide_timer.setSingleShot(True)
+            self._hide_timer.timeout.connect(self.hide)
+
+        def _move_to_corner(self) -> None:
+            screen = QtWidgets.QApplication.primaryScreen()
+            if screen is None:
+                return
+            self.adjustSize()
+            area = screen.availableGeometry()
+            self.move(area.right() - self.width() - 24, area.bottom() - self.height() - 24)
+
+        def render_view(self, view: ProgressView) -> None:
+            if not view.visible:
+                self.hide()
+                return
+            self._hide_timer.stop()
+            self._title.setText(view.title)
+            self._detail.setText(view.detail)
+            if view.percent < 0:
+                self._bar.setRange(0, 0)  # indeterminate — working, unknown ETA
+            else:
+                self._bar.setRange(0, 100)
+                self._bar.setValue(view.percent)
+            colour = "#d33" if not view.ok else ("#3a3" if view.terminal else "#39f")
+            self._bar.setStyleSheet(f"QProgressBar::chunk {{ background-color: {colour}; }}")
+            self._move_to_corner()
+            self.show()
+            self.raise_()
+            if view.terminal:
+                self._hide_timer.start(2500)  # linger briefly so the outcome is readable
+
+    progress_popup = _ProgressPopup()
+
     def _on_review_requested(request: _ReviewRequest) -> None:
         request.approved = _show_review(request.state)
         request.event.set()  # unblock the worker waiting for the decision
 
     def _on_status_changed(status: CaptureStatus) -> None:
         tray.setToolTip(f"grandplan — {status.detail or status.stage.value}")
+        progress_popup.render_view(progress_for(status))  # the always-visible live progress popup
         if status.stage in _NOTIFY_STAGES:
             tray.showMessage("grandplan", status.detail or status.stage.value)
 
