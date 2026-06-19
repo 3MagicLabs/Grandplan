@@ -73,6 +73,9 @@ class JsonlNoteRepository:
             self._mem.add_resource(
                 str(record["note_id"]), _resource_from_dict(record["resource"]), at=record.get("at")
             )
+        elif kind == "deleted":
+            # Replay a tombstone: the note stays out of every derived view across restarts.
+            self._mem.delete_note(str(record["note_id"]), at=record.get("at"))
         else:
             # An unknown/corrupt record kind would otherwise be silently dropped — surface it so a
             # forward-incompatible or damaged line can't disappear without a trace.
@@ -140,6 +143,16 @@ class JsonlNoteRepository:
             record["at"] = at
         self._append(record)
         self._mem.add_resource(note_id, resource, at=at)
+
+    def delete_note(self, note_id: str, *, at: str | None = None) -> None:
+        # `get_note` already returns None for a tombstoned note, so this is idempotent + orphan-guarded.
+        if self._mem.get_note(note_id) is None:
+            return
+        record: dict[str, object] = {"kind": "deleted", "note_id": note_id}
+        if at is not None:
+            record["at"] = at
+        self._append(record)
+        self._mem.delete_note(note_id, at=at)
 
     def resources_of(self, note_id: str) -> tuple[Resource, ...]:
         return self._mem.resources_of(note_id)

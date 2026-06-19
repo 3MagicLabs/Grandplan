@@ -59,3 +59,19 @@ def test_node_reflects_edited_fields() -> None:
     repo.record_edit("a", NoteEdit(title="A (renamed)", tags=("topic",)))
     node = next(n for n in to_graph(repo)["nodes"] if n["id"] == "a")
     assert node["title"] == "A (renamed)" and node["tags"] == ["topic"]
+
+
+def test_graph_excludes_deleted_notes_and_their_dangling_edges() -> None:
+    repo = InMemoryNoteRepository()
+    repo.add_note(
+        Note(id="a", original_id="oa", title="A", body="b", type=NoteType.TASK), (1.0, 0.0)
+    )
+    repo.add_note(
+        Note(id="b", original_id="ob", title="B", body="b", type=NoteType.TASK), (0.0, 1.0)
+    )
+    repo.add_edge(Edge("a", "b", EdgeKind.RELATES))
+    repo.delete_note("b")
+
+    graph = to_graph(repo)
+    assert [node["id"] for node in graph["nodes"]] == ["a"]  # deleted note gone
+    assert graph["edges"] == []  # the edge to the deleted note is dropped, not left dangling

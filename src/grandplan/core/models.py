@@ -217,7 +217,8 @@ class NoteEvent:
     resource (PR-C/PR-E)."""
 
     note_id: str
-    kind: Literal["status", "edit", "resource"]  # a status change, a field edit, or an attachment
+    # a status change, a field edit, an attachment, or a deletion (tombstone, user removed the .md)
+    kind: Literal["status", "edit", "resource", "deleted"]
     at: str | None = None  # caller-supplied timestamp (the capture's `created`); None if unknown
     status: NoteStatus | None = None
     edit: NoteEdit | None = None
@@ -232,4 +233,6 @@ class NoteEvent:
             return f"edit: {parts}" if parts else "edit"
         if self.kind == "resource" and self.resource is not None:
             return f"+{self.resource.kind.value}: {self.resource.ref}"
+        if self.kind == "deleted":
+            return "deleted"
         return self.kind

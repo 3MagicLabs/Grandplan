@@ -230,3 +230,13 @@ def test_disk_write_failure_leaves_no_phantom_in_memory(
     with pytest.raises(OSError, match="disk full"):
         repo.add_note(_note("n", "Title"), (1.0,))
     assert repo.get_note("n") is None  # no phantom: memory only updates after a successful write
+
+
+def test_deleted_tombstone_survives_reopen(tmp_path: Path) -> None:
+    path = tmp_path / "index.jsonl"
+    repo = JsonlNoteRepository(path)
+    repo.add_note(_note("a", "Title"), (1.0,))
+    repo.delete_note("a")
+    assert repo.get_note("a") is None
+    # The tombstone is persisted: a fresh reopen still excludes the note (no resurrection on restart).
+    assert JsonlNoteRepository(path).get_note("a") is None

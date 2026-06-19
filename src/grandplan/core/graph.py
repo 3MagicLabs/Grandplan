@@ -34,10 +34,16 @@ def _edge(edge: Edge) -> dict[str, object]:
 def to_graph(repo: NoteRepository) -> dict[str, object]:
     # `_grandplan` is a sentinel so a regenerated graph.json is recognised as ours (and only ours
     # is ever overwritten — see core.project); external consumers simply ignore the extra key.
+    notes = repo.current_notes()
+    live_ids = {note.id for note in notes}  # exclude edges touching a deleted/tombstoned note
     return {
         "_grandplan": True,
-        "nodes": [_node(note) for note in repo.current_notes()],
-        "edges": [_edge(edge) for edge in repo.edges()],
+        "nodes": [_node(note) for note in notes],
+        "edges": [
+            _edge(edge)
+            for edge in repo.edges()
+            if edge.source_id in live_ids and edge.target_id in live_ids
+        ],
     }
 
 

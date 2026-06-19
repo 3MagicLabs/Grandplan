@@ -175,3 +175,19 @@ def test_add_resource_is_idempotent_and_orphan_guarded() -> None:
     repo.add_resource("missing", _FILE)  # unknown note → no event
     assert [e.resource for e in repo.events()] == [_FILE]
     assert repo.resources_of("missing") == ()
+
+
+def test_delete_note_tombstones_from_every_view() -> None:
+    repo = InMemoryNoteRepository()
+    repo.add_note(_note("a"), (1.0, 0.0))
+    repo.add_note(_note("b"), (0.0, 1.0))
+    repo.delete_note("a")
+
+    assert repo.get_note("a") is None  # gone from the public note view
+    assert repo.current_note("a") is None
+    assert [n.id for n in repo.current_notes()] == ["b"]  # excluded from projections
+    assert all(note.id != "a" for note, _ in repo.most_similar((1.0, 0.0)))  # never re-linked
+    # idempotent + orphan-guarded: re-deleting / deleting an unknown id is a no-op
+    repo.delete_note("a")
+    repo.delete_note("ghost")
+    assert sum(1 for e in repo.events() if e.kind == "deleted") == 1

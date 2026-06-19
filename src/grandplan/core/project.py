@@ -170,6 +170,8 @@ def write_projections(
     *,
     originals: OriginalStore | None = None,
     preserve_external_body: bool = True,
+    reconcile_deletions: bool = False,
+    protect_ids: frozenset[str] = frozenset(),
 ) -> tuple[Path, Path]:
     """Write `graph.json` + `Plan.md` into `vault_dir`; return their paths. Idempotent.
 
@@ -193,7 +195,14 @@ def write_projections(
     # The Timeline (feasible execution order from the dependency DAG + due dates).
     write_timeline(repo, _safe_target(vault_dir / "Timeline.md", _is_grandplan_timeline))
     if originals is not None:
-        write_notes(repo, originals, vault_dir, preserve_external_body=preserve_external_body)
+        write_notes(
+            repo,
+            originals,
+            vault_dir,
+            preserve_external_body=preserve_external_body,
+            reconcile_deletions=reconcile_deletions,
+            protect_ids=protect_ids,
+        )
     return graph_path, plan_path
 
 
@@ -203,6 +212,8 @@ def write_notes(
     vault_dir: Path,
     *,
     preserve_external_body: bool = True,
+    reconcile_deletions: bool = False,
+    protect_ids: frozenset[str] = frozenset(),
 ) -> tuple[Path, ...]:
     """Re-render every note's `.md` from its *derived* state (PR-C); return the paths written.
 
@@ -211,7 +222,13 @@ def write_notes(
     a sweep removes any prior `.md` whose frontmatter `id` belongs to a re-rendered note but sits at
     a different path (a stale file left when a title edit changed the slug) — foreign files (no
     matching id: `Plan.md`, hand-written notes) are never touched.
+
+    When `reconcile_deletions` is set, a note that is still in the index but whose `.md` the user
+    removed from the vault is **tombstoned** (so it isn't resurrected) — except ids in `protect_ids`
+    (e.g. a note just committed, not yet written). The verbatim Original stays in the inbox (lossless).
     """
+    if reconcile_deletions:
+        _tombstone_user_deletions(repo, originals, vault_dir, protect_ids)
     writer = MarkdownVaultWriter(vault_dir)
     current = repo.current_notes()
     by_id = {note.id: note for note in current}
@@ -241,6 +258,27 @@ def write_notes(
         )
     _remove_renamed_orphans(vault_dir, written)
     return tuple(written.values())
+
+
+def _tombstone_user_deletions(
+    repo: NoteRepository,
+    originals: OriginalStore,
+    vault_dir: Path,
+    protect_ids: frozenset[str],
+) -> None:
+    """Record a delete event for any note whose `.md` the user removed (so it isn't re-created).
+
+    A note counts as deleted when it is still in the index, has a stored Original (so it *could* be on
+    disk), its file is absent from the vault, and it isn't protected (just committed). Append-only.
+    """
+    present: set[str | None] = {read_note_id(md) for md in vault_dir.glob("*.md")}
+    for note in repo.current_notes():
+        if (
+            note.id not in present
+            and note.id not in protect_ids
+            and originals.get(note.original_id) is not None
+        ):
+            repo.delete_note(note.id)
 
 
 def _remove_renamed_orphans(vault_dir: Path, written: dict[str, Path]) -> None:

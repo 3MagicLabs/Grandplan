@@ -30,7 +30,17 @@ class InMemoryNoteRepository:
         self._notes[note.id] = note
         self._embeddings[note.id] = embedding
 
+    def _is_deleted(self, note_id: str) -> bool:
+        return any(e.note_id == note_id and e.kind == "deleted" for e in self._events)
+
+    def delete_note(self, note_id: str, *, at: str | None = None) -> None:
+        if note_id not in self._notes or self._is_deleted(note_id):
+            return  # unknown or already tombstoned → idempotent + orphan-guarded
+        self._events.append(NoteEvent(note_id=note_id, kind="deleted", at=at))
+
     def get_note(self, note_id: str) -> Note | None:
+        if self._is_deleted(note_id):
+            return None  # tombstoned → gone from every derived view
         return self._notes.get(note_id)
 
     def notes(self) -> tuple[Note, ...]:
@@ -94,6 +104,8 @@ class InMemoryNoteRepository:
     def current_note(self, note_id: str) -> Note | None:
         # Derivation replays the event log (O(events)); `current_notes` does this per note. Fine at
         # personal scale; memoise a note_id→(status, edits) index here if the log ever grows large.
+        if self._is_deleted(note_id):
+            return None  # tombstoned → excluded from the plan/graph/timeline projections
         note = self._notes.get(note_id)
         if note is None:
             return None
@@ -123,6 +135,8 @@ class InMemoryNoteRepository:
     ) -> tuple[tuple[Note, float], ...]:
         scored: list[tuple[Note, float]] = []
         for note_id, other in self._embeddings.items():
+            if self._is_deleted(note_id):
+                continue  # never link a new capture to a deleted note
             score = _dot(embedding, other)
             if score >= threshold:
                 scored.append((self._notes[note_id], score))

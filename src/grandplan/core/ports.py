@@ -77,6 +77,12 @@ class NoteRepository(Protocol):
         """Attach a resource to a note as an event (PR-E); idempotent + orphan-guarded."""
         ...
 
+    def delete_note(self, note_id: str, *, at: str | None = None) -> None:
+        """Tombstone a note (the user removed its `.md`): record a `deleted` event so it is excluded
+        from every derived view (current_notes / get_note / similarity / projections). Append-only —
+        the verbatim Original stays in the inbox (lossless). Idempotent + orphan-guarded."""
+        ...
+
     def resources_of(self, note_id: str) -> tuple[Resource, ...]:
         """Derived resources: the note's creation-time resources + attached ones (PR-D/PR-E)."""
         ...

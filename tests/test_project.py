@@ -268,3 +268,30 @@ def test_safe_target_bails_out_on_too_many_conflicts(
         cur.write_text("foreign", encoding="utf-8")
     with pytest.raises(RuntimeError, match="too many conflicting"):
         project_module._safe_target(tmp_path / "Plan.md", lambda path: False)
+
+
+def test_deleted_note_is_not_resurrected_on_reprojection(tmp_path: Path) -> None:
+    # The reported bug: delete a note's .md in Obsidian, then re-project → it must STAY deleted.
+    vault = tmp_path / "vault"
+    repo, originals = _repo(), InMemoryOriginalStore()
+    originals.add(_original())
+    write_projections(repo, vault, originals=originals)
+    note_file = next(p for p in vault.glob("*.md") if read_id(p) == "t1")
+
+    note_file.unlink()  # the user deletes the note in Obsidian
+    write_projections(repo, vault, originals=originals, reconcile_deletions=True)
+
+    assert all(read_id(p) != "t1" for p in vault.glob("*.md"))  # not re-created
+    assert repo.current_notes() == ()  # tombstoned → also gone from plan/graph/timeline
+
+
+def test_reconcile_deletions_protects_a_just_committed_note(tmp_path: Path) -> None:
+    # A new note has no file yet during the same projection; it must NOT be mistaken for a deletion.
+    vault = tmp_path / "vault"
+    repo, originals = _repo(), InMemoryOriginalStore()
+    originals.add(_original())
+    write_projections(
+        repo, vault, originals=originals, reconcile_deletions=True, protect_ids=frozenset({"t1"})
+    )
+    assert any(read_id(p) == "t1" for p in vault.glob("*.md"))  # created, not tombstoned
+    assert [n.id for n in repo.current_notes()] == ["t1"]

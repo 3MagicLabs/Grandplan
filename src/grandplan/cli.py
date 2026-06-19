@@ -243,7 +243,8 @@ def _run_rerender(args: argparse.Namespace) -> int:
     repo = JsonlNoteRepository(index_path)
     originals = JsonlOriginalStore(index_root / "inbox.jsonl")
     swept = remove_phantom_link_files(vault_dir)  # empty `<id>.md` stubs from old phantom links
-    write_projections(repo, vault_dir, originals=originals)
+    # reconcile_deletions: notes the user removed from the vault are tombstoned, not resurrected.
+    write_projections(repo, vault_dir, originals=originals, reconcile_deletions=True)
     print(
         f"re-rendered {len(repo.notes())} note(s) in {vault_dir} "
         f"(links resolved, graph coloured, {swept} phantom stub(s) removed)"

@@ -216,11 +216,18 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         finally:
             pending_reviews.discard(request)
 
-    def reproject(_result: Committed) -> None:
+    def reproject(result: Committed) -> None:
         # Refresh the plan + graph AND re-render the note files from derived state, so a status
         # update / edit shows up everywhere (a `done` capture leaves "Now"; an edit updates the
         # note's title/body/due + its History section). Runs on the worker thread (PR-B/PR-C).
-        write_projections(repo, vault_dir, originals=originals)
+        # reconcile_deletions: a note whose .md the user deleted in Obsidian is tombstoned (not
+        # resurrected); protect the just-committed note so it isn't mistaken for a deletion.
+        from grandplan.core.pipeline import CaptureResult
+
+        protect = frozenset({result.note.id}) if isinstance(result, CaptureResult) else frozenset()
+        write_projections(
+            repo, vault_dir, originals=originals, reconcile_deletions=True, protect_ids=protect
+        )
 
     coordinator = CaptureCoordinator(
         capturer=make_windows_capturer(),
