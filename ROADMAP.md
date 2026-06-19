@@ -77,10 +77,11 @@ CPU; `regenerate` history-preservation option.
 
 ## Recommended sequence (highest leverage first, each offline-safe & spec-aligned)
 
-1. **Agent-operable vault read API + local MCP server (theme A, read-only first).** Lets agents query
-   notes/graph/plan/search. Offline, immediately useful, foundation for everything.
-2. **Agent write operations over the event log (theme A, append-only).** Agents enrich/organize/create
-   safely. This is the literal "agents improve/modify/distill/extract/add/organize/generate" ask.
+1. ✅ **Agent-operable vault read API + local MCP server DONE** (`core/query.py` `VaultQuery` +
+   `TOOLS`/`dispatch`; `adapters/mcp_server.py` stdio; `grandplan mcp`). Agents query/search/distill
+   notes, plan, masterplan, graph, doctor — offline. `SPEC-AGENT-VAULT.md`.
+2. **Agent write operations over the event log (theme A, append-only)** ← NEXT. Agents enrich/organize/
+   create safely. The literal "agents improve/modify/distill/extract/add/organize/generate" ask.
 3. **Entity extraction + `involves` edges (theme C).** Turns notes into a people/org graph — seeds the
    intelligence use-cases and gives agents richer structure to operate on.
 4. **`.ics` calendar export (theme B, local).** First connector; offline; builds on planner/horizons.

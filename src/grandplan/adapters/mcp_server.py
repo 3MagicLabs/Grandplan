@@ -1,0 +1,51 @@
+"""MCP server adapter — expose the vault to AI agents over stdio (offline; optional `mcp` extra).
+
+A thin shell: it registers the pure `TOOLS` from `core.query` and routes every `call-tool` through
+`dispatch`, serializing the result to JSON. The transport is **stdio** (no sockets), so an agent like
+Claude Desktop can read the vault with **zero network egress** (QAS-1). `mcp` is a lazily-imported
+optional dependency (`pip install grandplan[mcp]`); the core and the gate never need it.
+"""
+
+from __future__ import annotations
+
+import json
+
+from grandplan.core.query import TOOLS, VaultQuery, dispatch
+
+
+def run_stdio_server(
+    query: VaultQuery,
+) -> None:  # pragma: no cover - needs the `mcp` runtime + stdio
+    """Run the MCP server over stdio until the client disconnects. Read-only over the vault."""
+    import asyncio
+
+    try:
+        import mcp.types as types
+        from mcp.server import Server
+        from mcp.server.stdio import stdio_server
+    except ImportError as exc:  # surfaced to the CLI as an install hint
+        raise RuntimeError(
+            "the MCP server needs the 'mcp' extra — `pip install grandplan[mcp]`"
+        ) from exc
+
+    server: Server = Server("grandplan")
+
+    @server.list_tools()
+    async def _list_tools() -> list[types.Tool]:
+        return [
+            types.Tool(name=tool.name, description=tool.description, inputSchema=tool.input_schema)
+            for tool in TOOLS
+        ]
+
+    @server.call_tool()
+    async def _call_tool(name: str, arguments: dict[str, object]) -> list[types.TextContent]:
+        result = dispatch(query, name, arguments or {})
+        return [
+            types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))
+        ]
+
+    async def _serve() -> None:
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(read_stream, write_stream, server.create_initialization_options())
+
+    asyncio.run(_serve())

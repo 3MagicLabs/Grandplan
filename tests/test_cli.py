@@ -222,6 +222,28 @@ def test_calendar_command_exports_ics_for_dated_notes(
     assert main(["calendar", "-o", str(tmp_path / "no-such-vault")]) == 1  # no index → error
 
 
+def test_mcp_command_reports_missing_dependency(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `grandplan mcp` needs the optional `mcp` extra; without it, a clear install error (not a crash).
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    from grandplan.core.embed import HashingEmbedder
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.note_store import JsonlNoteRepository
+
+    vault = tmp_path / "vault"
+    repo = JsonlNoteRepository(migrate_legacy_index(vault) / "index.jsonl")
+    repo.add_note(
+        Note(id="a", original_id="o", title="a note", body="b", type=NoteType.IDEA),
+        HashingEmbedder().embed("a note"),
+    )
+    _block_import(monkeypatch, "mcp")
+    code = main(["mcp", "-o", str(vault)])
+    assert code == 1
+    assert "mcp" in capsys.readouterr().err
+    assert main(["mcp", "-o", str(tmp_path / "no-such-vault")]) == 1  # no index → error
+
+
 def test_organize_text_writes_vault_graph_and_plan(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     summary = organize_text(_MESSY, source=_SOURCE, created=_CREATED, vault_dir=vault)

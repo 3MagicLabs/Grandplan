@@ -352,6 +352,32 @@ def _run_doctor(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_mcp(args: argparse.Namespace) -> int:
+    """`grandplan mcp -o <vault> [--embeddings]`: serve the vault to AI agents over MCP/stdio.
+
+    Read-only + offline (stdio transport, no sockets). Needs the optional `mcp` extra.
+    """
+    vault_dir = Path(args.vault)
+    index_root = migrate_legacy_index(vault_dir)
+    index_path = index_root / "index.jsonl"
+    if not index_path.exists():
+        print(f"no index found for {vault_dir} (nothing to serve)", file=sys.stderr)
+        return 1
+    repo = JsonlNoteRepository(index_path)
+    originals = JsonlOriginalStore(index_root / "inbox.jsonl")
+    # The query embedder must match the one the vault was built with so search ranks correctly.
+    embedder: Embedder = SentenceTransformerEmbedder() if args.embeddings else HashingEmbedder()
+    try:
+        from grandplan.adapters.mcp_server import run_stdio_server
+        from grandplan.core.query import VaultQuery
+
+        run_stdio_server(VaultQuery(repo=repo, originals=originals, embedder=embedder))
+    except (ImportError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _missing_gui_dependency(args: argparse.Namespace) -> str | None:
     """A user-facing error if a requested optional backend isn't installed (else None).
 
@@ -461,6 +487,15 @@ def main(argv: list[str] | None = None) -> int:
         "--out", default="", help="output .ics path (default: <vault>/grandplan.ics)"
     )
 
+    mcp_cmd = subparsers.add_parser(
+        "mcp",
+        help="Serve the vault to AI agents over MCP/stdio (read-only; needs the 'mcp' extra).",
+    )
+    mcp_cmd.add_argument("-o", "--vault", required=True, help="the vault directory")
+    mcp_cmd.add_argument(
+        "--embeddings", action="store_true", help="use sentence-transformer embeddings for search"
+    )
+
     gui = subparsers.add_parser(
         "gui", help="Launch the tray GUI (Windows; needs the windows,gui extras)."
     )
@@ -489,6 +524,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_doctor(args)
     if args.command == "calendar":
         return _run_calendar(args)
+    if args.command == "mcp":
+        return _run_mcp(args)
     return _run_organize(args)
 
 

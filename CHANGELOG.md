@@ -22,6 +22,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   masterplan/plan now get real hierarchy + dependency sequence instead of only similarity links.
   Append-only (edges only; no note mutated); offline (heuristic pure, LLM localhost-only).
 
+- **Agent-operable vault (read) + local MCP server** — `core/query.py` `VaultQuery` exposes the graph
+  as JSON (list/get/search notes, plan, masterplan, graph, doctor); `TOOLS`/`dispatch` define + route
+  MCP tools (pure, tested). `adapters/mcp_server.py` serves them over **stdio** (`grandplan mcp -o
+  <vault>`, optional `mcp` extra) so AI agents can read/distill the vault with **zero egress**.
 - **Calendar connector (local, offline)** — `grandplan calendar -o <vault>` exports notes with a
   `due` date to a standards-compliant RFC 5545 `.ics` feed (`grandplan.ics`) any calendar app can
   subscribe to. Zero egress; pure/deterministic (caller-supplied timestamp). `core/calendar.py`.
