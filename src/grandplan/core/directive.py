@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
@@ -161,6 +162,9 @@ class JsonlDirectiveStore:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._items: dict[str, Directive] = {}
+        # Guards the file append + the in-memory dict so concurrent writers stay consistent — the HTTP
+        # intake server handles requests in threads, and `grandplan up` also writes from a watch thread.
+        self._lock = threading.Lock()
         if path.exists():
             self._load()
 
@@ -192,19 +196,20 @@ class JsonlDirectiveStore:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def add(self, directive: Directive) -> None:
-        if directive.id in self._items:
-            return  # append-only + idempotent on identical content
-        self._append(
-            {
-                "kind": "directive",
-                "id": directive.id,
-                "content": directive.content,
-                "instruction": directive.instruction,
-                "created": directive.created,
-                "playbook": directive.playbook,
-            }
-        )
-        self._items[directive.id] = directive
+        with self._lock:
+            if directive.id in self._items:
+                return  # append-only + idempotent on identical content
+            self._append(
+                {
+                    "kind": "directive",
+                    "id": directive.id,
+                    "content": directive.content,
+                    "instruction": directive.instruction,
+                    "created": directive.created,
+                    "playbook": directive.playbook,
+                }
+            )
+            self._items[directive.id] = directive
 
     def all(self) -> tuple[Directive, ...]:
         return tuple(self._items.values())
@@ -216,11 +221,12 @@ class JsonlDirectiveStore:
         return self._items.get(directive_id)
 
     def mark_done(self, directive_id: str) -> bool:
-        existing = self._items.get(directive_id)
-        if existing is None or existing.done:
-            return False
-        self._append({"kind": "done", "id": directive_id})
-        self._items[directive_id] = replace(existing, done=True)
+        with self._lock:
+            existing = self._items.get(directive_id)
+            if existing is None or existing.done:
+                return False
+            self._append({"kind": "done", "id": directive_id})
+            self._items[directive_id] = replace(existing, done=True)
         return True
 
 

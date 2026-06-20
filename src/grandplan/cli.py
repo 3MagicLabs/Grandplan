@@ -44,7 +44,7 @@ from grandplan.core.entities import (
 )
 from grandplan.core.pipeline import assess, commit, propose
 from grandplan.core.placement import HeuristicPlacer, Placer, record_placement
-from grandplan.core.ports import Embedder, Organizer
+from grandplan.core.ports import Embedder, NoteRepository, Organizer
 from grandplan.core.project import remove_phantom_link_files, write_projections
 from grandplan.core.reconcile import Reconciler, SimilarityReconciler
 from grandplan.adapters.folder_watch import scan_folder
@@ -53,7 +53,7 @@ from grandplan.core.export import to_csv, to_markdown_tasks, to_todoist_csv
 from grandplan.core.render import MarkdownReportRenderer
 from grandplan.core.report import RunReport, build_run_report, render_report
 from grandplan.core.repository import InMemoryNoteRepository
-from grandplan.core.store import InMemoryOriginalStore, JsonlOriginalStore
+from grandplan.core.store import InMemoryOriginalStore, JsonlOriginalStore, OriginalStore
 from grandplan.core.vault import MarkdownVaultWriter
 
 _PARAGRAPH = re.compile(r"\n\s*\n")
@@ -82,18 +82,26 @@ def organize_text(
     placer: Placer | None = None,
     reconciler: Reconciler | None = None,
     entity_extractor: EntityExtractor | None = None,
+    repo: NoteRepository | None = None,
+    originals: OriginalStore | None = None,
 ) -> RunSummary:
     """Run the full core loop over each paragraph of `text` into `vault_dir`.
 
     `placer` (PR-G) proposes structural edges (`part_of`/`depends_on`) for each note against the
     notes already committed; `reconciler` decides how each note relates to existing ones;
     `entity_extractor` (ROADMAP 3) surfaces people/org `entity` nodes + `involves` edges from each
-    note. None for any keeps the deterministic baseline (the CLI arg layer supplies LLM-backed ones)."""
+    note. None for any keeps the deterministic baseline (the CLI arg layer supplies LLM-backed ones).
+
+    `repo`/`originals` let the caller inject **persistent** stores so the captured notes + originals
+    land in the queryable index (not just the Obsidian vault) — the CLI passes the Jsonl stores so
+    `doctor`/`report`/`export`/`mcp` see what `organize` produced. They default to in-memory (a
+    one-shot, vault-only run). Both are append-only + idempotent, so re-organizing the same text is a
+    no-op."""
     active_organizer: Organizer = organizer or HeuristicOrganizer()
     active_embedder: Embedder = embedder or HashingEmbedder()
     active_entity_extractor: EntityExtractor = entity_extractor or HeuristicEntityExtractor()
-    originals = InMemoryOriginalStore()
-    repo = InMemoryNoteRepository()
+    originals = originals if originals is not None else InMemoryOriginalStore()
+    repo = repo if repo is not None else InMemoryNoteRepository()
     vault = MarkdownVaultWriter(vault_dir)
     active_reconciler: Reconciler = reconciler or SimilarityReconciler()
 
@@ -180,6 +188,9 @@ def _run_organize(args: argparse.Namespace) -> int:
     )
     embedder: Embedder | None = SentenceTransformerEmbedder() if args.embeddings else None
     title = "stdin" if args.input == "-" else Path(args.input).name
+    # Persist into the queryable index (not just the Obsidian vault), so doctor/report/export/calendar/
+    # mcp see what organize produced — the persistent stores the GUI capture flow also writes to.
+    index_root = migrate_legacy_index(Path(args.vault))
     try:
         summary = organize_text(
             _read_input(args.input),
@@ -193,6 +204,8 @@ def _run_organize(args: argparse.Namespace) -> int:
             reconciler=(
                 LlmContextualReconciler(model=args.model) if use_llm else None
             ),  # neighborhood-aware relationship classification
+            repo=JsonlNoteRepository(index_root / "index.jsonl"),
+            originals=JsonlOriginalStore(index_root / "inbox.jsonl"),
         )
     except OrganizerUnavailable as exc:
         print(f"error: {exc}\nnothing was written.", file=sys.stderr)
@@ -555,6 +568,101 @@ def _run_directive(args: argparse.Namespace) -> int:
     return 0
 
 
+def up_banner(vault: Path, *, host: str, port: int, watch_dir: Path, tokened: bool) -> str:
+    """The startup summary for `grandplan up` — what's live and how to connect an agent (pure)."""
+    auth = " (token required)" if tokened else ""
+    return "\n".join(
+        [
+            "grandplan is up — all capture surfaces live (offline):",
+            f"  vault:     {vault}",
+            f"  HTTP intake:  POST http://{host}:{port}/directive{auth}",
+            f"  folder watch: drop files into {watch_dir}",
+            f"  agent:     connect with  grandplan mcp -o {vault} --write --directives",
+            "  (Ctrl+C to stop)",
+        ]
+    )
+
+
+def _run_up(args: argparse.Namespace) -> int:
+    """`grandplan up -o <vault> [--folder DIR] [--host] [--port] [--token] [--dry-run]`.
+
+    One command, all features live: starts the HTTP directive intake AND a folder-watch concurrently
+    (both feeding the agent-intake loop), against the persistent index, and prints the MCP command to
+    point an agent at. Binds 127.0.0.1 by default; a routable host needs a --token. `--dry-run` sets
+    everything up and prints the banner without serving (for verifying config). Offline.
+    """
+    vault_dir = Path(args.vault)
+    if args.host not in ("127.0.0.1", "localhost") and not args.token:
+        print(
+            "error: refusing to bind a non-localhost host without a --token "
+            "(anyone on the network could enqueue directives)",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        instruction, playbook = resolve_instruction(
+            playbook=args.playbook or "capture-and-file", prompt=args.prompt or ""
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    index_root = migrate_legacy_index(vault_dir)
+    store = JsonlDirectiveStore(index_root / "directives.jsonl")
+    watch_dir = Path(args.folder) if args.folder else vault_dir / "_inbox"
+    watch_dir.mkdir(parents=True, exist_ok=True)
+    print(
+        up_banner(
+            vault_dir, host=args.host, port=args.port, watch_dir=watch_dir, tokened=bool(args.token)
+        )
+    )
+    if args.dry_run:
+        return 0
+    _serve_all(  # pragma: no cover - launches the long-running server + watch threads
+        store,
+        watch_dir=watch_dir,
+        host=args.host,
+        port=args.port,
+        token=args.token,
+        instruction=instruction,
+        playbook=playbook,
+        interval=args.interval,
+    )
+    return 0
+
+
+def _serve_all(  # pragma: no cover - long-running threads (HTTP serve + folder watch loop)
+    store: JsonlDirectiveStore,
+    *,
+    watch_dir: Path,
+    host: str,
+    port: int,
+    token: str,
+    instruction: str,
+    playbook: str,
+    interval: float,
+) -> None:
+    """Run the folder-watch loop (daemon thread) and the HTTP intake server (foreground) together."""
+    import threading
+
+    from grandplan.adapters.folder_watch import watch_folder
+    from grandplan.adapters.http_intake import serve_intake
+
+    watcher = threading.Thread(
+        target=watch_folder,
+        kwargs={
+            "folder": watch_dir,
+            "store": store,
+            "instruction": instruction,
+            "playbook": playbook,
+            "interval": interval,
+            "now": lambda: datetime.now(timezone.utc).isoformat(),
+        },
+        daemon=True,
+    )
+    watcher.start()
+    serve_intake(store, host=host, port=port, token=token)
+
+
 def _run_watch(args: argparse.Namespace) -> int:
     """`grandplan watch -o <vault> --folder DIR [--playbook|--prompt] [--interval S] [--once]`.
 
@@ -859,6 +967,32 @@ def main(argv: list[str] | None = None) -> int:
         "--token", default="", help="shared secret required in 'Authorization: Bearer <token>'"
     )
 
+    up_cmd = subparsers.add_parser(
+        "up",
+        help="Launch all capture surfaces at once (HTTP intake + folder-watch), agent-ready.",
+    )
+    up_cmd.add_argument("-o", "--vault", required=True, help="the vault directory")
+    up_cmd.add_argument(
+        "--folder", default="", help="folder to watch (default: <vault>/_inbox, created if missing)"
+    )
+    up_cmd.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="HTTP bind host (default 127.0.0.1; routable needs --token)",
+    )
+    up_cmd.add_argument("--port", type=int, default=8765, help="HTTP bind port (default 8765)")
+    up_cmd.add_argument("--token", default="", help="shared secret for the HTTP intake (Bearer)")
+    up_cmd.add_argument(
+        "--playbook", default="capture-and-file", help="default playbook for captured content"
+    )
+    up_cmd.add_argument("--prompt", default="", help="ad-hoc instruction (overrides --playbook)")
+    up_cmd.add_argument(
+        "--interval", type=float, default=5.0, help="folder-watch poll interval seconds (default 5)"
+    )
+    up_cmd.add_argument(
+        "--dry-run", action="store_true", help="set up + print the banner, but don't serve"
+    )
+
     watch_cmd = subparsers.add_parser(
         "watch",
         help="Watch a folder and enqueue a directive per new text/markdown file (offline capture).",
@@ -910,6 +1044,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_export(args)
     if args.command == "directive":
         return _run_directive(args)
+    if args.command == "up":
+        return _run_up(args)
     if args.command == "watch":
         return _run_watch(args)
     if args.command == "serve":

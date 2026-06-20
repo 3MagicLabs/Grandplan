@@ -195,6 +195,33 @@ def test_regenerate_keep_history_replays_status_events(
     assert JsonlNoteRepository(index).status_of(note_id) is _NS.DONE
 
 
+def test_organize_persists_to_index_for_doctor_and_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The gap fix: `organize` writes the persistent index (not just the Obsidian vault), so the
+    # index-reading commands (doctor/report/export/...) see what it produced — no GUI/regenerate needed.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.note_store import JsonlNoteRepository
+    from grandplan.core.store import JsonlOriginalStore
+
+    src = tmp_path / "n.txt"
+    src.write_text("finish the quickstart doc\n\nbuy milk and eggs", encoding="utf-8")
+    vault = tmp_path / "vault"
+    assert main(["organize", str(src), "-o", str(vault), "--no-llm"]) == 0
+
+    index_root = migrate_legacy_index(vault)
+    assert JsonlNoteRepository(index_root / "index.jsonl").notes()  # index populated
+    assert JsonlOriginalStore(index_root / "inbox.jsonl").all()  # originals persisted (regen works)
+    # the index-reading commands now succeed (previously: "no index found")
+    assert main(["doctor", "-o", str(vault)]) == 0
+    assert main(["export", "-o", str(vault), "--format", "tasks"]) == 0
+
+    # re-organizing the same input is idempotent (append-only stores): all skipped as duplicates
+    assert main(["organize", str(src), "-o", str(vault), "--no-llm"]) == 0
+    assert len(JsonlNoteRepository(index_root / "index.jsonl").notes()) == 2
+
+
 def test_replay_history_covers_all_event_kinds(tmp_path: Path) -> None:
     # Unit-test the replay helper across status/edit/resource/deleted + a dropped (unknown id) event.
     from grandplan.cli import _replay_history
@@ -378,6 +405,41 @@ def test_directive_add_unknown_playbook_errors(
         ]
     )
     assert code == 1
+
+
+def test_up_dry_run_sets_up_and_prints_banner(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = tmp_path / "vault"
+    code = main(["up", "-o", str(vault), "--dry-run"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "grandplan is up" in out
+    assert "POST http://127.0.0.1:8765/directive" in out
+    assert "mcp -o" in out and "--write --directives" in out
+    assert (vault / "_inbox").is_dir()  # default watch folder created
+
+
+def test_up_custom_folder_in_banner(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    drop = tmp_path / "drop"
+    code = main(["up", "-o", str(tmp_path / "v"), "--folder", str(drop), "--dry-run"])
+    assert code == 0
+    assert str(drop) in capsys.readouterr().out
+    assert drop.is_dir()
+
+
+def test_up_refuses_routable_host_without_token(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["up", "-o", str(tmp_path / "v"), "--host", "0.0.0.0", "--dry-run"])  # noqa: S104
+    assert code == 1
+    assert "token" in capsys.readouterr().err
+
+
+def test_up_rejects_unknown_playbook(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(["up", "-o", str(tmp_path / "v"), "--playbook", "nope", "--dry-run"])
+    assert code == 1
+    assert "unknown playbook" in capsys.readouterr().err
 
 
 def test_watch_once_enqueues_directives_from_folder(

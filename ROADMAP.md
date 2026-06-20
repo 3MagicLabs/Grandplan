@@ -19,6 +19,9 @@ offline-by-default (QAS-1) or lossless/append-only (QAS-2)**.
   report; `regenerate` + `doctor`.
 - **PR-G relational organization (keystone)** — structural `part_of`/`depends_on` placement → real
   hierarchy + dependency sequence (CLI + GUI).
+- **Unified CLI** — `organize` now persists to the queryable index (so doctor/report/export/calendar/
+  mcp work right after it, no GUI needed); **`grandplan up`** launches all capture surfaces (HTTP
+  intake + folder-watch) at once, agent-ready.
 
 ## Non-negotiable invariants (apply to everything below)
 

@@ -5,7 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+- **`organize` now persists to the queryable index** (not just the Obsidian vault), so
+  `doctor`/`report`/`export`/`calendar`/`mcp` work immediately after `organize` — previously they
+  reported "no index found" until a GUI capture or a regenerate. `organize_text` accepts injectable
+  `repo`/`originals` (default in-memory); the CLI passes the persistent Jsonl stores. Idempotent.
+- **`JsonlDirectiveStore` is thread-safe** — a lock guards the append + in-memory update, closing a
+  latent race when the HTTP intake (and now `up`) write directives from multiple threads.
+
 ### Added
+- **`grandplan up` — one-command launcher** — starts all capture surfaces at once (HTTP directive
+  intake + folder-watch on `<vault>/_inbox`) against the persistent index, directives enabled, and
+  prints the `mcp --write --directives` command to connect an agent. Binds 127.0.0.1 by default
+  (routable host needs `--token`); `--dry-run` prints the plan without serving. Offline.
 - **Offline polish batch (themes B/C/F/H/I):**
   - **`next`-edge sequencing (C)** — the planner now honors `next` edges as ordering constraints
     (`A --next--> B` ⇒ B depends on A), so explicit sequences shape the plan.

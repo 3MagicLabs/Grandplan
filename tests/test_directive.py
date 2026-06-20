@@ -106,3 +106,25 @@ def test_dispatch_directive_list_and_complete() -> None:
 def test_dispatch_directive_unknown_tool_raises() -> None:
     with pytest.raises(ValueError, match="unknown tool"):
         dispatch_directive(InMemoryDirectiveStore(), "nuke", {})
+
+
+def test_jsonl_store_is_thread_safe_under_concurrent_adds(tmp_path: Path) -> None:
+    # Concurrent writers (HTTP intake threads + `up`'s watch thread) must not corrupt the log.
+    import threading
+
+    store = JsonlDirectiveStore(tmp_path / "d.jsonl")
+    barrier = threading.Barrier(8)
+
+    def add(i: int) -> None:
+        barrier.wait()  # maximize overlap
+        store.add(Directive.create(f"content {i}", "do it", "2026", playbook="capture-and-file"))
+
+    threads = [threading.Thread(target=add, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(store.all()) == 8
+    # the persisted log reloads cleanly into the same 8 directives (no torn/interleaved lines)
+    assert len(JsonlDirectiveStore(tmp_path / "d.jsonl").all()) == 8
