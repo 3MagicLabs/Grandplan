@@ -420,6 +420,34 @@ def test_up_dry_run_sets_up_and_prints_banner(
     assert (vault / "_inbox").is_dir()  # default watch folder created
 
 
+def test_up_init_scaffolds_a_fresh_vault(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = tmp_path / "NewVault"
+    code = main(["up", "-o", str(vault), "--init", "--dry-run"])
+    assert code == 0
+    assert "initialized vault" in capsys.readouterr().out
+    assert (vault / "graph.json").exists()  # projections written
+    assert (vault / ".obsidian" / "graph.json").exists()  # graph colours
+    assert (vault / ".obsidian" / "workspace.json").exists()  # opens on the graph
+
+
+def test_up_open_launches_obsidian(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    opened: list[Path] = []
+    monkeypatch.setattr(
+        "grandplan.adapters.obsidian_open.open_in_obsidian",
+        lambda vault_dir: opened.append(vault_dir) or True,
+    )
+    vault = tmp_path / "v"
+    code = main(["up", "-o", str(vault), "--init", "--open", "--dry-run"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "opening graph view: obsidian://open?path=" in out
+    assert opened == [vault]  # the launcher was invoked with our vault
+
+
 def test_up_custom_folder_in_banner(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     drop = tmp_path / "drop"
     code = main(["up", "-o", str(tmp_path / "v"), "--folder", str(drop), "--dry-run"])

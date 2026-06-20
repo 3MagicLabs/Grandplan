@@ -568,6 +568,18 @@ def _run_directive(args: argparse.Namespace) -> int:
     return 0
 
 
+def _init_vault(vault_dir: Path, index_root: Path) -> None:
+    """Scaffold a fresh, Obsidian-ready vault: graph-coloured config, guide, empty projections, and a
+    workspace that opens on the graph. Idempotent + non-destructive (reuses `write_projections`)."""
+    from grandplan.adapters.obsidian_open import scaffold_graph_view
+
+    repo = JsonlNoteRepository(index_root / "index.jsonl")
+    originals = JsonlOriginalStore(index_root / "inbox.jsonl")
+    # Writes .obsidian/graph.json (colours) + the guide + graph.json/Plan/Masterplan/Timeline/Today.
+    write_projections(repo, vault_dir, originals=originals, today=datetime.now(timezone.utc).date())
+    scaffold_graph_view(vault_dir)  # workspace.json opening on the graph (only if absent)
+
+
 def up_banner(vault: Path, *, host: str, port: int, watch_dir: Path, tokened: bool) -> str:
     """The startup summary for `grandplan up` — what's live and how to connect an agent (pure)."""
     auth = " (token required)" if tokened else ""
@@ -584,12 +596,13 @@ def up_banner(vault: Path, *, host: str, port: int, watch_dir: Path, tokened: bo
 
 
 def _run_up(args: argparse.Namespace) -> int:
-    """`grandplan up -o <vault> [--folder DIR] [--host] [--port] [--token] [--dry-run]`.
+    """`grandplan up -o <vault> [--init] [--open] [--folder DIR] [--host] [--port] [--token] [--dry-run]`.
 
     One command, all features live: starts the HTTP directive intake AND a folder-watch concurrently
     (both feeding the agent-intake loop), against the persistent index, and prints the MCP command to
-    point an agent at. Binds 127.0.0.1 by default; a routable host needs a --token. `--dry-run` sets
-    everything up and prints the banner without serving (for verifying config). Offline.
+    point an agent at. `--init` scaffolds a fresh vault (graph-coloured config + a workspace that opens
+    on the graph); `--open` launches it in Obsidian. Binds 127.0.0.1 by default; a routable host needs
+    a --token. `--dry-run` sets everything up (incl. --init/--open) without serving. Offline.
     """
     vault_dir = Path(args.vault)
     if args.host not in ("127.0.0.1", "localhost") and not args.token:
@@ -607,6 +620,9 @@ def _run_up(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     index_root = migrate_legacy_index(vault_dir)
+    if args.init:
+        _init_vault(vault_dir, index_root)
+        print(f"initialized vault at {vault_dir}")
     store = JsonlDirectiveStore(index_root / "directives.jsonl")
     watch_dir = Path(args.folder) if args.folder else vault_dir / "_inbox"
     watch_dir.mkdir(parents=True, exist_ok=True)
@@ -615,6 +631,11 @@ def _run_up(args: argparse.Namespace) -> int:
             vault_dir, host=args.host, port=args.port, watch_dir=watch_dir, tokened=bool(args.token)
         )
     )
+    if args.open:
+        from grandplan.adapters.obsidian_open import obsidian_open_uri, open_in_obsidian
+
+        print(f"opening graph view: {obsidian_open_uri(vault_dir)}")
+        open_in_obsidian(vault_dir)
     if args.dry_run:
         return 0
     _serve_all(  # pragma: no cover - launches the long-running server + watch threads
@@ -972,6 +993,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Launch all capture surfaces at once (HTTP intake + folder-watch), agent-ready.",
     )
     up_cmd.add_argument("-o", "--vault", required=True, help="the vault directory")
+    up_cmd.add_argument(
+        "--init",
+        action="store_true",
+        help="scaffold a fresh vault (graph-coloured config + a workspace that opens on the graph)",
+    )
+    up_cmd.add_argument(
+        "--open", action="store_true", help="open the vault's graph view in Obsidian"
+    )
     up_cmd.add_argument(
         "--folder", default="", help="folder to watch (default: <vault>/_inbox, created if missing)"
     )

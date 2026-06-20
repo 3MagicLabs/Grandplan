@@ -18,6 +18,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   intake + folder-watch on `<vault>/_inbox`) against the persistent index, directives enabled, and
   prints the `mcp --write --directives` command to connect an agent. Binds 127.0.0.1 by default
   (routable host needs `--token`); `--dry-run` prints the plan without serving. Offline.
+  - **`--init`** scaffolds a fresh vault (graph-coloured config + guide + projections + a
+    `.obsidian/workspace.json` that opens on the **graph** view); **`--open`** launches the vault in
+    Obsidian via its `obsidian://open?path=…` URI. So `grandplan up -o ~/MyVault --init --open`
+    creates a new vault, opens its graph, and starts capturing — in one command.
 - **Offline polish batch (themes B/C/F/H/I):**
   - **`next`-edge sequencing (C)** — the planner now honors `next` edges as ordering constraints
     (`A --next--> B` ⇒ B depends on A), so explicit sequences shape the plan.
