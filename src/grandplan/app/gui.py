@@ -20,6 +20,7 @@ fully unit-tested (`tests/test_coordinator.py`) on any platform.
 
 from __future__ import annotations
 
+import signal
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -250,10 +251,11 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
 
     def quit_app() -> None:
         # Release any worker blocked waiting for a review decision (approved stays False = discard),
-        # so coordinator.stop()'s join can't hang on an unanswered dialog.
+        # then ask the Qt loop to exit. The actual worker shutdown (coordinator.stop) runs AFTER
+        # exec() returns, so clicking Quit closes the UI immediately instead of freezing on an
+        # in-flight capture's join (the worker is a daemon, so the process exits regardless).
         for request in list(pending_reviews):
             request.event.set()
-        coordinator.stop()
         app.quit()
 
     menu = QtWidgets.QMenu()
@@ -269,7 +271,29 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         daemon=True,
     ).start()
 
-    return int(app.exec())
+    # Make Ctrl+C / Ctrl+Break / SIGTERM quit cleanly. Qt's C++ event loop otherwise swallows the
+    # signal — Python never gets the CPU to run its handler. Register a handler that asks the app to
+    # quit, plus a periodic no-op QTimer that hands control back to Python ~5×/sec so the pending
+    # signal is actually delivered (the standard PySide Ctrl+C fix).
+    for _signame in ("SIGINT", "SIGBREAK", "SIGTERM"):
+        _signum = getattr(signal, _signame, None)
+        if _signum is not None:
+            try:
+                signal.signal(_signum, lambda *_: quit_app())
+            except (ValueError, OSError):  # not the main thread / unsupported here — skip
+                pass
+    _sig_pump = QtCore.QTimer()
+    _sig_pump.start(200)
+    _sig_pump.timeout.connect(lambda: None)
+
+    try:
+        return int(app.exec())
+    finally:
+        # Final cleanup once the UI is gone — release any waiter and stop the worker. Off the UI
+        # path, so quitting is never blocked by an in-flight capture.
+        for request in list(pending_reviews):
+            request.event.set()
+        coordinator.stop()
 
 
 def _show_review(state: ReviewState) -> bool:  # pragma: no cover - Qt dialog
