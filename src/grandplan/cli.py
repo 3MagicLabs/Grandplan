@@ -581,7 +581,14 @@ def _init_vault(vault_dir: Path, index_root: Path) -> None:
 
 
 def up_banner(
-    vault: Path, *, host: str, port: int, watch_dir: Path, tokened: bool, hotkey: str | None = None
+    vault: Path,
+    *,
+    host: str,
+    port: int,
+    watch_dir: Path,
+    tokened: bool,
+    hotkey: str | None = None,
+    ai: str | None = None,
 ) -> str:
     """The startup summary for `grandplan up` — what's live and how to connect an agent (pure)."""
     auth = " (token required)" if tokened else ""
@@ -592,8 +599,9 @@ def up_banner(
         f"  folder watch: drop files into {watch_dir}",
     ]
     if hotkey:
+        enhance = f"AI-enhanced ({ai})" if ai else "offline baseline"
         lines.append(
-            f"  global hotkey: {hotkey} — select text anywhere, press it to capture a note"
+            f"  global hotkey: {hotkey} — select text anywhere, press it to capture [{enhance}]"
         )
     lines += [
         f"  agent:     connect with  grandplan mcp -o {vault} --write --directives",
@@ -603,14 +611,22 @@ def up_banner(
 
 
 def _capture_to_vault(
-    capturer: object, *, vault_dir: Path, index_root: Path, created: str
+    capturer: object,
+    *,
+    vault_dir: Path,
+    index_root: Path,
+    created: str,
+    organizer: Organizer | None = None,
+    placer: Placer | None = None,
+    reconciler: Reconciler | None = None,
+    entity_extractor: EntityExtractor | None = None,
 ) -> str | None:
     """Grab the current selection (via `capturer.capture()`) and organize it into the vault.
 
-    Returns the captured text, or None when nothing is selected. Uses the persistent stores so the
-    note lands in the index + Obsidian vault (offline heuristic organize — instant, no Ollama). The
-    `capturer` is injected (a `Capturer`), so this is unit-tested with a fake; the real Windows
-    selection-capturer is wired in by `_run_hotkey`.
+    Returns the captured text, or None when nothing is selected. The organize components are injected
+    (the AI ones for `--llm`, else heuristic), so this is unit-tested with a fake capturer + heuristic
+    defaults; the real Windows capturer + LLM adapters are wired in by `_run_hotkey`. Writes through
+    the persistent stores so the note lands in the index + Obsidian vault.
     """
     text = capturer.capture()  # type: ignore[attr-defined]
     if not isinstance(text, str) or not text.strip():
@@ -620,7 +636,10 @@ def _capture_to_vault(
         source=Source(app="hotkey"),
         created=created,
         vault_dir=vault_dir,
-        placer=HeuristicPlacer(),  # nest the capture under a related goal/project when one fits
+        organizer=organizer,
+        placer=placer or HeuristicPlacer(),  # nest the capture under a related goal/project
+        reconciler=reconciler,
+        entity_extractor=entity_extractor,
         repo=JsonlNoteRepository(index_root / "index.jsonl"),
         originals=JsonlOriginalStore(index_root / "inbox.jsonl"),
     )
@@ -628,24 +647,38 @@ def _capture_to_vault(
 
 
 def _run_hotkey(  # pragma: no cover - global hotkey listener + Windows selection capture (no UI)
-    vault_dir: Path, index_root: Path, *, hotkey: str
+    vault_dir: Path, index_root: Path, *, hotkey: str, use_llm: bool, model: str
 ) -> None:
-    """Listen for the global hotkey; on each press, capture the selection and organize it (forever)."""
+    """Listen for the global hotkey; on each press, capture the selection and organize it (forever).
+
+    Under `--llm`, captures are enhanced by the local model with a GRACEFUL fallback (`require=False`)
+    so a hotkey never errors when Ollama is down — it just uses the offline baseline for that capture.
+    """
     from grandplan.adapters.capture import make_windows_capturer, run_hotkey_listener
 
     capturer = make_windows_capturer()
+    organizer = OllamaOrganizer(model=model, require=False) if use_llm else None
+    placer: Placer = LlmPlacer(model=model) if use_llm else HeuristicPlacer()
+    reconciler = LlmContextualReconciler(model=model) if use_llm else None
+    entity_extractor = LlmEntityExtractor(model=model) if use_llm else None
+    mode = f"AI: {model}" if use_llm else "offline baseline"
 
     def _on_trigger() -> None:
+        print(f"capturing + organizing ({mode})…")
         text = _capture_to_vault(
             capturer,
             vault_dir=vault_dir,
             index_root=index_root,
             created=datetime.now(timezone.utc).isoformat(),
+            organizer=organizer,
+            placer=placer,
+            reconciler=reconciler,
+            entity_extractor=entity_extractor,
         )
         if text:
-            print(f"captured: {text[:60].strip()}")
+            print(f"  ✓ saved: {text[:60].strip()}")
         else:
-            print("hotkey pressed, but nothing was selected")
+            print("  (nothing was selected)")
 
     run_hotkey_listener(hotkey, _on_trigger)
 
@@ -682,6 +715,14 @@ def _run_up(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    use_llm = not args.no_llm
+    if hotkey and use_llm and importlib.util.find_spec("ollama") is None:
+        # Don't fail — captures still work offline — but tell the user the AI won't run as asked.
+        print(
+            'note: --hotkey AI enhancement needs Ollama — `pip install -e ".[llm]"` + run Ollama '
+            "(`ollama pull " + args.model + "`). Captures use the offline baseline until then.",
+            file=sys.stderr,
+        )
     index_root = migrate_legacy_index(vault_dir)
     if args.init:
         _init_vault(vault_dir, index_root)
@@ -697,6 +738,7 @@ def _run_up(args: argparse.Namespace) -> int:
             watch_dir=watch_dir,
             tokened=bool(args.token),
             hotkey=hotkey,
+            ai=(args.model if (hotkey and use_llm) else None),
         )
     )
     if args.open:
@@ -718,6 +760,8 @@ def _run_up(args: argparse.Namespace) -> int:
         playbook=playbook,
         interval=args.interval,
         hotkey=hotkey,
+        use_llm=use_llm,
+        model=args.model,
     )
     return 0
 
@@ -735,6 +779,8 @@ def _serve_all(  # pragma: no cover - long-running threads (HTTP serve + folder 
     playbook: str,
     interval: float,
     hotkey: str | None,
+    use_llm: bool,
+    model: str,
 ) -> None:
     """Run folder-watch (+ optional global hotkey) as daemon threads and the HTTP server foreground."""
     import threading
@@ -759,7 +805,7 @@ def _serve_all(  # pragma: no cover - long-running threads (HTTP serve + folder 
         threading.Thread(
             target=_run_hotkey,
             args=(vault_dir, index_root),
-            kwargs={"hotkey": hotkey},
+            kwargs={"hotkey": hotkey, "use_llm": use_llm, "model": model},
             daemon=True,
         ).start()
     serve_intake(store, host=host, port=port, token=token)
@@ -1124,6 +1170,13 @@ def main(argv: list[str] | None = None) -> int:
         default="<ctrl>+<alt>+g",
         help="the global hotkey (pynput format; default <ctrl>+<alt>+g)",
     )
+    up_cmd.add_argument(
+        "--no-llm",
+        action="store_true",
+        help="hotkey captures use the offline keyword baseline (default: AI-enhance via the local "
+        "model, falling back to offline when Ollama is unreachable)",
+    )
+    up_cmd.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model for hotkey captures")
     up_cmd.add_argument(
         "--dry-run", action="store_true", help="set up + print the banner, but don't serve"
     )

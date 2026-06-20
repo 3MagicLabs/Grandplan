@@ -480,22 +480,82 @@ def test_capture_to_vault_ignores_empty_selection(tmp_path: Path) -> None:
     assert JsonlNoteRepository(index_root / "index.jsonl").notes() == ()  # nothing written
 
 
-def test_up_hotkey_shows_in_banner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    # Force pynput "present" so the test is hermetic (CI installs no optional extras).
+def test_capture_to_vault_uses_the_injected_organizer(tmp_path: Path) -> None:
+    # Proves the AI components flow through: a stub organizer (stand-in for the LLM) is used.
+    from grandplan.cli import _capture_to_vault
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.note_store import JsonlNoteRepository
+
+    vault = tmp_path / "vault"
+    index_root = migrate_legacy_index(vault)
+    _capture_to_vault(
+        _FakeCapturer("some selected text"),
+        vault_dir=vault,
+        index_root=index_root,
+        created=_CREATED,
+        organizer=_StubOrganizer(),  # the slot the OllamaOrganizer fills under --llm
+    )
+    notes = JsonlNoteRepository(index_root / "index.jsonl").notes()
+    assert any(n.title == "STUB TITLE" for n in notes)
+
+
+def _force_specs_present(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
+    """Make importlib.util.find_spec report the given module names as installed (hermetic)."""
     import importlib.machinery
     import importlib.util
 
     real = importlib.util.find_spec
-    fake = importlib.machinery.ModuleSpec("pynput", loader=None)
+    present = set(names)
     monkeypatch.setattr(
-        importlib.util, "find_spec", lambda name: fake if name == "pynput" else real(name)
+        importlib.util,
+        "find_spec",
+        lambda name: (
+            importlib.machinery.ModuleSpec(name, loader=None) if name in present else real(name)
+        ),
     )
+
+
+def test_up_hotkey_shows_ai_enhanced_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Default: hotkey captures are AI-enhanced via the local model (graceful offline fallback).
+    _force_specs_present(monkeypatch, "pynput", "ollama")
     code = main(["up", "-o", str(tmp_path / "v"), "--hotkey", "--dry-run"])
     assert code == 0
     out = capsys.readouterr().out
     assert "global hotkey: <ctrl>+<alt>+g" in out
+    assert "AI-enhanced (llama3.2:3b)" in out
+
+
+def test_up_hotkey_no_llm_shows_offline_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _force_specs_present(monkeypatch, "pynput")
+    code = main(["up", "-o", str(tmp_path / "v"), "--hotkey", "--no-llm", "--dry-run"])
+    assert code == 0
+    assert "offline baseline" in capsys.readouterr().out
+
+
+def test_up_hotkey_warns_when_ollama_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # pynput present, ollama absent → still starts (offline fallback), but warns the AI won't run.
+    import importlib.machinery
+    import importlib.util
+
+    real = importlib.util.find_spec
+
+    def fake_find_spec(name: str) -> object:
+        if name == "pynput":
+            return importlib.machinery.ModuleSpec("pynput", loader=None)
+        if name == "ollama":
+            return None  # force absent
+        return real(name)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    code = main(["up", "-o", str(tmp_path / "v"), "--hotkey", "--dry-run"])
+    assert code == 0
+    assert "Ollama" in capsys.readouterr().err
 
 
 def test_up_hotkey_missing_dependency_errors(
