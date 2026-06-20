@@ -23,6 +23,17 @@ at chunk granularity and roll up to the owning note (max-pool). Fully offline (r
 Backwards compatible: note-level path keeps working; chunking is additive.
 **Files:** `core/chunk.py` (new, pure), tests. Wiring into reconcile/repository is a later slice.
 
+## Slice 2b — Chunk-aware (hybrid) retrieval  ✅ core-testable (WSL)
+**Why:** chunks (Slice 2) are only useful once retrieval can score at chunk granularity. This is the
+"hybrid retrieval" step of Track 1 — recall a note when *one passage* matches even if the whole note
+doesn't (the note-level embedding dilutes it).
+**Contract (pure `core/retrieval.py`):** `max_pool(query_vec, chunk_vecs)` = best chunk cosine;
+`ChunkIndex` (offline, in-memory) maps note_id → chunk vectors via `embed_chunks` and answers
+`most_similar(query_vec, limit, threshold)` by max-pool; `blend(note_scores, chunk_scores, alpha)`
+combines note-level and chunk-level rankings (hybrid). Additive — storage/serialization + reconciler
+wiring is the next slice.
+**Files:** `core/retrieval.py` (new, pure), tests.
+
 ## Slice 3 — Related-notes-at-review + one-click link  ⚠ core logic only (Qt GUI deferred to Windows)
 **Why:** P0; reinforces the "connected vault" promise; reuses the embedder.
 **Contract (core):** a pure function returns top-k related existing notes for a proposed note
