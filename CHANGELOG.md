@@ -6,6 +6,53 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 ### Added
+- **HTTP directive intake (theme J transport)** — `adapters/http_intake.py` + `grandplan serve`: a
+  localhost HTTP endpoint (`POST /directive` with `{content, playbook?, prompt?}`) that enqueues a
+  directive — the "send to my agent from my phone" transport. Pure `handle_intake` (auth/validation/
+  enqueue) is gated; the socket server is the shell. Binds 127.0.0.1 by default and **refuses a
+  routable host without a `--token`** (constant-time bearer check). Offline — only receives + stores.
+- **Agent intake — directives + playbooks (theme J)** — `core/directive.py`: an append-only
+  `Directive` (content + instruction) an AI agent pulls and fulfils, with reusable named `Playbook`
+  presets (built-ins: `profile-and-connect`, `capture-and-file`, `extract-actions`). In-memory +
+  JSONL stores (completion is a derived event). Exposed over MCP (`list_directives`/
+  `complete_directive`, off until `grandplan mcp --directives`) and via `grandplan directive add|list`.
+  The in-house spine for "send content + a prompt to my agent and let it enrich/act" — the agent uses
+  the existing write/search tools; networked transport + web research are deferred opt-in connectors.
+  See `SPEC-AGENT-INTAKE.md`.
+- **Productivity exports (theme B, local/offline)** — `core/export.py`: `to_markdown_tasks` (an
+  Obsidian-Tasks/GitHub `- [ ]` checklist with `📅 due` markers + `#tags`) and `to_csv` (one row per
+  note). New `grandplan export --format tasks|csv [--out PATH]` command (zero egress).
+- **Voice capture seam (offline STT, theme H / "PR-H")** — `adapters/voice.py`: a `VoiceCapturer`
+  (conforms to the `Capturer` port) with an injected `Transcriber` backend, so the capture logic
+  (silence → None, error → None) is gated offline. The real backend is a local Whisper model + mic
+  (`pip install grandplan[voice]`), lazy/optional and fully on-device — no audio leaves the machine.
+  GUI hotkey wiring deferred (Windows-only). New `voice` optional extra.
+- **Critical-path + parallel-batch scheduling (theme C)** — `core/schedule.py`: `critical_path`
+  (the longest chain of still-open dependency-linked tasks — the bottleneck) and `parallel_batches`
+  (open tasks grouped by dependency depth — each batch runs concurrently once the prior is done).
+  Pure DAG analytics over a `Plan` (skips done prerequisites and cycle notes). Surfaced in the
+  Markdown report (shown only when there's a real ≥2-step chain / a parallelizable batch).
+- **Markdown report renderer (knowledge → deliverable, theme E)** — `core/render.py`: a `Renderer`
+  port + `MarkdownReportRenderer` composing plan + masterplan + timeline + health into one
+  self-contained Markdown report (summary, top priorities, blocked, schedule, hierarchy by horizon,
+  open questions, graph health). Offline, deterministic, pure. New `grandplan report -o <vault>
+  [--out PATH] [--title T]` command (writes `<vault>/report.md`, or `--out -` for stdout).
+- **Entity extraction + `involves` edges (agent-operable vault, step 3)** — `core/entities.py`: an
+  `EntityExtractor` port + offline `HeuristicEntityExtractor` (multi-word proper nouns, org-suffixed
+  names, `@handles`) + `materialize_entities`, turning people/org mentions into `entity` nodes joined
+  by `involves` edges so the graph becomes a people/org graph agents can reason over. Append-only +
+  idempotent (entity ids content-addressed by name); `entity` nodes are kept out of the masterplan
+  roots. Exposed as the `extract_entities` agent-write tool, **and auto-extracted during
+  `organize`/`regenerate`** via an Ollama-backed `LlmEntityExtractor` (unioned with the heuristic;
+  heuristic-only under `--no-llm` or on any model failure).
+- **Agent write tools (agent-operable vault, step 2)** — `core/write.py` `VaultWrite`: an append-only,
+  offline write facade letting AI agents enrich/organize/create safely. Five operations —
+  `set_status`, `record_edit`, `add_resource`, `place` (typed edge), `propose_note` — each reuses the
+  existing PR-A…PR-G event ops (no stored note/original is ever mutated; current state stays derived),
+  validates inputs (unknown note / bad enum / self-loop → clear error), and reports `applied=False` on
+  an idempotent no-op. Exposed over MCP via `WRITE_TOOLS`/`dispatch_write` and the server's
+  `tools_for`/`route` helpers; `grandplan mcp --write` opts in (read-only by default).
+  `SPEC-AGENT-VAULT.md` §"Step 2".
 - **PR-F trustworthy organization** — the local model is now the **default** organizer/placer for
   `organize`/`gui` (`--no-llm` opts into the offline baseline; `--llm` kept as a no-op). When the
   model is required and unreachable it **fails loud** (`OrganizerUnavailable`) with guidance instead

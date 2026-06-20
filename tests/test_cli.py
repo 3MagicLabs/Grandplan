@@ -192,6 +192,140 @@ def test_doctor_reports_existing_vault_and_errors_without_index(
     assert main(["doctor", "-o", str(tmp_path / "no-such-vault")]) == 1
 
 
+def test_report_command_writes_deliverable_and_errors_without_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    from grandplan.core.embed import HashingEmbedder
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.note_store import JsonlNoteRepository
+    from grandplan.core.store import JsonlOriginalStore
+
+    vault = tmp_path / "vault"
+    index_root = migrate_legacy_index(vault)
+    original = Original.capture("write the launch post", Source(app="cli"), _CREATED)
+    JsonlOriginalStore(index_root / "inbox.jsonl").add(original)
+    repo = JsonlNoteRepository(index_root / "index.jsonl")
+    repo.add_note(
+        Note(
+            id="a",
+            original_id=original.id,
+            title="Write the launch post",
+            body="do it",
+            type=NoteType.TASK,
+        ),
+        HashingEmbedder().embed("write the launch post"),
+    )
+
+    assert main(["report", "-o", str(vault), "--title", "Weekly status"]) == 0
+    report_path = vault / "report.md"
+    assert report_path.exists()
+    text = report_path.read_text(encoding="utf-8")
+    assert text.startswith("# Weekly status")
+    assert "Write the launch post" in text
+
+    # stdout mode
+    assert main(["report", "-o", str(vault), "--out", "-"]) == 0
+    assert "# grandplan report" in capsys.readouterr().out
+
+    assert main(["report", "-o", str(tmp_path / "no-such-vault")]) == 1
+
+
+def test_export_command_writes_tasks_and_csv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    from grandplan.core.embed import HashingEmbedder
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.note_store import JsonlNoteRepository
+    from grandplan.core.store import JsonlOriginalStore
+
+    vault = tmp_path / "vault"
+    index_root = migrate_legacy_index(vault)
+    original = Original.capture("write the launch post", Source(app="cli"), _CREATED)
+    JsonlOriginalStore(index_root / "inbox.jsonl").add(original)
+    repo = JsonlNoteRepository(index_root / "index.jsonl")
+    repo.add_note(
+        Note(
+            id="a",
+            original_id=original.id,
+            title="Write the launch post",
+            body="do it",
+            type=NoteType.TASK,
+            due="2026-07-01",
+        ),
+        HashingEmbedder().embed("write the launch post"),
+    )
+
+    assert main(["export", "-o", str(vault), "--format", "tasks"]) == 0
+    tasks = (vault / "tasks.md").read_text(encoding="utf-8")
+    assert "- [ ] Write the launch post 📅 2026-07-01" in tasks
+
+    assert main(["export", "-o", str(vault), "--format", "csv", "--out", "-"]) == 0
+    assert "id,title,type,status,horizon,due,tags" in capsys.readouterr().out
+
+    assert main(["export", "-o", str(tmp_path / "no-such-vault")]) == 1
+
+
+def test_directive_add_and_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    vault = tmp_path / "vault"
+    content = tmp_path / "post.txt"
+    content.write_text("check out Sarah Chen at Acme Robotics", encoding="utf-8")
+
+    code = main(
+        [
+            "directive",
+            "add",
+            "-o",
+            str(vault),
+            "--content",
+            str(content),
+            "--playbook",
+            "profile-and-connect",
+        ]
+    )
+    assert code == 0
+    assert "queued directive" in capsys.readouterr().out
+
+    assert main(["directive", "list", "-o", str(vault)]) == 0
+    out = capsys.readouterr().out
+    assert "profile-and-connect" in out
+    assert "Sarah Chen" in out
+
+
+def test_directive_add_unknown_playbook_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    content = tmp_path / "c.txt"
+    content.write_text("x", encoding="utf-8")
+    code = main(
+        [
+            "directive",
+            "add",
+            "-o",
+            str(tmp_path / "v"),
+            "--content",
+            str(content),
+            "--playbook",
+            "nope",
+        ]
+    )
+    assert code == 1
+
+
+def test_serve_refuses_routable_host_without_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    code = main(["serve", "-o", str(tmp_path / "v"), "--host", "0.0.0.0"])  # noqa: S104 - test only
+    assert code == 1
+    assert "token" in capsys.readouterr().err
+
+
 def test_calendar_command_exports_ics_for_dated_notes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -285,6 +419,16 @@ def test_organize_text_creates_structural_part_of_edge(tmp_path: Path) -> None:
     assert any(e["kind"] == "part_of" for e in data["edges"])
 
 
+def test_organize_text_auto_extracts_entities(tmp_path: Path) -> None:
+    # ROADMAP 3: organize surfaces people/org entities as `entity` nodes joined by `involves` edges.
+    text = "Sync with Sarah Chen about the launch plan and ping @maria"
+    summary = organize_text(text, source=_SOURCE, created=_CREATED, vault_dir=tmp_path / "vault")
+    data = json.loads(summary.graph_path.read_text(encoding="utf-8"))
+    entity_titles = {n["title"] for n in data["nodes"] if n.get("type") == "entity"}
+    assert "Sarah Chen" in entity_titles
+    assert any(e["kind"] == "involves" for e in data["edges"])
+
+
 def test_graph_json_matches_committed_notes(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     summary = organize_text(_MESSY, source=_SOURCE, created=_CREATED, vault_dir=vault)
@@ -297,7 +441,9 @@ def test_main_organize_file_returns_zero_and_writes_outputs(tmp_path: Path) -> N
     src.write_text(_MESSY, encoding="utf-8")
     vault = tmp_path / "vault"
 
-    code = main(["organize", str(src), "-o", str(vault)])
+    # `--no-llm` keeps this a hermetic smoke test of the CLI wiring (the LLM default would require a
+    # running Ollama, which CI does not provide); LLM-default behavior is covered by other tests.
+    code = main(["organize", str(src), "-o", str(vault), "--no-llm"])
 
     assert code == 0
     assert (vault / "Plan.md").exists()
@@ -368,8 +514,10 @@ def test_main_embeddings_flag_reports_missing_dependency(
     src.write_text("Buy milk and eggs", encoding="utf-8")
     vault = tmp_path / "vault"
 
+    # `--no-llm` so the missing *embeddings* dependency is what surfaces, independent of whether a
+    # local Ollama is available (CI has neither); the LLM path is tested separately.
     _block_import(monkeypatch, "sentence_transformers")
-    code = main(["organize", str(src), "-o", str(vault), "--embeddings"])
+    code = main(["organize", str(src), "-o", str(vault), "--embeddings", "--no-llm"])
     assert code == 1
     assert "sentence-transformers" in capsys.readouterr().err
 

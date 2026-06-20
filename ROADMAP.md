@@ -39,17 +39,22 @@ through the existing event operations (`record_edit`/`set_status`/`add_edge`/`ad
 so agent modification is safe, reversible, and offline. Subsumes the "other AIs" integration.
 
 ### B. Integrations / connectors (`Connector` port)
-- **Local (offline, default-safe):** ✅ **`.ics` calendar export DONE** (`grandplan calendar`,
-  `core/calendar.py` — dated notes → subscribe-able feed, zero egress); productivity exports
-  (Todoist-import / Markdown-Tasks / CSV) and the MCP server (theme A) remain.
+- **Local (offline, default-safe):** ✅ **`.ics` calendar export DONE** (`grandplan calendar`).
+  ✅ **Productivity exports DONE** (`core/export.py` `to_markdown_tasks`/`to_csv`; `grandplan export
+  --format tasks|csv` — Obsidian-Tasks/GitHub checklist + spreadsheet CSV, zero egress). ✅ MCP
+  server (theme A) DONE. Remaining local: Todoist-import format.
 - **Networked (opt-in, off by default, egress-flagged):** live Google Calendar 2-way sync; cloud-AI
   bridge; Notion/Todoist live sync. Isolated adapters; core egress test still guards the offline path.
 
 ### C. Smarter organization (build on PR-G)
 - ✅ **`blocks` / `waiting_on` edges + feasible `Timeline.md` DONE** (placement + planner +
-  `get_timeline`). Remaining: `next` sequencing, critical-path scheduling, parallel-batch detection,
-  OKR roll-ups. **Entity extraction** (people/org `entity` nodes + `involves` edges) — seeds intelligence use-cases.
-- Contradiction-resolution UX (data exists; no UI). RC5 robust slug-based linking (kill phantom-id nodes).
+  `get_timeline`). ✅ **Critical-path + parallel-batch scheduling DONE** (`core/schedule.py`
+  `critical_path`/`parallel_batches` — pure DAG analytics over open tasks; surfaced in the report).
+  ✅ **Entity extraction** (people/org `entity` nodes + `involves` edges) DONE. Remaining: `next`
+  sequencing, OKR roll-ups.
+- Contradiction-resolution UX (data exists; no UI). ✅ **RC5 slug-based linking DONE** — links render
+  `[[<filename>|<title>]]` (the target's real slug, native Obsidian resolution, export-safe) via
+  `plan_filenames`; broken links to unknown notes are skipped; empty `<id>.md` phantom stubs are swept.
 
 ### D. Workspaces & capability plugins (SPEC §11.3)
 Focused subsets ("workspaces") with domain `Capability` modules: people-graph, company/org-graph,
@@ -70,23 +75,54 @@ view later (note: a custom graph UI was an MVP non-goal — revisit deliberately
   (the append-only event log is a strong foundation — CRDT/event-merge) + a trust/permission boundary.
 
 ### H. Capture surfaces
-Voice/STT (next per HANDOFF, "PR-H"); image/screenshot OCR; web clipper; social/feed ingestion; file/folder watch.
+✅ **Voice/STT capture seam DONE** ("PR-H") — `adapters/voice.py` `VoiceCapturer` (conforms to the
+`Capturer` port) with an injected `Transcriber` (logic gated offline); the real backend is a local
+Whisper model + mic (`grandplan[voice]`, lazy/optional, on-device — no audio leaves the machine).
+**Deferred:** GUI wiring (a "hold to speak" hotkey on the tray app — Windows-only, untestable under
+WSL). Remaining surfaces: image/screenshot OCR; web clipper; social/feed ingestion; file/folder watch.
 
 ### I. Distribution & robustness
 Windows packaging (PyInstaller/Briefcase + bundled model); model/quantization benchmark on the user's
 CPU; `regenerate` history-preservation option.
+
+### J. Agent intake — directives + playbooks (the "send to my agent and act" loop)
+✅ **Offline spine DONE** (`core/directive.py`; `SPEC-AGENT-INTAKE.md`). Send content + an instruction
+(ad-hoc or a named **playbook** like `profile-and-connect`) → an append-only `Directive` an agent
+pulls over MCP (`grandplan mcp --directives` → `list_directives`/`complete_directive`) and fulfils
+with the existing write/search tools. `grandplan directive add|list`. This is the in-house analogue of
+openclaw / Claude Cowork, but running against our append-only graph with our invariants.
+✅ **Phone→agent transport DONE** (chosen: local HTTP) — `adapters/http_intake.py` +
+`grandplan serve`; `POST /directive`, binds 127.0.0.1 by default, refuses a routable host without a
+`--token` (constant-time bearer check). A phone shortcut POSTs content+playbook over the LAN/VPN.
+**Deferred (still the user's decisions):** (a) **live web research** — chosen *fully offline for now*;
+a networked, opt-in `Researcher` port remains the future path; (b) an **auto-run daemon** that
+dispatches pending directives to a local agent.
 
 ## Recommended sequence (highest leverage first, each offline-safe & spec-aligned)
 
 1. ✅ **Agent-operable vault read API + local MCP server DONE** (`core/query.py` `VaultQuery` +
    `TOOLS`/`dispatch`; `adapters/mcp_server.py` stdio; `grandplan mcp`). Agents query/search/distill
    notes, plan, masterplan, graph, doctor — offline. `SPEC-AGENT-VAULT.md`.
-2. **Agent write operations over the event log (theme A, append-only)** ← NEXT. Agents enrich/organize/
-   create safely. The literal "agents improve/modify/distill/extract/add/organize/generate" ask.
-3. **Entity extraction + `involves` edges (theme C).** Turns notes into a people/org graph — seeds the
-   intelligence use-cases and gives agents richer structure to operate on.
+2. ✅ **Agent write operations over the event log DONE** (`core/write.py` `VaultWrite` +
+   `WRITE_TOOLS`/`dispatch_write`; `adapters/mcp_server.py` `tools_for`/`route`; `grandplan mcp
+   --write`). Agents enrich/organize/create safely — `set_status`/`record_edit`/`add_resource`/
+   `place`/`propose_note`, each an append-only event reusing PR-A…PR-G ops, validated + idempotent,
+   read-only by default. The literal "agents improve/modify/distill/extract/add/organize/generate"
+   ask. `SPEC-AGENT-VAULT.md` §"Step 2".
+3. ✅ **Entity extraction + `involves` edges DONE** (`core/entities.py` `EntityExtractor` port +
+   `HeuristicEntityExtractor` + `materialize_entities`; exposed as the `extract_entities` agent-write
+   tool). People/org mentions become `entity` nodes joined by `involves` edges, so the graph is a
+   people/org graph agents can reason over. Append-only + idempotent; entity ids content-addressed by
+   name (dedupe); `entity` nodes excluded from masterplan roots. `LlmEntityExtractor` adapter
+   (`adapters/llm_entity_extractor.py`, Ollama-backed, unioned with the heuristic + fallback) and
+   **auto-extraction wired into `organize`/`regenerate`** (LLM default, `--no-llm` → heuristic) — so
+   entities appear automatically, not only via the agent tool.
 4. **`.ics` calendar export (theme B, local).** First connector; offline; builds on planner/horizons.
-5. **A second Renderer — document or slides (theme E).** Proves "knowledge → deliverable" + agent generation.
+5. ✅ **A second Renderer DONE** (`core/render.py` `Renderer` port + `MarkdownReportRenderer`;
+   `grandplan report -o <vault> [--out PATH] [--title T]`). Composes plan + masterplan + timeline +
+   health into one self-contained Markdown **deliverable** (summary, top priorities, blocked,
+   schedule, hierarchy by horizon, open questions, graph health) — offline, deterministic, pure.
+   Proves "knowledge → deliverable". **Deferred:** a slides/PPTX renderer; agent `render` write tool.
 
 Then, behind explicit decisions: networked connectors (B), workspaces/capabilities (D), interactive
 graph (F), and the big one — cross-vault → collaboration (G).

@@ -74,6 +74,20 @@ def test_masterplan_groups_roots_by_horizon_top_down() -> None:
     assert "World peace" in md and "Launch the app" in md and "Write the tests" in md
 
 
+def test_entity_notes_are_excluded_from_masterplan_roots() -> None:
+    # `entity` nodes are cross-cutting referents (joined by `involves`), not planning roots.
+    repo = _repo(
+        [
+            _note("A", note_type=NoteType.TASK, title="ship the feature"),
+            _note("E", note_type=NoteType.ENTITY, title="Sarah Chen"),
+        ],
+        [Edge("A", "E", EdgeKind.INVOLVES)],
+    )
+    plan = build_plan(repo)
+    assert "E" not in plan.root_ids and "A" in plan.root_ids
+    assert "Sarah Chen" not in render_masterplan(plan)
+
+
 def test_no_events_means_no_what_moved_section() -> None:
     repo = _repo([_note("A")], [])
     assert build_plan(repo).moved == ()

@@ -32,6 +32,7 @@ embeddings = ["sentence-transformers>=2.2"]
 windows = ["pynput>=1.7", "pyperclip>=1.8", "uiautomation>=2.0"]
 gui = ["PySide6>=6.5"]
 mcp = ["mcp>=1.0"]
+voice = ["sounddevice>=0.4", "faster-whisper>=1.0"]
 
 [[tool.mypy.overrides]]
 module = [
@@ -47,6 +48,8 @@ module = [
   "PySide6.*",
   "mcp",
   "mcp.*",
+  "sounddevice",
+  "faster_whisper",
 ]
 ignore_missing_imports = true
 

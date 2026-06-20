@@ -36,11 +36,20 @@ from grandplan.core.index_location import migrate_legacy_index
 from grandplan.core.models import NoteStatus, Source
 from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
+from grandplan.adapters.llm_entity_extractor import LlmEntityExtractor
+from grandplan.core.entities import (
+    EntityExtractor,
+    HeuristicEntityExtractor,
+    materialize_entities,
+)
 from grandplan.core.pipeline import assess, commit, propose
 from grandplan.core.placement import HeuristicPlacer, Placer, record_placement
 from grandplan.core.ports import Embedder, Organizer
 from grandplan.core.project import remove_phantom_link_files, write_projections
 from grandplan.core.reconcile import Reconciler, SimilarityReconciler
+from grandplan.core.directive import Directive, JsonlDirectiveStore, resolve_instruction
+from grandplan.core.export import to_csv, to_markdown_tasks
+from grandplan.core.render import MarkdownReportRenderer
 from grandplan.core.report import RunReport, build_run_report, render_report
 from grandplan.core.repository import InMemoryNoteRepository
 from grandplan.core.store import InMemoryOriginalStore, JsonlOriginalStore
@@ -71,14 +80,17 @@ def organize_text(
     embedder: Embedder | None = None,
     placer: Placer | None = None,
     reconciler: Reconciler | None = None,
+    entity_extractor: EntityExtractor | None = None,
 ) -> RunSummary:
     """Run the full core loop over each paragraph of `text` into `vault_dir`.
 
     `placer` (PR-G) proposes structural edges (`part_of`/`depends_on`) for each note against the
-    notes already committed; `reconciler` decides how each note relates to existing ones. None for
-    either keeps the deterministic baseline (the CLI arg layer supplies the LLM-backed ones)."""
+    notes already committed; `reconciler` decides how each note relates to existing ones;
+    `entity_extractor` (ROADMAP 3) surfaces people/org `entity` nodes + `involves` edges from each
+    note. None for any keeps the deterministic baseline (the CLI arg layer supplies LLM-backed ones)."""
     active_organizer: Organizer = organizer or HeuristicOrganizer()
     active_embedder: Embedder = embedder or HashingEmbedder()
+    active_entity_extractor: EntityExtractor = entity_extractor or HeuristicEntityExtractor()
     originals = InMemoryOriginalStore()
     repo = InMemoryNoteRepository()
     vault = MarkdownVaultWriter(vault_dir)
@@ -112,6 +124,15 @@ def organize_text(
             ),
         )
         record_placement(repo, placement, result.note.id)
+        # ROADMAP 3: surface people/org entities from the verbatim capture as `entity` nodes joined
+        # by `involves` edges — append-only, idempotent, never mutates the note.
+        materialize_entities(
+            repo,
+            originals,
+            active_embedder,
+            result.note.id,
+            active_entity_extractor.extract(chunk),
+        )
         committed += 1
 
     # Pass `originals` so each note's .md is (re-)rendered from its derived state too (PR-C):
@@ -132,6 +153,11 @@ def organize_text(
 def _make_placer(use_llm: bool, model: str) -> Placer:
     """The structural placer for the run: LLM under the default, deterministic heuristic for --no-llm."""
     return LlmPlacer(model=model) if use_llm else HeuristicPlacer()
+
+
+def _make_entity_extractor(use_llm: bool, model: str) -> EntityExtractor:
+    """The entity extractor for the run: LLM (unioned with heuristic) by default, heuristic for --no-llm."""
+    return LlmEntityExtractor(model=model) if use_llm else HeuristicEntityExtractor()
 
 
 def _paragraphs(text: str) -> list[str]:
@@ -162,6 +188,7 @@ def _run_organize(args: argparse.Namespace) -> int:
             organizer=organizer,
             embedder=embedder,
             placer=_make_placer(use_llm, args.model),  # PR-G: structural part_of/depends_on edges
+            entity_extractor=_make_entity_extractor(use_llm, args.model),  # ROADMAP 3: entities
             reconciler=(
                 LlmContextualReconciler(model=args.model) if use_llm else None
             ),  # neighborhood-aware relationship classification
@@ -193,6 +220,7 @@ def _organize_originals(
     embedder: Embedder,
     vault: MarkdownVaultWriter,
     placer: Placer,
+    entity_extractor: EntityExtractor,
 ) -> tuple[int, int]:
     """Re-run organize→assess→commit over already-captured originals (regenerate). Returns
     (committed, skipped-as-duplicate). The originals are never mutated (read-only here)."""
@@ -217,6 +245,9 @@ def _organize_originals(
             ),
         )
         record_placement(repo, placement, result.note.id)
+        materialize_entities(
+            repo, originals, embedder, result.note.id, entity_extractor.extract(original.text)
+        )
         committed += 1
     return committed, skipped
 
@@ -301,6 +332,7 @@ def _run_regenerate(args: argparse.Namespace) -> int:
             embedder=embedder,
             vault=vault,
             placer=_make_placer(use_llm, args.model),  # PR-G: structural edges on regenerate too
+            entity_extractor=_make_entity_extractor(use_llm, args.model),  # ROADMAP 3: entities
         )
     except OrganizerUnavailable as exc:
         temp_path.unlink(missing_ok=True)  # leave the existing index untouched
@@ -375,10 +407,136 @@ def _run_doctor(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_mcp(args: argparse.Namespace) -> int:
-    """`grandplan mcp -o <vault> [--embeddings]`: serve the vault to AI agents over MCP/stdio.
+def _run_report(args: argparse.Namespace) -> int:
+    """`grandplan report -o <vault> [--out PATH] [--title T]`: render a stand-alone Markdown report.
 
-    Read-only + offline (stdio transport, no sockets). Needs the optional `mcp` extra.
+    A deliverable (not a live projection): one self-contained document — summary, top priorities,
+    blocked, schedule, hierarchy by horizon, open questions, graph health. Read-only over the vault;
+    writes the report file (default `<vault>/report.md`) and echoes it to stdout when `--out -`.
+    """
+    vault_dir = Path(args.vault)
+    index_root = migrate_legacy_index(vault_dir)
+    index_path = index_root / "index.jsonl"
+    if not index_path.exists():
+        print(f"no index found for {vault_dir} (nothing to report)", file=sys.stderr)
+        return 1
+    repo = JsonlNoteRepository(index_path)
+    originals = JsonlOriginalStore(index_root / "inbox.jsonl")
+    renderer = MarkdownReportRenderer(
+        title=args.title or "grandplan report",
+        created=datetime.now(timezone.utc).date().isoformat(),
+    )
+    text = renderer.render(repo, originals)
+    if args.out == "-":
+        print(text)
+        return 0
+    out = Path(args.out) if args.out else vault_dir / "report.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    print(f"wrote report to {out}")
+    return 0
+
+
+def _run_export(args: argparse.Namespace) -> int:
+    """`grandplan export -o <vault> --format tasks|csv [--out PATH]`: export to another tool's format.
+
+    Local + offline (zero egress). `tasks` → a Markdown checklist (Obsidian Tasks / GitHub style);
+    `csv` → one row per note. Read-only over the vault; writes the export file (or stdout with `-`).
+    """
+    vault_dir = Path(args.vault)
+    index_root = migrate_legacy_index(vault_dir)
+    index_path = index_root / "index.jsonl"
+    if not index_path.exists():
+        print(f"no index found for {vault_dir} (nothing to export)", file=sys.stderr)
+        return 1
+    repo = JsonlNoteRepository(index_path)
+    notes = repo.current_notes()
+    if args.format == "csv":
+        text, default_name = to_csv(notes), "export.csv"
+    else:
+        text, default_name = to_markdown_tasks(notes), "tasks.md"
+    if args.out == "-":
+        print(text)
+        return 0
+    out = Path(args.out) if args.out else vault_dir / default_name
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    print(f"wrote {args.format} export to {out}")
+    return 0
+
+
+def _run_directive(args: argparse.Namespace) -> int:
+    """`grandplan directive add|list -o <vault>`: queue / inspect agent intake directives.
+
+    `add` enqueues a "content + instruction" directive (from `--prompt` or a `--playbook`) an agent
+    later fulfils over MCP; `list` shows pending ones. Append-only + offline. The eventual phone→agent
+    transport simply calls `add`; the agent reads them via `grandplan mcp --directives`.
+    """
+    vault_dir = Path(args.vault)
+    index_root = migrate_legacy_index(vault_dir)
+    store = JsonlDirectiveStore(index_root / "directives.jsonl")
+    if args.directive_command == "list":
+        pending = store.pending()
+        if not pending:
+            print("no pending directives")
+            return 0
+        for directive in pending:
+            preview = directive.content[:60].replace("\n", " ")
+            label = directive.playbook or "ad-hoc"
+            print(f"{directive.id}  [{label}]  {preview}")
+        return 0
+    try:
+        instruction, playbook = resolve_instruction(
+            playbook=args.playbook or "", prompt=args.prompt or ""
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    content = _read_input(args.content) if args.content else sys.stdin.read()
+    if not content.strip():
+        print("error: no content (pass --content <file|-> or pipe text in)", file=sys.stderr)
+        return 1
+    directive = Directive.create(
+        content,
+        instruction,
+        datetime.now(timezone.utc).isoformat(),
+        playbook=playbook,
+    )
+    store.add(directive)
+    print(f"queued directive {directive.id} ({playbook or 'ad-hoc'})")
+    return 0
+
+
+def _run_serve(args: argparse.Namespace) -> int:
+    """`grandplan serve -o <vault> [--host H] [--port P] [--token T]`: HTTP directive intake.
+
+    Receives `POST /directive` (`{content, playbook?, prompt?}`) and enqueues a directive an agent
+    later fulfils. Binds 127.0.0.1 by default (safe); pass a routable --host + a --token to receive
+    directives from your phone over the LAN/VPN. Offline: it only receives and stores locally.
+    """
+    vault_dir = Path(args.vault)
+    index_root = migrate_legacy_index(vault_dir)
+    store = JsonlDirectiveStore(index_root / "directives.jsonl")
+    if args.host not in ("127.0.0.1", "localhost") and not args.token:
+        print(
+            "error: refusing to bind a non-localhost host without a --token "
+            "(anyone on the network could enqueue directives)",
+            file=sys.stderr,
+        )
+        return 1
+    from grandplan.adapters.http_intake import serve_intake
+
+    serve_intake(  # pragma: no cover - binds a socket; the request logic is tested via handle_intake
+        store, host=args.host, port=args.port, token=args.token
+    )
+    return 0
+
+
+def _run_mcp(args: argparse.Namespace) -> int:
+    """`grandplan mcp -o <vault> [--embeddings] [--write] [--directives]`: serve the vault over MCP.
+
+    Offline (stdio transport, no sockets). Read-only by default; `--write` exposes the append-only
+    write tools; `--directives` exposes the directive intake tools (list/complete). Needs `mcp`.
     """
     vault_dir = Path(args.vault)
     index_root = migrate_legacy_index(vault_dir)
@@ -393,8 +551,20 @@ def _run_mcp(args: argparse.Namespace) -> int:
     try:
         from grandplan.adapters.mcp_server import run_stdio_server
         from grandplan.core.query import VaultQuery
+        from grandplan.core.write import VaultWrite
 
-        run_stdio_server(VaultQuery(repo=repo, originals=originals, embedder=embedder))
+        query = VaultQuery(repo=repo, originals=originals, embedder=embedder)
+        write = (
+            VaultWrite(repo=repo, originals=originals, embedder=embedder)
+            if getattr(args, "write", False)
+            else None
+        )
+        directives = (
+            JsonlDirectiveStore(index_root / "directives.jsonl")
+            if getattr(args, "directives", False)
+            else None
+        )
+        run_stdio_server(query, write, directives)
     except (ImportError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -510,13 +680,82 @@ def main(argv: list[str] | None = None) -> int:
         "--out", default="", help="output .ics path (default: <vault>/grandplan.ics)"
     )
 
+    report_cmd = subparsers.add_parser(
+        "report",
+        help="Render a stand-alone Markdown report (deliverable) from a vault.",
+    )
+    report_cmd.add_argument("-o", "--vault", required=True, help="the vault directory")
+    report_cmd.add_argument(
+        "--out", default="", help="output path (default: <vault>/report.md; use - for stdout)"
+    )
+    report_cmd.add_argument(
+        "--title", default="", help="report title (default: 'grandplan report')"
+    )
+
+    export_cmd = subparsers.add_parser(
+        "export",
+        help="Export to another tool's format (Markdown Tasks or CSV) — local, offline.",
+    )
+    export_cmd.add_argument("-o", "--vault", required=True, help="the vault directory")
+    export_cmd.add_argument(
+        "--format", choices=("tasks", "csv"), default="tasks", help="export format (default: tasks)"
+    )
+    export_cmd.add_argument(
+        "--out", default="", help="output path (default: <vault>/tasks.md|export.csv; - for stdout)"
+    )
+
     mcp_cmd = subparsers.add_parser(
         "mcp",
-        help="Serve the vault to AI agents over MCP/stdio (read-only; needs the 'mcp' extra).",
+        help="Serve the vault to AI agents over MCP/stdio (read-only by default; needs 'mcp' extra).",
     )
     mcp_cmd.add_argument("-o", "--vault", required=True, help="the vault directory")
     mcp_cmd.add_argument(
         "--embeddings", action="store_true", help="use sentence-transformer embeddings for search"
+    )
+    mcp_cmd.add_argument(
+        "--write",
+        action="store_true",
+        help="expose append-only write tools (set_status/record_edit/add_resource/place/"
+        "propose_note); off by default so agents are read-only until asked",
+    )
+    mcp_cmd.add_argument(
+        "--directives",
+        action="store_true",
+        help="expose directive intake tools (list_directives/complete_directive)",
+    )
+
+    directive_cmd = subparsers.add_parser(
+        "directive",
+        help="Queue / list agent intake directives (content + instruction) — append-only, offline.",
+    )
+    directive_sub = directive_cmd.add_subparsers(dest="directive_command", required=True)
+    add_directive = directive_sub.add_parser("add", help="Queue a directive for the agent.")
+    add_directive.add_argument("-o", "--vault", required=True, help="the vault directory")
+    add_directive.add_argument(
+        "--content", default="", help="content file (or - for stdin; default: stdin)"
+    )
+    add_directive.add_argument(
+        "--playbook", default="", help="preset instruction name (e.g. profile-and-connect)"
+    )
+    add_directive.add_argument(
+        "--prompt", default="", help="ad-hoc instruction (overrides playbook)"
+    )
+    list_directives = directive_sub.add_parser("list", help="List pending directives.")
+    list_directives.add_argument("-o", "--vault", required=True, help="the vault directory")
+
+    serve_cmd = subparsers.add_parser(
+        "serve",
+        help="HTTP directive intake — POST /directive to enqueue (binds 127.0.0.1 by default).",
+    )
+    serve_cmd.add_argument("-o", "--vault", required=True, help="the vault directory")
+    serve_cmd.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="bind host (default 127.0.0.1; needs --token if routable)",
+    )
+    serve_cmd.add_argument("--port", type=int, default=8765, help="bind port (default 8765)")
+    serve_cmd.add_argument(
+        "--token", default="", help="shared secret required in 'Authorization: Bearer <token>'"
     )
 
     gui = subparsers.add_parser(
@@ -547,6 +786,14 @@ def main(argv: list[str] | None = None) -> int:
         return _run_doctor(args)
     if args.command == "calendar":
         return _run_calendar(args)
+    if args.command == "report":
+        return _run_report(args)
+    if args.command == "export":
+        return _run_export(args)
+    if args.command == "directive":
+        return _run_directive(args)
+    if args.command == "serve":
+        return _run_serve(args)
     if args.command == "mcp":
         return _run_mcp(args)
     return _run_organize(args)

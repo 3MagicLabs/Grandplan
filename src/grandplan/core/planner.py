@@ -81,9 +81,15 @@ def build_plan(repo: NoteRepository) -> Plan:
             now.append(note)
 
     parent_of, child_ids = _hierarchy(repo, notes)
+    # `entity` notes are cross-cutting referents joined by `involves` edges, not part of the planning
+    # hierarchy — keep them out of the masterplan roots so the plan stays goals/projects/actions.
     root_ids = tuple(
         sorted(
-            (nid for nid in notes if nid not in parent_of),
+            (
+                nid
+                for nid in notes
+                if nid not in parent_of and notes[nid].type is not NoteType.ENTITY
+            ),
             key=lambda i: (_HORIZON_RANK[notes[i].horizon], notes[i].title, i),
         )
     )
