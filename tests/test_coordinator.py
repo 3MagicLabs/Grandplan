@@ -85,6 +85,25 @@ def _stages(statuses: list[CaptureStatus]) -> list[Stage]:
     return [status.stage for status in statuses]
 
 
+def test_submit_text_captures_typed_input_without_a_selection(tmp_path: Path) -> None:
+    # Quick-capture (P0): typed text runs through the SAME pipeline, bypassing the selection capturer.
+    coord, repo, _ = _make(
+        tmp_path,
+        capturer=SeqCapturer([None]),  # selection capturer returns nothing — must be ignored
+        review=lambda state: True,
+    )
+    assert coord.submit_text("buy milk and call the bank") is True
+    result = coord.process_one(timeout=0)
+    assert result is not None  # committed (not EMPTY — the typed text was used)
+    assert result.original.text == "buy milk and call the bank"  # verbatim typed text preserved
+    assert len(repo.notes()) == 1
+
+
+def test_submit_text_rejects_blank_input(tmp_path: Path) -> None:
+    coord, _, _ = _make(tmp_path, capturer=SeqCapturer([None]), review=lambda state: True)
+    assert coord.submit_text("   ") is False  # nothing to capture
+
+
 def test_approve_commits_writes_vault_and_reports_full_stage_sequence(tmp_path: Path) -> None:
     statuses: list[CaptureStatus] = []
     committed: list[object] = []

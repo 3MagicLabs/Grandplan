@@ -104,7 +104,8 @@ class VaultWriter(Protocol):
     """Write an approved note (with its links) into a vault; return the file path.
 
     `targets` maps each link's target_id to the target Note so links can render as resolvable
-    `[[filename|title]]` wikilinks (SPEC US-5: no broken links).
+    `[[filename|title]]` wikilinks (SPEC US-5: no broken links). `stems` is an optional projection-wide
+    `id → filename-stem` map so links use the exact stem each target file is written under.
     """
 
     def write(
@@ -116,6 +117,9 @@ class VaultWriter(Protocol):
         targets: Mapping[str, Note] | None = None,
         status: NoteStatus | None = None,
         history: tuple[NoteEvent, ...] = (),
+        stems: Mapping[str, str] | None = None,
+        backlinks: tuple[Edge, ...] = (),
+        sources: Mapping[str, Note] | None = None,
     ) -> Path: ...
 
 

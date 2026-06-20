@@ -168,8 +168,20 @@ class CaptureCoordinator:
 
         Thread-safe: called from the global-hotkey thread and the tray menu alike.
         """
+        return self._enqueue(_REQUEST)
+
+    def submit_text(self, text: str) -> bool:
+        """Quick-capture: enqueue already-typed text (no selection needed). Returns False if the text
+        is blank or the buffer is full. Same pipeline as `submit()` — only the source of the text
+        differs — so the quick-capture popup is a thin Qt shell over this (the popup itself is a
+        Windows adapter)."""
+        if not text.strip():
+            return False
+        return self._enqueue(text)
+
+    def _enqueue(self, request: object) -> bool:
         try:
-            self._queue.put_nowait(_REQUEST)
+            self._queue.put_nowait(request)
             return True
         except queue.Full:
             self._emit(
@@ -195,12 +207,12 @@ class CaptureCoordinator:
             )
         try:
             if timeout is None:
-                self._queue.get()
+                request = self._queue.get()
             else:
-                self._queue.get(timeout=timeout)
+                request = self._queue.get(timeout=timeout)
         except queue.Empty:
             return None
-        return self._process()
+        return self._process(request)
 
     def start(self) -> None:
         """Start the background worker (idempotent)."""
@@ -229,10 +241,16 @@ class CaptureCoordinator:
         while not self._shutdown.is_set():
             self.process_one(timeout=_POLL_INTERVAL)
 
-    def _process(self) -> Committed | None:
+    def _process(self, request: object = _REQUEST) -> Committed | None:
         try:
-            self._emit(Stage.CAPTURING, "reading the selection")
-            text = self._capturer.capture()
+            # A typed-text request (quick-capture) carries its own text; the selection request reads
+            # the current selection via the capturer. Either way the rest of the pipeline is identical.
+            if isinstance(request, str):
+                self._emit(Stage.CAPTURING, "capturing typed note")
+                text: str | None = request
+            else:
+                self._emit(Stage.CAPTURING, "reading the selection")
+                text = self._capturer.capture()
             if not text:
                 self._emit(Stage.EMPTY, "no text was selected")
                 return None

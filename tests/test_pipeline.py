@@ -11,7 +11,7 @@ from grandplan.core.pipeline import assess, commit, propose
 from grandplan.core.reconcile import Relationship, SimilarityReconciler
 from grandplan.core.repository import InMemoryNoteRepository
 from grandplan.core.store import InMemoryOriginalStore
-from grandplan.core.vault import MarkdownVaultWriter
+from grandplan.core.vault import MarkdownVaultWriter, note_filename
 
 _SOURCE = Source(app="Notepad", title="note.txt")
 _CREATED = "2026-06-15T12:00:00Z"
@@ -82,10 +82,11 @@ def test_related_note_is_detected_and_linked(tmp_path: Path) -> None:
 
     second = commit(o2, p2, a2, repo=repo, vault=vault, links=a2.proposal.links())
     assert any((e.source_id, e.target_id) == (second.note.id, first.note.id) for e in repo.edges())
-    # Resolvable alias-based wikilink (displays the title, resolves via the target's id alias).
+    # Resolvable wikilink by the target's FILENAME (Obsidian resolves it natively), displaying the
+    # title — never the opaque id (which renders as a phantom id node and breaks on Markdown export).
     written = second.path.read_text(encoding="utf-8")
-    assert f"[[{first.note.id}|{first.note.title}]]" in written
-    assert f"[[{first.note.id}]]" not in written  # not the bare, undisplayed form
+    assert f"[[{note_filename(first.note)}|{first.note.title}]]" in written
+    assert f"[[{first.note.id}" not in written  # the id never appears inside a link
 
 
 def test_exact_duplicate_capture_is_flagged(tmp_path: Path) -> None:

@@ -30,7 +30,7 @@ from grandplan.core.planner import (
 )
 from grandplan.core.ports import NoteRepository
 from grandplan.core.store import OriginalStore
-from grandplan.core.vault import MarkdownVaultWriter, read_note_id
+from grandplan.core.vault import MarkdownVaultWriter, plan_filenames, read_note_id
 
 logger = logging.getLogger(__name__)
 
@@ -113,11 +113,14 @@ body text** — so another AI can rewrite a note's body and the edit survives.
   `due`, `resources`.
 - `# Title`, then the body: a one-line summary, key points, and — for actionable notes — a
   `## Next steps` section of `- [ ]` checklist items.
-- `## Links`: typed relationships as `[[id|title]]`. `## History`: the note's change log.
-  `## Source (original)`: the verbatim capture — never edit this.
+- `## Links`: typed relationships as `[[filename|title]]` (the target note's actual filename, which
+  Obsidian resolves natively). `## Linked mentions`: the inbound side — notes that link *to* this one
+  (generated; portable backlinks). `## History`: the note's change log. `## Source (original)`: the
+  verbatim capture — never edit this.
 
 ## How to relate notes (another AI)
-Add a typed link line under `## Links`, e.g. `- depends_on [[<id>|<title>]]`. Edge kinds:
+Add a typed link line under `## Links`, e.g. `- depends_on [[<target-filename>|<title>]]` (linking by
+the target's filename, not its id). Edge kinds:
 `depends_on`, `blocks`, `waiting_on`, `part_of`, `next`, `relates`, `builds_on`, `refines`,
 `supersedes`, `contradicts`, `involves`. These edges drive the plan, timeline, and graph.
 
@@ -223,9 +226,14 @@ def write_notes(
     writer = MarkdownVaultWriter(vault_dir)
     current = repo.current_notes()
     by_id = {note.id: note for note in current}
+    # One deterministic id→filename map for the whole projection, so every link uses the exact stem
+    # its target file is written under (collision suffixes included) — links and files never diverge.
+    stems = plan_filenames(current)
     edges_by_source: dict[str, list[Edge]] = {}
+    edges_by_target: dict[str, list[Edge]] = {}  # inbound edges → the "## Linked mentions" section
     for edge in repo.edges():
         edges_by_source.setdefault(edge.source_id, []).append(edge)
+        edges_by_target.setdefault(edge.target_id, []).append(edge)
 
     written: dict[str, Path] = {}
     for note in current:
@@ -237,6 +245,10 @@ def write_notes(
         targets: dict[str, Note] = {
             edge.target_id: by_id[edge.target_id] for edge in links if edge.target_id in by_id
         }
+        backlinks = tuple(edges_by_target.get(note.id, ()))
+        sources: dict[str, Note] = {
+            edge.source_id: by_id[edge.source_id] for edge in backlinks if edge.source_id in by_id
+        }
         # `note` is already the derived current note (its `.status` is the derived status), so the
         # writer's default `status=None` correctly renders the current status — no override needed.
         written[note.id] = writer.write(
@@ -244,6 +256,9 @@ def write_notes(
             original,
             links,
             targets=targets,
+            stems=stems,
+            backlinks=backlinks,
+            sources=sources,
             history=repo.history_of(note.id),
             preserve_body=preserve_external_body,
         )

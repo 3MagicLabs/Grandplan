@@ -198,14 +198,51 @@ def _target() -> Note:
     )
 
 
-def test_render_resolves_links_to_id_alias_with_title() -> None:
+def test_render_links_use_target_filename_not_id() -> None:
+    # Links must reference the target's human-readable FILENAME (Obsidian resolves `[[filename]]`
+    # natively), NEVER the opaque id. A bare/aliased id link shows up as a phantom id-named node in
+    # the graph and dies on plain-Markdown export (the SiYuan failure mode) — the reported bug.
     edge = Edge("abc123", "target9", EdgeKind.DEPENDS_ON)
     md = render_markdown(_note(), _original(), (edge,), targets={"target9": _target()})
     assert "## Links" in md
-    # Alias-based wikilink: resolves via the target's `aliases: ["<id>"]`, displays the title,
-    # and is independent of the (now clean, id-free) filename.
-    assert "depends_on [[target9|Build resume]]" in md
-    assert "build-resume-target9" not in md  # the id is no longer baked into the link/filename
+    assert "depends_on [[build-resume|Build resume]]" in md  # filename stem + readable title
+    assert "[[target9" not in md  # the id never appears inside a link
+
+
+def test_render_links_use_disambiguated_stem_on_title_collision() -> None:
+    # When two notes share a title (→ same slug), the link must use the SAME disambiguated stem the
+    # file is written under, so it still resolves. The stems map (built per projection) supplies it.
+    edge = Edge("abc123", "target9", EdgeKind.DEPENDS_ON)
+    md = render_markdown(
+        _note(),
+        _original(),
+        (edge,),
+        targets={"target9": _target()},
+        stems={"target9": "build-resume-target9"},
+    )
+    assert "depends_on [[build-resume-target9|Build resume]]" in md
+
+
+def test_render_backlinks_as_filename_links() -> None:
+    # A "## Linked mentions" section lists notes that link TO this one, by the SOURCE's filename
+    # (never id), so the inbound side of the graph is visible and portable in plain Markdown.
+    edge = Edge(
+        "abc123", "target9", EdgeKind.DEPENDS_ON
+    )  # _note (abc123) depends_on _target (target9)
+    md = render_markdown(_target(), _original(), (), backlinks=(edge,), sources={"abc123": _note()})
+    assert "## Linked mentions" in md
+    assert "depends_on [[project-kickoff|Project kickoff]]" in md  # source's filename + title
+    assert "[[abc123" not in md  # the source id never appears in a link
+
+
+def test_render_omits_linked_mentions_when_none() -> None:
+    assert "## Linked mentions" not in render_markdown(_target(), _original(), ())
+
+
+def test_render_drops_backlink_with_unknown_source() -> None:
+    edge = Edge("ghost", "target9", EdgeKind.RELATES)
+    md = render_markdown(_target(), _original(), (), backlinks=(edge,), sources={})
+    assert "## Linked mentions" not in md  # unknown source → no phantom backlink
 
 
 def test_render_flattens_source_and_adds_alias() -> None:

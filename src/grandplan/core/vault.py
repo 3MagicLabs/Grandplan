@@ -7,9 +7,12 @@ cannot break it. The verbatim original keeps the note lossless on disk too.
 
 File naming & links: files are named after a **clean, human-readable slug** of the title — the
 content id is *not* in the filename (it lives in frontmatter `id` + `aliases`). Links render as
-`[[<id>|<title>]]`, which Obsidian resolves to the target via its `aliases: ["<id>"]` and displays
-the title — so links are independent of the (clean) filename. If two *different* notes slugify to
-the same name, the second is disambiguated (`<slug>-<id6>.md`) so a note is never clobbered.
+`[[<target-filename>|<title>]]` — the target's actual slug — which Obsidian resolves **natively**
+(no id indirection) and survives plain-Markdown export. (Linking by id instead produces a phantom
+id-named node in the graph and breaks on export — the SiYuan failure mode.) The `aliases: ["<id>"]`
+entry is kept only as a fallback so any *legacy* `[[<id>]]` links still resolve. If two *different*
+notes slugify to the same name, the second is disambiguated (`<slug>-<id6>.md`) so a note is never
+clobbered; the per-projection stems map (see `plan_filenames`) keeps links and filenames in sync.
 The `source` object is flattened into scalar `source_*` keys so Obsidian's property UI renders it
 cleanly. Planning properties (`due`, `contexts`, `collections`) are emitted when present.
 """
@@ -18,7 +21,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from grandplan.core.models import Edge, Note, NoteEvent, NoteStatus, Original
@@ -33,6 +36,24 @@ _ID_LINE = re.compile(r'^id:\s*"([^"]+)"', re.MULTILINE)
 def note_filename(note: Note) -> str:
     """Clean, human-readable file stem for a note (the id lives in frontmatter/aliases, not here)."""
     return _slug(note.title)
+
+
+def plan_filenames(notes: Iterable[Note]) -> dict[str, str]:
+    """Deterministic `id → filename-stem` map for a set of notes.
+
+    Filenames are a pure function of the note set (not of disk state), so a note's links and its own
+    file always agree on the same stem — the key to resolvable `[[filename]]` links. Two notes that
+    slugify to the same base are disambiguated with a short id suffix; iteration is id-sorted so the
+    assignment is stable across runs (the first id wins the clean slug).
+    """
+    stems: dict[str, str] = {}
+    owner: dict[str, str] = {}  # stem -> id of the note that already owns it
+    for note in sorted(notes, key=lambda n: n.id):
+        base = note_filename(note)
+        stem = base if owner.get(base, note.id) == note.id else f"{base}-{note.id[:6]}"
+        owner[stem] = note.id
+        stems[note.id] = stem
+    return stems
 
 
 class MarkdownVaultWriter:
@@ -51,9 +72,15 @@ class MarkdownVaultWriter:
         status: NoteStatus | None = None,
         history: tuple[NoteEvent, ...] = (),
         preserve_body: bool = False,
+        stems: Mapping[str, str] | None = None,
+        backlinks: tuple[Edge, ...] = (),
+        sources: Mapping[str, Note] | None = None,
     ) -> Path:
         self._dir.mkdir(parents=True, exist_ok=True)
-        path = self._dir / f"{self._unique_stem(note)}.md"
+        # Prefer the projection-wide stems map (keeps this file's name and its inbound links in sync,
+        # incl. collision suffixes); fall back to disk-based disambiguation for one-off incremental writes.
+        stem = (stems or {}).get(note.id) or self._unique_stem(note)
+        path = self._dir / f"{stem}.md"
         # Ownership split (option B): grandplan owns the frontmatter / Links / History / Source blocks;
         # the BODY belongs to whoever edits the file (the user or another AI). On a re-render we keep
         # the on-disk body so an external edit is never clobbered; a fresh note (or a re-organize that
@@ -67,6 +94,9 @@ class MarkdownVaultWriter:
             status=status,
             history=history,
             body_override=body_override,
+            stems=stems,
+            backlinks=backlinks,
+            sources=sources,
         )
         path.write_text(markdown, encoding="utf-8")
         return path
@@ -84,6 +114,7 @@ class MarkdownVaultWriter:
 # (after the `# title`) is the agent/user-owned body; these blocks are always regenerated.
 _MANAGED_HEADINGS: tuple[str, ...] = (
     "## Links",
+    "## Linked mentions",
     "## Resources",
     "## History",
     "## Source (original)",
@@ -119,12 +150,18 @@ def render_markdown(
     status: NoteStatus | None = None,
     history: tuple[NoteEvent, ...] = (),
     body_override: str | None = None,
+    stems: Mapping[str, str] | None = None,
+    backlinks: tuple[Edge, ...] = (),
+    sources: Mapping[str, Note] | None = None,
 ) -> str:
     body = (body_override if body_override is not None else note.body).strip()
     parts = [_frontmatter(note, original, status), "", f"# {note.title}", "", body]
-    wikilinks = _wikilinks(note.id, links, targets or {})
+    wikilinks = _wikilinks(note.id, links, targets or {}, stems)
     if wikilinks:
         parts += ["", "## Links", *wikilinks]
+    mentions = _backlinks(note.id, backlinks, sources or {}, stems)
+    if mentions:
+        parts += ["", "## Linked mentions", *mentions]
     if note.resources:
         parts += ["", "## Resources", "", *[_resource_line(r) for r in note.resources]]
     if history:
@@ -203,19 +240,49 @@ def _frontmatter(note: Note, original: Original, status: NoteStatus | None = Non
     return f"---\n{body}\n---"
 
 
-def _wikilinks(note_id: str, links: tuple[Edge, ...], targets: Mapping[str, Note]) -> list[str]:
+def _wikilinks(
+    note_id: str,
+    links: tuple[Edge, ...],
+    targets: Mapping[str, Note],
+    stems: Mapping[str, str] | None = None,
+) -> list[str]:
     rendered: list[str] = []
     for edge in links:
         if edge.source_id != note_id:
             continue
         target = targets.get(edge.target_id)
-        # Skip a link whose target note isn't known: a bare `[[<id>]]` can't resolve, so Obsidian
-        # renders it as a phantom node *named by the id* — exactly the "ids as connected notes"
-        # clutter. Better no link than a fake one. Resolved links use the target's `aliases:["<id>"]`
-        # and display the title.
+        # Skip a link whose target note isn't known: any `[[…]]` to a non-existent note renders as a
+        # phantom node in Obsidian. Better no link than a broken one.
         if target is None:
             continue
-        rendered.append(f"- {edge.kind.value} [[{edge.target_id}|{target.title}]]")
+        # Link by the target's human-readable FILENAME — Obsidian resolves `[[filename]]` natively and
+        # the link survives plain-Markdown export. NEVER the opaque id (it becomes a phantom id-named
+        # node and dies on export — the reported bug). The stems map gives the exact on-disk stem incl.
+        # any collision suffix; without it, the plain title slug is correct in the no-collision case.
+        stem = (stems or {}).get(edge.target_id) or note_filename(target)
+        rendered.append(f"- {edge.kind.value} [[{stem}|{target.title}]]")
+    return rendered
+
+
+def _backlinks(
+    note_id: str,
+    backlinks: tuple[Edge, ...],
+    sources: Mapping[str, Note],
+    stems: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Inbound links: the notes that link TO this one, rendered by the SOURCE note's filename.
+
+    The portable, plain-Markdown counterpart to Obsidian's backlinks pane — same filename-not-id rule
+    as outbound links (a backlink whose source note is unknown is dropped, never a phantom)."""
+    rendered: list[str] = []
+    for edge in backlinks:
+        if edge.target_id != note_id:
+            continue
+        source = sources.get(edge.source_id)
+        if source is None:
+            continue
+        stem = (stems or {}).get(edge.source_id) or note_filename(source)
+        rendered.append(f"- {edge.kind.value} [[{stem}|{source.title}]]")
     return rendered
 
 

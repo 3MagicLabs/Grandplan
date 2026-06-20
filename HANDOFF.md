@@ -3,6 +3,30 @@
 > Working state for picking up in a fresh session (keeps multi-file feature work out of an
 > exhausted context window, per the engineering rules).
 
+## In progress — branch `fix/link-notes-by-filename` (6 commits, NOT merged/pushed)
+
+Gate green at every commit (610 tests, ruff + ruff-format + mypy clean). Working tree clean.
+
+1. **fix: id-linking bug** (`5a78205`) — links render `[[<filename>|<title>]]` (was `[[<id>]]` via alias
+   indirection → phantom id nodes / dead on Markdown export, the user-reported bug). New deterministic
+   `plan_filenames()` id→stem map (collision suffix `-<id6>`) in `core/vault.py`, wired through
+   `project.write_notes`. Heal a vault: `grandplan rerender -o <vault>`. Memory: `link-notes-by-filename`.
+2. **docs: prior-art research** (`e90e389`) — ~120 verified repos → `docs/research/LANDSCAPE.md` (synthesis)
+   + `A`–`E` detail docs + `PRIOR-ART-ADOPTION.md` + `LLM-WIKI-DEEPREAD.md`.
+3. **feat: backlinks** (`f783c42`) — `## Linked mentions` (inbound links by source filename). P0 slice 1.
+4. **feat: chunk embeddings** (`071c6e7`) — pure `core/chunk.py` (`chunk_text`/`embed_chunks`). Track-1
+   foundation; additive (note-level path untouched).
+5. **feat: quick-capture core seam** (`404f6f7`) — `CaptureCoordinator.submit_text()`. P0 slice 4.
+6. **chore: regenerated sample `my-vault/`** (`07c9c94`) — filename links + backlinks; all links resolve.
+
+**Next (see `SPEC-P0-ENGINE.md` + `docs/research/LANDSCAPE.md`):**
+- GUI adapters (Windows-only, untestable under WSL): quick-capture Qt popup over `submit_text()`;
+  related-notes-at-review panel + one-click link (**core already exists**: `ReconcileProposal.links()`).
+- Track-1 next slice: wire chunk embeddings into repo/reconciler (hybrid retrieval + local rerank) — the
+  scaling fix. Refs: LightRAG / nano-graphrag / Langroid (all MIT).
+- Placeholder nodes (Foam): deferred — needs a named-target edge model (naive version reintroduces id-phantoms).
+- **User decision:** push / open PR(s)? Branch mixes fix + docs + 3 feats; can split into separate PRs.
+
 ## Where things stand (main)
 
 The MVP is complete, gated, and running on the user's native-Windows machine. Recent merged work:

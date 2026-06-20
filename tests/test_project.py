@@ -7,7 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from grandplan.core.models import Note, NoteEdit, NoteStatus, NoteType, Original, Source
+from grandplan.core.models import (
+    Edge,
+    EdgeKind,
+    Note,
+    NoteEdit,
+    NoteStatus,
+    NoteType,
+    Original,
+    Source,
+)
 from grandplan.core.project import write_projections
 from grandplan.core.repository import InMemoryNoteRepository
 from grandplan.core.store import InMemoryOriginalStore
@@ -24,6 +33,29 @@ def _repo() -> InMemoryNoteRepository:
 
 def _original(oid: str = "o1", text: str = "verbatim") -> Original:
     return Original(id=oid, text=text, source=Source(app="x"), created="2026-06-17T00:00:00Z")
+
+
+def test_backlinks_rendered_on_the_linked_to_note(tmp_path: Path) -> None:
+    # t1 --relates--> t2 : t2's file must show a "## Linked mentions" backlink to t1 by FILENAME.
+    repo = InMemoryNoteRepository()
+    repo.add_note(
+        Note(id="t1", original_id="o1", title="Do the thing", body="b", type=NoteType.TASK), (1.0,)
+    )
+    repo.add_note(
+        Note(id="t2", original_id="o2", title="Other note", body="b", type=NoteType.IDEA), (1.0,)
+    )
+    repo.add_edge(Edge("t1", "t2", EdgeKind.RELATES))
+    originals = InMemoryOriginalStore()
+    originals.add(_original("o1"))
+    originals.add(_original("o2"))
+    vault = tmp_path / "vault"
+    write_projections(repo, vault, originals=originals)
+
+    t2_md = (vault / "other-note.md").read_text(encoding="utf-8")
+    assert "## Linked mentions" in t2_md
+    assert "relates [[do-the-thing|Do the thing]]" in t2_md  # inbound, by source filename
+    t1_md = (vault / "do-the-thing.md").read_text(encoding="utf-8")
+    assert "relates [[other-note|Other note]]" in t1_md  # outbound link still present
 
 
 def test_write_projections_writes_graph_and_plan(tmp_path: Path) -> None:
