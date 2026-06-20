@@ -17,13 +17,16 @@ import json
 import logging
 import re
 from collections.abc import Callable
+from datetime import date
 from pathlib import Path
 
+from grandplan.core.agenda import build_agenda, render_agenda
 from grandplan.core.graph import export_graph
 from grandplan.core.models import Edge, Note
 from grandplan.core.planner import (
     _MASTERPLAN_MARKER,
     _TIMELINE_MARKER,
+    build_plan,
     write_masterplan,
     write_plan,
     write_timeline,
@@ -53,7 +56,15 @@ _TYPE_COLORS: dict[str, int] = {
 
 # Generated MOC / guide files are clutter in the *meaning* graph (they're views, not knowledge), so
 # the default Obsidian graph filter hides them — leaving only real notes and their typed connections.
-_GENERATED_FILES = ("Plan.md", "Masterplan.md", "Timeline.md", "graph.json", "_grandplan-guide.md")
+_GENERATED_FILES = (
+    "Plan.md",
+    "Masterplan.md",
+    "Timeline.md",
+    "Today.md",
+    "graph.json",
+    "_grandplan-guide.md",
+)
+_AGENDA_MARKER = "Generated daily agenda"
 _GRAPH_FILTER = " ".join(f'-path:"{name}"' for name in _GENERATED_FILES)
 
 
@@ -125,9 +136,9 @@ the target's filename, not its id). Edge kinds:
 `supersedes`, `contradicts`, `involves`. These edges drive the plan, timeline, and graph.
 
 ## Generated views (don't hand-edit — they are projections of the notes)
-`Plan.md` (now/blocked), `Timeline.md` (feasible schedule), `Masterplan.md` (by horizon),
-`graph.json` (nodes + typed edges). They are hidden from the Obsidian graph so it shows only real
-notes and their true connections.
+`Plan.md` (now/blocked), `Today.md` (daily agenda: overdue/due-today/next-up), `Timeline.md` (feasible
+schedule), `Masterplan.md` (by horizon), `graph.json` (nodes + typed edges). They are hidden from the
+Obsidian graph so it shows only real notes and their true connections.
 """
 
 
@@ -167,6 +178,23 @@ def remove_phantom_link_files(vault_dir: Path) -> int:
     return removed
 
 
+def write_agenda(repo: NoteRepository, path: Path, today: date) -> Path:
+    """Write the daily 'Today' agenda — overdue / due-today / next-up, urgency-ranked — for `today`."""
+    plan = build_plan(repo)
+    status_by_id = {note.id: (repo.status_of(note.id) or note.status) for note in plan.now}
+    path.write_text(
+        render_agenda(build_agenda(plan.now, status_by_id, today=today), today), encoding="utf-8"
+    )
+    return path
+
+
+def _is_grandplan_agenda(path: Path) -> bool:
+    try:
+        return _AGENDA_MARKER in path.read_text(encoding="utf-8")[:2048]
+    except OSError:
+        return False
+
+
 def write_projections(
     repo: NoteRepository,
     vault_dir: Path,
@@ -175,6 +203,7 @@ def write_projections(
     preserve_external_body: bool = True,
     reconcile_deletions: bool = False,
     protect_ids: frozenset[str] = frozenset(),
+    today: date | None = None,
 ) -> tuple[Path, Path]:
     """Write `graph.json` + `Plan.md` into `vault_dir`; return their paths. Idempotent.
 
@@ -183,7 +212,8 @@ def write_projections(
     (PR-C) — derived status + edited fields + per-note history — so the vault reflects progress;
     omit it to keep the lighter graph+plan-only behaviour. `preserve_external_body` (option B) keeps
     a note's on-disk body across re-renders so another AI's edits aren't clobbered; pass False to
-    re-organize from scratch (regenerate).
+    re-organize from scratch (regenerate). When `today` is supplied, a `Today.md` daily agenda is also
+    written (the caller — an I/O boundary — owns the real date so the core stays clock-free).
     """
     vault_dir.mkdir(parents=True, exist_ok=True)
     # Tombstone user-deleted notes FIRST — before any projection is written — so the graph, Plan,
@@ -202,6 +232,9 @@ def write_projections(
     write_masterplan(repo, _safe_target(vault_dir / "Masterplan.md", _is_grandplan_masterplan))
     # The Timeline (feasible execution order from the dependency DAG + due dates).
     write_timeline(repo, _safe_target(vault_dir / "Timeline.md", _is_grandplan_timeline))
+    # The daily agenda (overdue / due-today / next-up), only when the caller supplied today's date.
+    if today is not None:
+        write_agenda(repo, _safe_target(vault_dir / "Today.md", _is_grandplan_agenda), today)
     if originals is not None:
         write_notes(repo, originals, vault_dir, preserve_external_body=preserve_external_body)
     return graph_path, plan_path

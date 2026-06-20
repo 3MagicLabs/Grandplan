@@ -116,7 +116,9 @@ def organize_text(
 
     # Pass `originals` so each note's .md is (re-)rendered from its derived state too (PR-C):
     # status/edit events show up in the note files, not just in Plan.md/graph.json.
-    graph_path, plan_path = write_projections(repo, vault_dir, originals=originals)
+    graph_path, plan_path = write_projections(
+        repo, vault_dir, originals=originals, today=datetime.now(timezone.utc).date()
+    )
     return RunSummary(
         notes=committed,
         skipped_duplicates=skipped,
@@ -233,7 +235,7 @@ def _run_attach(args: argparse.Namespace) -> int:
         print(f"no note matched {args.ref!r} — try --describe to guide the match", file=sys.stderr)
         return 1
     # Re-render so the matched note's .md shows the new resource + history (PR-C/PR-D).
-    write_projections(repo, vault_dir, originals=originals)
+    write_projections(repo, vault_dir, originals=originals, today=datetime.now(timezone.utc).date())
     print(f"attached {result.resource.kind.value} to '{result.note.title}': {result.resource.ref}")
     return 0
 
@@ -251,7 +253,13 @@ def _run_rerender(args: argparse.Namespace) -> int:
     originals = JsonlOriginalStore(index_root / "inbox.jsonl")
     swept = remove_phantom_link_files(vault_dir)  # empty `<id>.md` stubs from old phantom links
     # reconcile_deletions: notes the user removed from the vault are tombstoned, not resurrected.
-    write_projections(repo, vault_dir, originals=originals, reconcile_deletions=True)
+    write_projections(
+        repo,
+        vault_dir,
+        originals=originals,
+        reconcile_deletions=True,
+        today=datetime.now(timezone.utc).date(),
+    )
     print(
         f"re-rendered {len(repo.notes())} note(s) in {vault_dir} "
         f"(links resolved, graph coloured, {swept} phantom stub(s) removed)"
@@ -313,6 +321,7 @@ def _run_regenerate(args: argparse.Namespace) -> int:
         vault_dir,
         originals=originals,
         preserve_external_body=False,
+        today=datetime.now(timezone.utc).date(),
     )
     print(
         f"regenerated {committed} note(s) from {len(originals.all())} original(s); "
