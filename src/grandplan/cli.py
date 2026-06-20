@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -32,7 +33,7 @@ from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
 from grandplan.core.attach import attach
 from grandplan.core.calendar import is_scheduled, to_ics
 from grandplan.core.embed import HashingEmbedder
-from grandplan.core.index_location import migrate_legacy_index
+from grandplan.core.index_location import index_dir, migrate_legacy_index
 from grandplan.core.models import NoteEvent, NoteStatus, Source
 from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
@@ -463,6 +464,81 @@ def _run_doctor(args: argparse.Namespace) -> int:
     repo = JsonlNoteRepository(index_path)
     originals = JsonlOriginalStore(index_root / "inbox.jsonl")
     print(render_report(build_run_report(repo, originals), organizer_label="(existing vault)"))
+    return 0
+
+
+def _is_dangerous_delete_target(path: Path) -> bool:
+    """True if deleting `path` would be obviously catastrophic (a filesystem/drive root or $HOME).
+
+    A safety net for `reset` (which the shell's careful-mode can't guard): never `rmtree` a root or
+    the user's home, even if the user points `-o` at one.
+    """
+    resolved = path.expanduser()
+    try:
+        resolved = resolved.resolve()
+    except OSError:  # pragma: no cover - defensive; resolve rarely raises
+        pass
+    if resolved.parent == resolved:  # filesystem / drive root (e.g. `/` or `C:\`)
+        return True
+    try:
+        return resolved == Path.home().resolve()
+    except OSError:  # pragma: no cover - defensive
+        return False
+
+
+def _run_reset(args: argparse.Namespace) -> int:
+    """`grandplan reset -o <vault> [--yes] [--keep-originals]`: wipe a vault back to empty.
+
+    Deletes the Obsidian vault folder AND grandplan's internal index (notes/edges/inbox/directives).
+    `--keep-originals` keeps the lossless captures (so `grandplan regenerate` can rebuild) and removes
+    only the derived notes/index + the vault folder. Asks for confirmation unless `--yes`.
+    """
+    vault_dir = Path(args.vault)
+    index_root = index_dir(vault_dir)  # locate (don't migrate — we're deleting)
+    if _is_dangerous_delete_target(vault_dir) or _is_dangerous_delete_target(index_root):
+        print(
+            f"error: refusing to reset {vault_dir} — that path looks like a root or home directory.",
+            file=sys.stderr,
+        )
+        return 1
+
+    note_count = (
+        len(JsonlNoteRepository(index_root / "index.jsonl").notes())
+        if (index_root / "index.jsonl").exists()
+        else 0
+    )
+    targets = [t for t in (vault_dir, index_root) if t.exists()]
+    if not targets and note_count == 0:
+        print(f"nothing to reset — no vault or index found for {vault_dir}")
+        return 0
+
+    if not args.yes:
+        print(f"This will permanently reset '{vault_dir}':", file=sys.stderr)
+        if vault_dir.exists():
+            print(f"  - delete the vault folder {vault_dir}", file=sys.stderr)
+        print(
+            f"  - delete the index ({note_count} note(s)) at {index_root}"
+            + ("  [keeping your captured originals]" if args.keep_originals else ""),
+            file=sys.stderr,
+        )
+        if input("Continue? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("aborted — nothing was deleted.", file=sys.stderr)
+            return 1
+
+    if vault_dir.exists():
+        shutil.rmtree(vault_dir)
+    if args.keep_originals:
+        # Keep inbox.jsonl (the lossless captures); drop the derived index + directives + backups.
+        for name in ("index.jsonl", "index.jsonl.bak", "directives.jsonl"):
+            (index_root / name).unlink(missing_ok=True)
+    elif index_root.exists():
+        shutil.rmtree(index_root)
+    kept = (
+        " (captured originals kept — run `grandplan regenerate` to rebuild)"
+        if args.keep_originals
+        else ""
+    )
+    print(f"reset complete: {vault_dir} is now empty.{kept}")
     return 0
 
 
@@ -1040,6 +1116,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     doctor.add_argument("-o", "--vault", required=True, help="the vault directory")
 
+    reset = subparsers.add_parser(
+        "reset",
+        help="Wipe a vault back to empty — deletes the Obsidian folder + grandplan's index.",
+    )
+    reset.add_argument("-o", "--vault", required=True, help="the vault directory")
+    reset.add_argument(
+        "--yes", action="store_true", help="skip the confirmation prompt (for scripts)"
+    )
+    reset.add_argument(
+        "--keep-originals",
+        action="store_true",
+        help="keep your captured originals (delete only derived notes/index; `regenerate` rebuilds)",
+    )
+
     calendar = subparsers.add_parser(
         "calendar", help="Export dated notes to an .ics calendar feed (offline; subscribe to it)."
     )
@@ -1225,6 +1315,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_regenerate(args)
     if args.command == "doctor":
         return _run_doctor(args)
+    if args.command == "reset":
+        return _run_reset(args)
     if args.command == "calendar":
         return _run_calendar(args)
     if args.command == "report":

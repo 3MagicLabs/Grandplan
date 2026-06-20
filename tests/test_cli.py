@@ -249,6 +249,75 @@ def test_replay_history_covers_all_event_kinds(tmp_path: Path) -> None:
     assert (preserved, dropped) == (4, 1)
 
 
+def _seed_vault(tmp_path: Path) -> "tuple[Path, Path]":
+    """Organize a couple of notes into a vault; return (vault_dir, index_root)."""
+    from grandplan.core.index_location import index_dir
+
+    vault = tmp_path / "vault"
+    src = tmp_path / "n.txt"
+    src.write_text("buy milk\n\ncall Sarah Chen", encoding="utf-8")
+    assert main(["organize", str(src), "-o", str(vault), "--no-llm"]) == 0
+    return vault, index_dir(vault)
+
+
+def test_reset_yes_deletes_vault_and_index(tmp_path: Path) -> None:
+    vault, index_root = _seed_vault(tmp_path)
+    assert vault.exists() and (index_root / "index.jsonl").exists()
+    assert main(["reset", "-o", str(vault), "--yes"]) == 0
+    assert not vault.exists()
+    assert not index_root.exists()
+
+
+def test_reset_keep_originals_preserves_inbox_for_regenerate(tmp_path: Path) -> None:
+    vault, index_root = _seed_vault(tmp_path)
+    assert main(["reset", "-o", str(vault), "--yes", "--keep-originals"]) == 0
+    assert not vault.exists()
+    assert not (index_root / "index.jsonl").exists()  # derived notes gone
+    assert (index_root / "inbox.jsonl").exists()  # captures kept
+    # regenerate rebuilds from the kept originals
+    assert main(["regenerate", "-o", str(vault), "--no-llm"]) == 0
+    assert (vault / "Plan.md").exists()
+
+
+def test_reset_aborts_on_no(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault, _ = _seed_vault(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+    assert main(["reset", "-o", str(vault)]) == 1  # no --yes → prompt → "n"
+    assert vault.exists()  # nothing deleted
+
+
+def test_reset_proceeds_on_yes_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault, _ = _seed_vault(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+    assert main(["reset", "-o", str(vault)]) == 0
+    assert not vault.exists()
+
+
+def test_reset_refuses_home_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    assert main(["reset", "-o", str(fake_home), "--yes"]) == 1
+    assert "refusing" in capsys.readouterr().err
+    assert fake_home.exists()  # untouched
+
+
+def test_reset_nothing_to_reset(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["reset", "-o", str(tmp_path / "never-existed"), "--yes"]) == 0
+    assert "nothing to reset" in capsys.readouterr().out
+
+
+def test_is_dangerous_delete_target_flags_root_and_home(tmp_path: Path) -> None:
+    from grandplan.cli import _is_dangerous_delete_target
+
+    assert _is_dangerous_delete_target(Path(tmp_path.anchor)) is True  # filesystem root
+    assert _is_dangerous_delete_target(Path.home()) is True
+    assert _is_dangerous_delete_target(tmp_path / "some" / "vault") is False
+
+
 def test_doctor_reports_existing_vault_and_errors_without_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

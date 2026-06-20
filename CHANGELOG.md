@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+- **`grandplan reset -o <vault>`** — wipe a vault back to empty: deletes the Obsidian folder **and**
+  grandplan's external index (notes/edges/inbox/directives, kept under `~/.grandplan/<hash>/`).
+  Asks for confirmation (`--yes` skips); `--keep-originals` keeps the lossless captures so
+  `regenerate` can rebuild. Guards against deleting a filesystem root or `$HOME`.
+
 ### Fixed
 - **`organize` now persists to the queryable index** (not just the Obsidian vault), so
   `doctor`/`report`/`export`/`calendar`/`mcp` work immediately after `organize` — previously they
