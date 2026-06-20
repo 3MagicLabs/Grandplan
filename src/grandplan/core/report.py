@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from grandplan.core.densify import suggest_mention_links
 from grandplan.core.models import EdgeKind
 from grandplan.core.ports import NoteRepository
 from grandplan.core.quality import note_quality_issues
@@ -37,6 +38,9 @@ class RunReport:
     semantic_edges: int
     isolated: tuple[str, ...]  # titles of notes with no edge at all
     low_quality: tuple[tuple[str, tuple[str, ...]], ...]  # (title, issues) for each flagged note
+    missing_links: tuple[
+        tuple[str, str], ...
+    ]  # (source, target) titles: body names target, no edge yet
 
 
 def build_run_report(repo: NoteRepository, originals: OriginalStore) -> RunReport:
@@ -63,6 +67,16 @@ def build_run_report(repo: NoteRepository, originals: OriginalStore) -> RunRepor
 
     isolated = tuple(note.title for note in notes if note.id not in connected)
 
+    # Possible missing links: a note's body literally names another note's title, yet no edge connects
+    # them (in either direction). Offline title-mention detection (densify) — a read-only suggestion.
+    linked_pairs = {frozenset((e.source_id, e.target_id)) for e in edges}
+    missing_links = tuple(
+        (note.title, target.title)
+        for note in notes
+        for target in suggest_mention_links(note, notes)
+        if frozenset((note.id, target.id)) not in linked_pairs
+    )
+
     low_quality: list[tuple[str, tuple[str, ...]]] = []
     for note in notes:
         original = originals.get(note.original_id)
@@ -81,6 +95,7 @@ def build_run_report(repo: NoteRepository, originals: OriginalStore) -> RunRepor
         semantic_edges=semantic,
         isolated=isolated,
         low_quality=tuple(low_quality),
+        missing_links=missing_links,
     )
 
 
@@ -114,5 +129,13 @@ def render_report(report: RunReport, *, organizer_label: str) -> str:
             lines.append("      → every note is low-quality: the local model likely never ran")
     if report.isolated:
         lines.append(f"  ⚠ {len(report.isolated)} isolated note(s) with no connections")
+    if report.missing_links:
+        lines.append(
+            f"  → {len(report.missing_links)} possible missing link(s) (a note names another):"
+        )
+        for source, target in report.missing_links[:10]:
+            lines.append(f"      • {source[:32]!r} → {target[:32]!r}")
+        if len(report.missing_links) > 10:
+            lines.append(f"      … and {len(report.missing_links) - 10} more")
     lines.append("─────────────────────────────────────────────────")
     return "\n".join(lines)

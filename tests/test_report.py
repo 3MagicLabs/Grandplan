@@ -36,6 +36,35 @@ def test_report_flags_no_structure_and_low_quality() -> None:
     assert "never ran" in text  # 100% low-quality → the explicit diagnosis
 
 
+def test_report_surfaces_possible_missing_links_from_title_mentions() -> None:
+    # noteA's body names noteB's title but there's no edge → a "possible missing link".
+    repo = InMemoryNoteRepository()
+    originals = InMemoryOriginalStore()
+    a = Note(
+        id="a",
+        original_id="oa",
+        title="Daily log",
+        body="worked on the Budget Plan today",
+        type=NoteType.TASK,
+    )
+    b = Note(
+        id="b", original_id="ob", title="Budget Plan", body="the numbers", type=NoteType.PROJECT
+    )
+    for n in (a, b):
+        originals.add(
+            Original(id=n.original_id, text=n.body, source=Source(app="t"), created="2026")
+        )
+        repo.add_note(n, HashingEmbedder().embed(n.title))
+
+    report = build_run_report(repo, originals)
+    assert ("Daily log", "Budget Plan") in report.missing_links
+    assert "possible missing link" in render_report(report, organizer_label="x").lower()
+
+    # Once the edge exists, it is no longer "missing".
+    repo.add_edge(Edge("a", "b", EdgeKind.RELATES))
+    assert build_run_report(repo, originals).missing_links == ()
+
+
 def test_report_counts_structural_vs_semantic_edges() -> None:
     repo, originals = _seed(
         Note(
