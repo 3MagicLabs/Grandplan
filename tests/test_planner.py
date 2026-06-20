@@ -74,6 +74,15 @@ def test_masterplan_groups_roots_by_horizon_top_down() -> None:
     assert "World peace" in md and "Launch the app" in md and "Write the tests" in md
 
 
+def test_next_edge_sequences_tasks() -> None:
+    # `A --next--> B` means do A then B → B depends on A → A is "now", B blocked until A is done.
+    repo = _repo([_note("A"), _note("B")], [Edge("A", "B", EdgeKind.NEXT)])
+    plan = build_plan(repo)
+    assert [n.id for n in plan.now] == ["A"]
+    assert [item.note.id for item in plan.blocked] == ["B"]
+    assert plan.blocked[0].blocked_by[0].id == "A"
+
+
 def test_entity_notes_are_excluded_from_masterplan_roots() -> None:
     # `entity` nodes are cross-cutting referents (joined by `involves`), not planning roots.
     repo = _repo(

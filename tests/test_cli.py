@@ -164,6 +164,64 @@ def test_regenerate_with_no_originals_reports_error(
     assert main(["regenerate", "-o", str(tmp_path / "empty"), "--no-llm"]) == 1
 
 
+def test_regenerate_keep_history_replays_status_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A from-scratch rebuild resets event history; --keep-history replays it onto surviving notes.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.models import NoteStatus as _NS
+    from grandplan.core.note_store import JsonlNoteRepository
+    from grandplan.core.store import JsonlOriginalStore
+
+    vault = tmp_path / "vault"
+    index_root = migrate_legacy_index(vault)
+    index = index_root / "index.jsonl"
+    # Seed a lossless original, then build the index from it (deterministic --no-llm → stable ids).
+    JsonlOriginalStore(index_root / "inbox.jsonl").add(
+        Original.capture("buy milk and eggs for the week", Source(app="cli"), _CREATED)
+    )
+    assert main(["regenerate", "-o", str(vault), "--no-llm"]) == 0
+    note_id = JsonlNoteRepository(index).notes()[0].id
+
+    # without --keep-history the rebuilt note loses the status (back to its creation status)
+    JsonlNoteRepository(index).set_status(note_id, _NS.DONE, at=_CREATED)
+    assert main(["regenerate", "-o", str(vault), "--no-llm"]) == 0
+    assert JsonlNoteRepository(index).status_of(note_id) is not _NS.DONE  # history reset
+
+    # re-apply the status, then regenerate WITH --keep-history → it survives the rebuild
+    JsonlNoteRepository(index).set_status(note_id, _NS.DONE, at=_CREATED)
+    assert main(["regenerate", "-o", str(vault), "--no-llm", "--keep-history"]) == 0
+    assert JsonlNoteRepository(index).status_of(note_id) is _NS.DONE
+
+
+def test_replay_history_covers_all_event_kinds(tmp_path: Path) -> None:
+    # Unit-test the replay helper across status/edit/resource/deleted + a dropped (unknown id) event.
+    from grandplan.cli import _replay_history
+    from grandplan.core.embed import HashingEmbedder
+    from grandplan.core.models import NoteEdit, NoteEvent
+    from grandplan.core.models import NoteStatus as _NS
+    from grandplan.core.note_store import JsonlNoteRepository
+    from grandplan.core.resources import Resource, ResourceKind
+
+    repo = JsonlNoteRepository(tmp_path / "index.jsonl")
+    repo.add_note(
+        Note(id="n", original_id="o", title="t", body="b", type=NoteType.TASK),
+        HashingEmbedder().embed("t"),
+    )
+    events = (
+        NoteEvent("n", "status", at=_CREATED, status=_NS.ACTIVE),
+        NoteEvent("n", "edit", at=_CREATED, edit=NoteEdit(title="renamed")),
+        NoteEvent(
+            "n", "resource", at=_CREATED, resource=Resource(ResourceKind.LINK, "https://x.io")
+        ),
+        NoteEvent("ghost", "status", at=_CREATED, status=_NS.DONE),  # unknown id → dropped
+        NoteEvent("n", "deleted", at=_CREATED),
+    )
+    preserved, dropped = _replay_history(events, repo)
+    assert (preserved, dropped) == (4, 1)
+
+
 def test_doctor_reports_existing_vault_and_errors_without_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -264,6 +322,11 @@ def test_export_command_writes_tasks_and_csv(
     assert main(["export", "-o", str(vault), "--format", "csv", "--out", "-"]) == 0
     assert "id,title,type,status,horizon,due,tags" in capsys.readouterr().out
 
+    assert main(["export", "-o", str(vault), "--format", "todoist", "--out", "-"]) == 0
+    todoist_out = capsys.readouterr().out
+    assert "TYPE,CONTENT,DESCRIPTION,PRIORITY" in todoist_out
+    assert "task,Write the launch post" in todoist_out
+
     assert main(["export", "-o", str(tmp_path / "no-such-vault")]) == 1
 
 
@@ -315,6 +378,34 @@ def test_directive_add_unknown_playbook_errors(
         ]
     )
     assert code == 1
+
+
+def test_watch_once_enqueues_directives_from_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    from grandplan.core.directive import JsonlDirectiveStore
+    from grandplan.core.index_location import migrate_legacy_index
+
+    inbox = tmp_path / "drop"
+    inbox.mkdir()
+    (inbox / "idea.txt").write_text("research offline STT models", encoding="utf-8")
+    vault = tmp_path / "vault"
+
+    code = main(["watch", "-o", str(vault), "--folder", str(inbox), "--once"])
+    assert code == 0
+    assert "queued 1 directive" in capsys.readouterr().out
+    store = JsonlDirectiveStore(migrate_legacy_index(vault) / "directives.jsonl")
+    assert len(store.pending()) == 1
+
+
+def test_watch_errors_on_missing_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    code = main(["watch", "-o", str(tmp_path / "v"), "--folder", str(tmp_path / "nope"), "--once"])
+    assert code == 1
+    assert "not a folder" in capsys.readouterr().err
 
 
 def test_serve_refuses_routable_host_without_token(

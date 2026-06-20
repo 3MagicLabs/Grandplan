@@ -33,7 +33,7 @@ from grandplan.core.attach import attach
 from grandplan.core.calendar import is_scheduled, to_ics
 from grandplan.core.embed import HashingEmbedder
 from grandplan.core.index_location import migrate_legacy_index
-from grandplan.core.models import NoteStatus, Source
+from grandplan.core.models import NoteEvent, NoteStatus, Source
 from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.adapters.llm_entity_extractor import LlmEntityExtractor
@@ -47,8 +47,9 @@ from grandplan.core.placement import HeuristicPlacer, Placer, record_placement
 from grandplan.core.ports import Embedder, Organizer
 from grandplan.core.project import remove_phantom_link_files, write_projections
 from grandplan.core.reconcile import Reconciler, SimilarityReconciler
+from grandplan.adapters.folder_watch import scan_folder
 from grandplan.core.directive import Directive, JsonlDirectiveStore, resolve_instruction
-from grandplan.core.export import to_csv, to_markdown_tasks
+from grandplan.core.export import to_csv, to_markdown_tasks, to_todoist_csv
 from grandplan.core.render import MarkdownReportRenderer
 from grandplan.core.report import RunReport, build_run_report, render_report
 from grandplan.core.repository import InMemoryNoteRepository
@@ -298,6 +299,31 @@ def _run_rerender(args: argparse.Namespace) -> int:
     return 0
 
 
+def _replay_history(events: tuple[NoteEvent, ...], repo: JsonlNoteRepository) -> tuple[int, int]:
+    """Replay status/edit/resource/deletion events onto notes that still exist (preserved, dropped).
+
+    A from-scratch rebuild re-creates notes; their content-addressed ids are stable iff the organized
+    (title, body, type) is unchanged. Events for a surviving id are re-applied (each is idempotent +
+    orphan-guarded); events whose note id no longer exists are counted as dropped. The `note`/`edge`
+    creation records are not replayed — the rebuild already produced them.
+    """
+    preserved = dropped = 0
+    for event in events:
+        if repo.current_note(event.note_id) is None and event.kind != "deleted":
+            dropped += 1
+            continue
+        if event.kind == "status" and event.status is not None:
+            repo.set_status(event.note_id, event.status, at=event.at)
+        elif event.kind == "edit" and event.edit is not None:
+            repo.record_edit(event.note_id, event.edit, at=event.at)
+        elif event.kind == "resource" and event.resource is not None:
+            repo.add_resource(event.note_id, event.resource, at=event.at)
+        elif event.kind == "deleted":
+            repo.delete_note(event.note_id, at=event.at)
+        preserved += 1
+    return preserved, dropped
+
+
 def _run_regenerate(args: argparse.Namespace) -> int:
     """`grandplan regenerate -o <vault>`: rebuild the derived notes/edges from the lossless
     `inbox.jsonl` originals through the CURRENT organize pipeline — so heuristic-era notes become
@@ -319,6 +345,13 @@ def _run_regenerate(args: argparse.Namespace) -> int:
         OllamaOrganizer(model=args.model, require=True) if use_llm else HeuristicOrganizer()
     )
     embedder: Embedder = SentenceTransformerEmbedder() if args.embeddings else HashingEmbedder()
+
+    # Capture the prior event history BEFORE the rebuild, so --keep-history can replay it afterward.
+    old_events: tuple[NoteEvent, ...] = (
+        JsonlNoteRepository(index_path).events()
+        if args.keep_history and index_path.exists()
+        else ()
+    )
 
     temp_path = index_root / "index.regen.jsonl"
     temp_path.unlink(missing_ok=True)  # start clean (e.g. after an earlier interrupted run)
@@ -345,23 +378,36 @@ def _run_regenerate(args: argparse.Namespace) -> int:
     if index_path.exists():
         index_path.replace(index_path.with_suffix(".jsonl.bak"))
     temp_path.replace(index_path)
+    # --keep-history: replay the prior status/edit/resource/deletion events onto surviving notes.
+    final_repo = JsonlNoteRepository(index_path)
+    preserved = dropped = 0
+    if old_events:
+        preserved, dropped = _replay_history(old_events, final_repo)
     # Re-render every note + the projections from the fresh index (resolves links, colours the graph).
     remove_phantom_link_files(vault_dir)
     # regenerate re-organizes from scratch, so it deliberately REPLACES note bodies (no preserve).
     write_projections(
-        JsonlNoteRepository(index_path),
+        final_repo,
         vault_dir,
         originals=originals,
         preserve_external_body=False,
         today=datetime.now(timezone.utc).date(),
     )
+    history_note = (
+        f" Replayed {preserved} history event(s)"
+        + (f", dropped {dropped}" if dropped else "")
+        + "."
+        if args.keep_history
+        else ""
+    )
     print(
         f"regenerated {committed} note(s) from {len(originals.all())} original(s); "
-        f"skipped {skipped} duplicate(s). Old index → index.jsonl.bak"
+        f"skipped {skipped} duplicate(s). Old index → index.jsonl.bak.{history_note}"
     )
     print(
         render_report(
-            build_run_report(repo, originals), organizer_label=_organizer_label(use_llm, args.model)
+            build_run_report(final_repo, originals),
+            organizer_label=_organizer_label(use_llm, args.model),
         )
     )
     return 0
@@ -453,6 +499,8 @@ def _run_export(args: argparse.Namespace) -> int:
     notes = repo.current_notes()
     if args.format == "csv":
         text, default_name = to_csv(notes), "export.csv"
+    elif args.format == "todoist":
+        text, default_name = to_todoist_csv(notes), "todoist.csv"
     else:
         text, default_name = to_markdown_tasks(notes), "tasks.md"
     if args.out == "-":
@@ -504,6 +552,50 @@ def _run_directive(args: argparse.Namespace) -> int:
     )
     store.add(directive)
     print(f"queued directive {directive.id} ({playbook or 'ad-hoc'})")
+    return 0
+
+
+def _run_watch(args: argparse.Namespace) -> int:
+    """`grandplan watch -o <vault> --folder DIR [--playbook|--prompt] [--interval S] [--once]`.
+
+    Watches `DIR` and enqueues a directive per new text/markdown file (the file-drop capture surface).
+    `--once` does a single scan and exits (scriptable); otherwise it polls every `--interval` seconds.
+    Offline: only reads local files.
+    """
+    folder = Path(args.folder)
+    if not folder.is_dir():
+        print(f"error: not a folder: {folder}", file=sys.stderr)
+        return 1
+    try:
+        instruction, playbook = resolve_instruction(
+            playbook=args.playbook or "", prompt=args.prompt or ""
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    index_root = migrate_legacy_index(Path(args.vault))
+    store = JsonlDirectiveStore(index_root / "directives.jsonl")
+    if args.once:
+        ids = scan_folder(
+            folder,
+            store,
+            created=datetime.now(timezone.utc).isoformat(),
+            instruction=instruction,
+            playbook=playbook,
+            seen=set(),
+        )
+        print(f"queued {len(ids)} directive(s) from {folder}")
+        return 0
+    from grandplan.adapters.folder_watch import watch_folder
+
+    watch_folder(  # pragma: no cover - delegates to the long-running poll loop
+        folder,
+        store,
+        instruction=instruction,
+        playbook=playbook,
+        interval=args.interval,
+        now=lambda: datetime.now(timezone.utc).isoformat(),
+    )
     return 0
 
 
@@ -666,6 +758,12 @@ def main(argv: list[str] | None = None) -> int:
     regenerate.add_argument(
         "--model", default=DEFAULT_MODEL, help="Ollama model name (default LLM)"
     )
+    regenerate.add_argument(
+        "--keep-history",
+        action="store_true",
+        help="replay the old index's status/edit/resource/deletion events onto rebuilt notes whose "
+        "ids are unchanged (history is otherwise reset by a from-scratch rebuild)",
+    )
 
     doctor = subparsers.add_parser(
         "doctor", help="Diagnose an existing vault (note/edge/quality report); read-only."
@@ -698,7 +796,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     export_cmd.add_argument("-o", "--vault", required=True, help="the vault directory")
     export_cmd.add_argument(
-        "--format", choices=("tasks", "csv"), default="tasks", help="export format (default: tasks)"
+        "--format",
+        choices=("tasks", "csv", "todoist"),
+        default="tasks",
+        help="export format (default: tasks)",
     )
     export_cmd.add_argument(
         "--out", default="", help="output path (default: <vault>/tasks.md|export.csv; - for stdout)"
@@ -758,6 +859,23 @@ def main(argv: list[str] | None = None) -> int:
         "--token", default="", help="shared secret required in 'Authorization: Bearer <token>'"
     )
 
+    watch_cmd = subparsers.add_parser(
+        "watch",
+        help="Watch a folder and enqueue a directive per new text/markdown file (offline capture).",
+    )
+    watch_cmd.add_argument("-o", "--vault", required=True, help="the vault directory")
+    watch_cmd.add_argument("--folder", required=True, help="folder to watch for new files")
+    watch_cmd.add_argument(
+        "--playbook",
+        default="capture-and-file",
+        help="playbook for captured files (default: capture-and-file)",
+    )
+    watch_cmd.add_argument("--prompt", default="", help="ad-hoc instruction (overrides --playbook)")
+    watch_cmd.add_argument(
+        "--interval", type=float, default=5.0, help="poll interval in seconds (default 5)"
+    )
+    watch_cmd.add_argument("--once", action="store_true", help="scan once and exit (don't loop)")
+
     gui = subparsers.add_parser(
         "gui", help="Launch the tray GUI (Windows; needs the windows,gui extras)."
     )
@@ -792,6 +910,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_export(args)
     if args.command == "directive":
         return _run_directive(args)
+    if args.command == "watch":
+        return _run_watch(args)
     if args.command == "serve":
         return _run_serve(args)
     if args.command == "mcp":

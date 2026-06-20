@@ -17,10 +17,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from grandplan.core.models import Note, NoteStatus
+from dataclasses import dataclass
+
+from grandplan.core.models import Note, NoteStatus, NoteType
 from grandplan.core.planner import Plan
 
 _DONE = {NoteStatus.DONE, NoteStatus.SUPERSEDED}
+_GOAL_LIKE = {NoteType.GOAL, NoteType.PROJECT}
 
 
 def _open_actionable_ids(plan: Plan) -> set[str]:
@@ -113,3 +116,50 @@ def parallel_batches(plan: Plan) -> tuple[tuple[Note, ...], ...]:
         )
         for level in sorted(by_depth)
     )
+
+
+@dataclass(frozen=True)
+class Progress:
+    """How far along a goal/project is, rolled up from its descendant tasks (OKR-style)."""
+
+    note: Note
+    done: int
+    total: int
+
+    @property
+    def percent(self) -> int:
+        """Completion as a 0–100 integer (0 when there are no tasks under it)."""
+        return round(100 * self.done / self.total) if self.total else 0
+
+
+def roll_up_progress(plan: Plan) -> tuple[Progress, ...]:
+    """Progress for each goal/project, from the share of its descendant tasks that are done.
+
+    Walks the `part_of` hierarchy; a node's denominator is every `task` under it (at any depth), the
+    numerator those that are done/superseded. Goals/projects with no task descendants are omitted (no
+    meaningful percentage). Ordered by horizon (goals before projects), then title — stable.
+    """
+
+    def _tally(note_id: str) -> tuple[int, int]:
+        done = total = 0
+        for child_id in plan.child_ids.get(note_id, ()):
+            child = plan.by_id.get(child_id)
+            if child is None:  # pragma: no cover - defensive; child_ids only holds known note ids
+                continue
+            if child.type is NoteType.TASK:
+                total += 1
+                if plan.status_by_id.get(child_id) in _DONE:
+                    done += 1
+            child_done, child_total = _tally(child_id)
+            done += child_done
+            total += child_total
+        return done, total
+
+    out: list[Progress] = []
+    for note in plan.by_id.values():
+        if note.type not in _GOAL_LIKE:
+            continue
+        done, total = _tally(note.id)
+        if total:
+            out.append(Progress(note=note, done=done, total=total))
+    return tuple(sorted(out, key=lambda p: (p.note.horizon.value, p.note.title, p.note.id)))

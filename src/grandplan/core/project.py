@@ -53,6 +53,15 @@ _TYPE_COLORS: dict[str, int] = {
     "idea": 0x9E9E9E,  # grey
 }
 
+# Status colours take VISUAL PRECEDENCE over type colours (Obsidian applies the first matching
+# colorGroup), so a few meaningful lifecycle states pop on the graph: done fades, needs-review
+# alarms, active highlights. Other statuses fall through to the type colour below.
+_STATUS_COLORS: dict[str, int] = {
+    "done": 0xBDBDBD,  # faded grey — completed, recedes
+    "needs-review": 0xFF1744,  # alarm red — unresolved contradiction, demands attention
+    "active": 0x00E676,  # bright green — in progress right now
+}
+
 
 # Generated MOC / guide files are clutter in the *meaning* graph (they're views, not knowledge), so
 # the default Obsidian graph filter hides them — leaving only real notes and their typed connections.
@@ -77,7 +86,12 @@ def write_obsidian_config(vault_dir: Path) -> Path | None:
     overwrites their choices.
     """
     config = vault_dir / ".obsidian" / "graph.json"
+    # Status groups FIRST (first match wins in Obsidian) so done/needs-review/active override the
+    # per-type colour; then the type groups colour everything else by kind.
     groups = [
+        {"query": f"tag:#status/{status}", "color": {"a": 1, "rgb": rgb}}
+        for status, rgb in _STATUS_COLORS.items()
+    ] + [
         {"query": f"tag:#type/{note_type}", "color": {"a": 1, "rgb": rgb}}
         for note_type, rgb in _TYPE_COLORS.items()
     ]

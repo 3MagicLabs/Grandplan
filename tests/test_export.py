@@ -1,8 +1,8 @@
-"""Tests for productivity exports — Markdown Tasks + CSV (offline, deterministic)."""
+"""Tests for productivity exports — Markdown Tasks + CSV + Todoist (offline, deterministic)."""
 
 from __future__ import annotations
 
-from grandplan.core.export import to_csv, to_markdown_tasks
+from grandplan.core.export import to_csv, to_markdown_tasks, to_todoist_csv
 from grandplan.core.models import Note, NoteStatus, NoteType
 
 
@@ -74,3 +74,37 @@ def test_csv_sorted_by_title() -> None:
     csv_text = to_csv([_note("a", "Zebra"), _note("b", "Apple")])
     body = csv_text.strip().splitlines()[1:]
     assert body[0].split(",")[1] == "Apple"
+
+
+def test_todoist_csv_header_and_open_task_row() -> None:
+    notes = [
+        _note("a", "Write spec", status=NoteStatus.ACTIVE, due="2026-07-01"),
+        _note("b", "Old thing", status=NoteStatus.DONE),  # done → omitted
+    ]
+    out = to_todoist_csv(notes)
+    lines = out.strip().splitlines()
+    assert (
+        lines[0]
+        == "TYPE,CONTENT,DESCRIPTION,PRIORITY,INDENT,AUTHOR,RESPONSIBLE,DATE,DATE_LANG,TIMEZONE"
+    )
+    # one open task row; active → priority 4; due maps to DATE
+    assert "task,Write spec,b,4,1,,,2026-07-01,en," in out
+    assert "Old thing" not in out  # done task excluded
+
+
+def test_todoist_csv_priority_by_status() -> None:
+    notes = [
+        _note("a", "Active one", status=NoteStatus.ACTIVE),
+        _note("b", "Next one", status=NoteStatus.NEXT),
+        _note("c", "Inbox one", status=NoteStatus.INBOX),
+    ]
+    rows = {
+        r.split(",")[1]: r.split(",")[3] for r in to_todoist_csv(notes).strip().splitlines()[1:]
+    }
+    assert rows["Active one"] == "4"
+    assert rows["Next one"] == "3"
+    assert rows["Inbox one"] == "1"
+
+
+def test_todoist_csv_omits_non_actionable_and_empty() -> None:
+    assert to_todoist_csv([_note("a", "an idea", note_type=NoteType.IDEA)]).strip().count("\n") == 0

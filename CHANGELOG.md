@@ -6,6 +6,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 ### Added
+- **Offline polish batch (themes B/C/F/H/I):**
+  - **`next`-edge sequencing (C)** — the planner now honors `next` edges as ordering constraints
+    (`A --next--> B` ⇒ B depends on A), so explicit sequences shape the plan.
+  - **OKR roll-ups (C)** — `schedule.roll_up_progress` rolls each goal/project's completion % from
+    its descendant tasks (any depth, via `part_of`); shown in the Markdown report.
+  - **Todoist-import export (B)** — `to_todoist_csv` + `grandplan export --format todoist`: open tasks
+    in Todoist's CSV import-template columns (priority by lifecycle, due → DATE).
+  - **`regenerate --keep-history` (I)** — replays the prior status/edit/resource/deletion events onto
+    rebuilt notes whose content-addressed ids survive; reports how many were preserved vs dropped.
+  - **Richer Obsidian graph (F)** — status colour groups (done/needs-review/active) take visual
+    precedence over the type colours in `.obsidian/graph.json`.
+  - **Folder-watch capture (H)** — `adapters/folder_watch.py` + `grandplan watch --folder DIR
+    [--once]`: a dropped text/markdown file becomes an append-only directive (feeds the agent loop).
 - **HTTP directive intake (theme J transport)** — `adapters/http_intake.py` + `grandplan serve`: a
   localhost HTTP endpoint (`POST /directive` with `{content, playbook?, prompt?}`) that enqueues a
   directive — the "send to my agent from my phone" transport. Pure `handle_intake` (auth/validation/

@@ -389,6 +389,10 @@ def _dependencies(repo: NoteRepository, notes: dict[str, Note]) -> dict[str, set
             deps[edge.target_id].add(
                 edge.source_id
             )  # source blocks target ⇒ target depends on source
+        elif edge.kind is EdgeKind.NEXT:
+            # `next` is explicit sequencing: source THEN target ⇒ target depends on source (do the
+            # source first). Same DAG effect as `blocks`, but a softer "recommended order" intent.
+            deps[edge.target_id].add(edge.source_id)
     return deps
 
 

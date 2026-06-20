@@ -143,6 +143,14 @@ def _vault_without_deps() -> tuple[InMemoryNoteRepository, InMemoryOriginalStore
     return repo, originals
 
 
+def test_report_shows_progress_rollup() -> None:
+    repo, originals = _vault()  # goal "Ship v1" with one task "Write the docs" under it
+    repo.set_status("t", NoteStatus.DONE, at="2026")
+    md = MarkdownReportRenderer().render(repo, originals)
+    assert "## Progress (goals & projects)" in md
+    assert "Ship v1 — **100%** (1/1 tasks done)" in md
+
+
 def test_report_lists_contradictions() -> None:
     repo, originals = _vault()
     repo.add_edge(Edge("t", "b", EdgeKind.CONTRADICTS))

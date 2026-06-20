@@ -23,7 +23,7 @@ from grandplan.core.planner import (
 )
 from grandplan.core.ports import NoteRepository
 from grandplan.core.report import build_run_report
-from grandplan.core.schedule import critical_path, parallel_batches
+from grandplan.core.schedule import critical_path, parallel_batches, roll_up_progress
 from grandplan.core.store import OriginalStore
 
 _HORIZON_LABELS: tuple[tuple[str, str], ...] = (
@@ -63,6 +63,7 @@ class MarkdownReportRenderer:
         else:
             lines += ["> A snapshot projection of the knowledge graph.", ""]
         lines += self._summary(plan, report.note_count)
+        lines += self._progress(plan)
         lines += self._priorities(plan)
         lines += self._critical_path(plan)
         lines += self._parallel_batches(plan)
@@ -84,6 +85,17 @@ class MarkdownReportRenderer:
             f"- **{len(plan.root_ids)}** top-level goals/projects.",
             "",
         ]
+
+    def _progress(self, plan: Plan) -> list[str]:
+        rolled = roll_up_progress(plan)
+        if not rolled:
+            return []
+        lines = ["## Progress (goals & projects)", ""]
+        for item in rolled:
+            lines.append(
+                f"- {item.note.title} — **{item.percent}%** ({item.done}/{item.total} tasks done)"
+            )
+        return [*lines, ""]
 
     def _priorities(self, plan: Plan) -> list[str]:
         lines = ["## Top priorities (do now)", ""]

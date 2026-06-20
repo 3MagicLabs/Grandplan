@@ -41,8 +41,8 @@ so agent modification is safe, reversible, and offline. Subsumes the "other AIs"
 ### B. Integrations / connectors (`Connector` port)
 - **Local (offline, default-safe):** ✅ **`.ics` calendar export DONE** (`grandplan calendar`).
   ✅ **Productivity exports DONE** (`core/export.py` `to_markdown_tasks`/`to_csv`; `grandplan export
-  --format tasks|csv` — Obsidian-Tasks/GitHub checklist + spreadsheet CSV, zero egress). ✅ MCP
-  server (theme A) DONE. Remaining local: Todoist-import format.
+  --format tasks|csv|todoist` — Obsidian-Tasks/GitHub checklist, spreadsheet CSV, **and a
+  Todoist-import CSV**, zero egress). ✅ MCP server (theme A) DONE. All planned local exports shipped.
 - **Networked (opt-in, off by default, egress-flagged):** live Google Calendar 2-way sync; cloud-AI
   bridge; Notion/Todoist live sync. Isolated adapters; core egress test still guards the offline path.
 
@@ -50,8 +50,9 @@ so agent modification is safe, reversible, and offline. Subsumes the "other AIs"
 - ✅ **`blocks` / `waiting_on` edges + feasible `Timeline.md` DONE** (placement + planner +
   `get_timeline`). ✅ **Critical-path + parallel-batch scheduling DONE** (`core/schedule.py`
   `critical_path`/`parallel_batches` — pure DAG analytics over open tasks; surfaced in the report).
-  ✅ **Entity extraction** (people/org `entity` nodes + `involves` edges) DONE. Remaining: `next`
-  sequencing, OKR roll-ups.
+  ✅ **Entity extraction** (people/org `entity` nodes + `involves` edges) DONE. ✅ **`next` sequencing
+  DONE** (planner honors `next` edges as ordering constraints). ✅ **OKR roll-ups DONE**
+  (`schedule.roll_up_progress` — goal/project completion % from descendant tasks; in the report).
 - Contradiction-resolution UX (data exists; no UI). ✅ **RC5 slug-based linking DONE** — links render
   `[[<filename>|<title>]]` (the target's real slug, native Obsidian resolution, export-safe) via
   `plan_filenames`; broken links to unknown notes are skipped; empty `<id>.md` phantom stubs are swept.
@@ -65,8 +66,9 @@ Beyond Markdown/JSON/Plan/Masterplan: documents/reports, slides/PPTX, and other 
 `Renderer` behind the port. (Ties to theme A: agents "generate things".)
 
 ### F. Navigable / interactive graphs
-Richer Obsidian graph (more metadata, colors, saved filters/queries) now; a custom interactive graph
-view later (note: a custom graph UI was an MVP non-goal — revisit deliberately).
+✅ **Richer Obsidian graph DONE (cheap half)** — status colour groups (done/needs-review/active) take
+visual precedence over the type colours via `.obsidian/graph.json` (`core/project.py`). A custom
+interactive graph view remains later (a custom graph UI was an MVP non-goal — revisit deliberately).
 
 ### G. Cross-vault & collaborative (bigger; concurrency + trust)
 - **Cross-vault:** operate over multiple vaults; move/merge/link notes across them; the API/MCP target
@@ -78,12 +80,15 @@ view later (note: a custom graph UI was an MVP non-goal — revisit deliberately
 ✅ **Voice/STT capture seam DONE** ("PR-H") — `adapters/voice.py` `VoiceCapturer` (conforms to the
 `Capturer` port) with an injected `Transcriber` (logic gated offline); the real backend is a local
 Whisper model + mic (`grandplan[voice]`, lazy/optional, on-device — no audio leaves the machine).
-**Deferred:** GUI wiring (a "hold to speak" hotkey on the tray app — Windows-only, untestable under
-WSL). Remaining surfaces: image/screenshot OCR; web clipper; social/feed ingestion; file/folder watch.
+✅ **Folder-watch capture DONE** (`adapters/folder_watch.py` + `grandplan watch --folder DIR
+[--once]`) — a dropped text/markdown file becomes an append-only directive (feeds the theme-J loop),
+offline. **Deferred:** GUI wiring (a "hold to speak" hotkey on the tray app — Windows-only, untestable
+under WSL). Remaining surfaces: image/screenshot OCR; web clipper; social/feed ingestion.
 
 ### I. Distribution & robustness
-Windows packaging (PyInstaller/Briefcase + bundled model); model/quantization benchmark on the user's
-CPU; `regenerate` history-preservation option.
+✅ **`regenerate --keep-history` DONE** (replays the prior status/edit/resource/deletion events onto
+rebuilt notes whose ids survive; reports dropped). Remaining: Windows packaging (PyInstaller/Briefcase
++ bundled model); model/quantization benchmark on the user's CPU.
 
 ### J. Agent intake — directives + playbooks (the "send to my agent and act" loop)
 ✅ **Offline spine DONE** (`core/directive.py`; `SPEC-AGENT-INTAKE.md`). Send content + an instruction

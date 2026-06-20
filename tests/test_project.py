@@ -76,6 +76,11 @@ def test_graph_config_hides_generated_files_and_colours_by_type(tmp_path: Path) 
     assert (
         "-path:" in config["search"] and "Timeline.md" in config["search"]
     )  # generated files hidden
+    # Status groups come FIRST so done/needs-review/active override the per-type colour.
+    queries = [g["query"] for g in config["colorGroups"]]
+    assert queries[0] == "tag:#status/done"
+    assert "tag:#status/needs-review" in queries and "tag:#status/active" in queries
+    assert queries.index("tag:#status/done") < queries.index("tag:#type/task")
 
 
 def test_guide_note_is_written(tmp_path: Path) -> None:
@@ -244,7 +249,8 @@ def test_graph_colours_fill_empty_groups_but_respect_user_groups(tmp_path: Path)
     cfg.write_text(json.dumps({"colorGroups": [], "scale": 0.7, "showOrphans": True}), "utf-8")
     write_obsidian_config(vault)
     data = json.loads(cfg.read_text("utf-8"))
-    assert len(data["colorGroups"]) == 8 and data["scale"] == 0.7  # filled, other settings kept
+    # 3 status groups + 8 type groups; other settings kept.
+    assert len(data["colorGroups"]) == 11 and data["scale"] == 0.7
 
     # A config where the user already chose colours → untouched.
     cfg.write_text(json.dumps({"colorGroups": [{"query": "tag:#mine", "color": {}}]}), "utf-8")
