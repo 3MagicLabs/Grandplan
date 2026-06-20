@@ -830,6 +830,20 @@ def _run_gui(args: argparse.Namespace) -> int:
         return 1
 
 
+# Path-bearing CLI arguments: a leading `~` is expanded to the user's home so `-o ~/MyVault` works
+# (PowerShell/cmd don't expand `~` for external commands, and Path() doesn't either). `-` (stdin/
+# stdout) and empty defaults are left untouched.
+_PATH_ARGS = ("vault", "folder", "out", "input", "content")
+
+
+def _expand_user_paths(args: argparse.Namespace) -> None:
+    """Expand a leading `~`/`~user` in every path-bearing argument, in place."""
+    for attr in _PATH_ARGS:
+        value = getattr(args, attr, None)
+        if isinstance(value, str) and value and value != "-":
+            setattr(args, attr, str(Path(value).expanduser()))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="grandplan", description="Offline knowledge organizer.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1055,6 +1069,7 @@ def main(argv: list[str] | None = None) -> int:
     gui.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model name (default LLM)")
 
     args = parser.parse_args(argv)
+    _expand_user_paths(args)
     if args.command == "gui":
         return _run_gui(args)
     if args.command == "attach":

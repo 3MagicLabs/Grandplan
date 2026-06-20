@@ -420,6 +420,20 @@ def test_up_dry_run_sets_up_and_prints_banner(
     assert (vault / "_inbox").is_dir()  # default watch folder created
 
 
+def test_tilde_in_vault_path_is_expanded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # `-o ~/MyVault` must expand to the home dir, not create a literal "~" folder in the CWD.
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    # Path.expanduser() reads HOME (POSIX) / USERPROFILE (Windows); set both for portability.
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["up", "-o", "~/MyVault", "--init", "--dry-run"]) == 0
+    assert (fake_home / "MyVault" / "graph.json").exists()  # created under home
+    assert not (tmp_path / "~").exists()  # no literal tilde folder
+
+
 def test_up_init_scaffolds_a_fresh_vault(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
