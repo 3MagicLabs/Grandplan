@@ -22,6 +22,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
     `.obsidian/workspace.json` that opens on the **graph** view); **`--open`** launches the vault in
     Obsidian via its `obsidian://open?path=…` URI. So `grandplan up -o ~/MyVault --init --open`
     creates a new vault, opens its graph, and starts capturing — in one command.
+  - **`--hotkey`** enables global hotkey capture without the Qt GUI: select text in any app, press
+    the hotkey (default `Ctrl+Alt+G`, configurable via `--hotkey-combo`), and the selection is
+    organized straight into the vault (instant note, offline). Needs only the `windows` extra
+    (`pynput`/`pyperclip`/`uiautomation`) — so it works where PySide6 (the tray GUI) can't install.
 - **Offline polish batch (themes B/C/F/H/I):**
   - **`next`-edge sequencing (C)** — the planner now honors `next` edges as ordering constraints
     (`A --next--> B` ⇒ B depends on A), so explicit sequences shape the plan.

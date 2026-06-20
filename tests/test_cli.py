@@ -434,6 +434,84 @@ def test_tilde_in_vault_path_is_expanded(tmp_path: Path, monkeypatch: pytest.Mon
     assert not (tmp_path / "~").exists()  # no literal tilde folder
 
 
+class _FakeCapturer:
+    """A Capturer stand-in: returns a fixed selection (or None for 'nothing selected')."""
+
+    def __init__(self, text: str | None) -> None:
+        self._text = text
+
+    def capture(self) -> str | None:
+        return self._text
+
+
+def test_capture_to_vault_organizes_the_selection(tmp_path: Path) -> None:
+    from grandplan.cli import _capture_to_vault
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.note_store import JsonlNoteRepository
+
+    vault = tmp_path / "vault"
+    index_root = migrate_legacy_index(vault)
+    captured = _capture_to_vault(
+        _FakeCapturer("call Sarah Chen about the launch"),
+        vault_dir=vault,
+        index_root=index_root,
+        created=_CREATED,
+    )
+    assert captured == "call Sarah Chen about the launch"
+    notes = JsonlNoteRepository(index_root / "index.jsonl").notes()
+    assert any("Sarah Chen" in n.title or "Sarah Chen" in n.body for n in notes)  # captured note
+    assert any(n.type.value == "entity" for n in notes)  # entity auto-extracted
+
+
+def test_capture_to_vault_ignores_empty_selection(tmp_path: Path) -> None:
+    from grandplan.cli import _capture_to_vault
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.note_store import JsonlNoteRepository
+
+    vault = tmp_path / "vault"
+    index_root = migrate_legacy_index(vault)
+    for nothing in (None, "   "):
+        assert (
+            _capture_to_vault(
+                _FakeCapturer(nothing), vault_dir=vault, index_root=index_root, created=_CREATED
+            )
+            is None
+        )
+    assert JsonlNoteRepository(index_root / "index.jsonl").notes() == ()  # nothing written
+
+
+def test_up_hotkey_shows_in_banner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Force pynput "present" so the test is hermetic (CI installs no optional extras).
+    import importlib.machinery
+    import importlib.util
+
+    real = importlib.util.find_spec
+    fake = importlib.machinery.ModuleSpec("pynput", loader=None)
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name: fake if name == "pynput" else real(name)
+    )
+    code = main(["up", "-o", str(tmp_path / "v"), "--hotkey", "--dry-run"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "global hotkey: <ctrl>+<alt>+g" in out
+
+
+def test_up_hotkey_missing_dependency_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import importlib.util
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name: None if name == "pynput" else real(name)
+    )
+    code = main(["up", "-o", str(tmp_path / "v"), "--hotkey", "--dry-run"])
+    assert code == 1
+    assert "windows" in capsys.readouterr().err  # points at the [windows] extra
+
+
 def test_up_init_scaffolds_a_fresh_vault(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

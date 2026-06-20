@@ -580,19 +580,74 @@ def _init_vault(vault_dir: Path, index_root: Path) -> None:
     scaffold_graph_view(vault_dir)  # workspace.json opening on the graph (only if absent)
 
 
-def up_banner(vault: Path, *, host: str, port: int, watch_dir: Path, tokened: bool) -> str:
+def up_banner(
+    vault: Path, *, host: str, port: int, watch_dir: Path, tokened: bool, hotkey: str | None = None
+) -> str:
     """The startup summary for `grandplan up` — what's live and how to connect an agent (pure)."""
     auth = " (token required)" if tokened else ""
-    return "\n".join(
-        [
-            "grandplan is up — all capture surfaces live (offline):",
-            f"  vault:     {vault}",
-            f"  HTTP intake:  POST http://{host}:{port}/directive{auth}",
-            f"  folder watch: drop files into {watch_dir}",
-            f"  agent:     connect with  grandplan mcp -o {vault} --write --directives",
-            "  (Ctrl+C to stop)",
-        ]
+    lines = [
+        "grandplan is up — all capture surfaces live (offline):",
+        f"  vault:     {vault}",
+        f"  HTTP intake:  POST http://{host}:{port}/directive{auth}",
+        f"  folder watch: drop files into {watch_dir}",
+    ]
+    if hotkey:
+        lines.append(
+            f"  global hotkey: {hotkey} — select text anywhere, press it to capture a note"
+        )
+    lines += [
+        f"  agent:     connect with  grandplan mcp -o {vault} --write --directives",
+        "  (Ctrl+C to stop)",
+    ]
+    return "\n".join(lines)
+
+
+def _capture_to_vault(
+    capturer: object, *, vault_dir: Path, index_root: Path, created: str
+) -> str | None:
+    """Grab the current selection (via `capturer.capture()`) and organize it into the vault.
+
+    Returns the captured text, or None when nothing is selected. Uses the persistent stores so the
+    note lands in the index + Obsidian vault (offline heuristic organize — instant, no Ollama). The
+    `capturer` is injected (a `Capturer`), so this is unit-tested with a fake; the real Windows
+    selection-capturer is wired in by `_run_hotkey`.
+    """
+    text = capturer.capture()  # type: ignore[attr-defined]
+    if not isinstance(text, str) or not text.strip():
+        return None
+    organize_text(
+        text,
+        source=Source(app="hotkey"),
+        created=created,
+        vault_dir=vault_dir,
+        placer=HeuristicPlacer(),  # nest the capture under a related goal/project when one fits
+        repo=JsonlNoteRepository(index_root / "index.jsonl"),
+        originals=JsonlOriginalStore(index_root / "inbox.jsonl"),
     )
+    return text
+
+
+def _run_hotkey(  # pragma: no cover - global hotkey listener + Windows selection capture (no UI)
+    vault_dir: Path, index_root: Path, *, hotkey: str
+) -> None:
+    """Listen for the global hotkey; on each press, capture the selection and organize it (forever)."""
+    from grandplan.adapters.capture import make_windows_capturer, run_hotkey_listener
+
+    capturer = make_windows_capturer()
+
+    def _on_trigger() -> None:
+        text = _capture_to_vault(
+            capturer,
+            vault_dir=vault_dir,
+            index_root=index_root,
+            created=datetime.now(timezone.utc).isoformat(),
+        )
+        if text:
+            print(f"captured: {text[:60].strip()}")
+        else:
+            print("hotkey pressed, but nothing was selected")
+
+    run_hotkey_listener(hotkey, _on_trigger)
 
 
 def _run_up(args: argparse.Namespace) -> int:
@@ -619,6 +674,14 @@ def _run_up(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    hotkey = args.hotkey_combo if args.hotkey else None
+    if hotkey and importlib.util.find_spec("pynput") is None:
+        print(
+            'error: --hotkey needs the input libraries — `pip install -e ".[windows]"` '
+            "(pynput + pyperclip + uiautomation)",
+            file=sys.stderr,
+        )
+        return 1
     index_root = migrate_legacy_index(vault_dir)
     if args.init:
         _init_vault(vault_dir, index_root)
@@ -628,7 +691,12 @@ def _run_up(args: argparse.Namespace) -> int:
     watch_dir.mkdir(parents=True, exist_ok=True)
     print(
         up_banner(
-            vault_dir, host=args.host, port=args.port, watch_dir=watch_dir, tokened=bool(args.token)
+            vault_dir,
+            host=args.host,
+            port=args.port,
+            watch_dir=watch_dir,
+            tokened=bool(args.token),
+            hotkey=hotkey,
         )
     )
     if args.open:
@@ -640,6 +708,8 @@ def _run_up(args: argparse.Namespace) -> int:
         return 0
     _serve_all(  # pragma: no cover - launches the long-running server + watch threads
         store,
+        vault_dir=vault_dir,
+        index_root=index_root,
         watch_dir=watch_dir,
         host=args.host,
         port=args.port,
@@ -647,13 +717,16 @@ def _run_up(args: argparse.Namespace) -> int:
         instruction=instruction,
         playbook=playbook,
         interval=args.interval,
+        hotkey=hotkey,
     )
     return 0
 
 
-def _serve_all(  # pragma: no cover - long-running threads (HTTP serve + folder watch loop)
+def _serve_all(  # pragma: no cover - long-running threads (HTTP serve + folder watch + hotkey)
     store: JsonlDirectiveStore,
     *,
+    vault_dir: Path,
+    index_root: Path,
     watch_dir: Path,
     host: str,
     port: int,
@@ -661,8 +734,9 @@ def _serve_all(  # pragma: no cover - long-running threads (HTTP serve + folder 
     instruction: str,
     playbook: str,
     interval: float,
+    hotkey: str | None,
 ) -> None:
-    """Run the folder-watch loop (daemon thread) and the HTTP intake server (foreground) together."""
+    """Run folder-watch (+ optional global hotkey) as daemon threads and the HTTP server foreground."""
     import threading
 
     from grandplan.adapters.folder_watch import watch_folder
@@ -681,6 +755,13 @@ def _serve_all(  # pragma: no cover - long-running threads (HTTP serve + folder 
         daemon=True,
     )
     watcher.start()
+    if hotkey:
+        threading.Thread(
+            target=_run_hotkey,
+            args=(vault_dir, index_root),
+            kwargs={"hotkey": hotkey},
+            daemon=True,
+        ).start()
     serve_intake(store, host=host, port=port, token=token)
 
 
@@ -1031,6 +1112,17 @@ def main(argv: list[str] | None = None) -> int:
     up_cmd.add_argument("--prompt", default="", help="ad-hoc instruction (overrides --playbook)")
     up_cmd.add_argument(
         "--interval", type=float, default=5.0, help="folder-watch poll interval seconds (default 5)"
+    )
+    up_cmd.add_argument(
+        "--hotkey",
+        action="store_true",
+        help="enable global hotkey capture: select text anywhere → press the hotkey → organized into "
+        'the vault (needs the `windows` extra: pip install -e ".[windows]")',
+    )
+    up_cmd.add_argument(
+        "--hotkey-combo",
+        default="<ctrl>+<alt>+g",
+        help="the global hotkey (pynput format; default <ctrl>+<alt>+g)",
     )
     up_cmd.add_argument(
         "--dry-run", action="store_true", help="set up + print the banner, but don't serve"
