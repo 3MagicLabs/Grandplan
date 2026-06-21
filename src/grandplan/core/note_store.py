@@ -61,7 +61,10 @@ class JsonlNoteRepository:
         elif kind == "status":
             # Replay the status event onto the in-memory log; last line wins (ADR-0008).
             self._mem.set_status(
-                str(record["note_id"]), NoteStatus(str(record["status"])), at=record.get("at")
+                str(record["note_id"]),
+                NoteStatus(str(record["status"])),
+                at=record.get("at"),
+                detail=str(record.get("detail", "")),
             )
         elif kind == "edit":
             # Replay a field edit (PR-C); derived state folds edits in append order over the note.
@@ -101,14 +104,18 @@ class JsonlNoteRepository:
         self._append({"kind": "edge", "edge": _edge_to_dict(edge)})
         self._mem.add_edge(edge)
 
-    def set_status(self, note_id: str, status: NoteStatus, *, at: str | None = None) -> None:
+    def set_status(
+        self, note_id: str, status: NoteStatus, *, at: str | None = None, detail: str = ""
+    ) -> None:
         if self._mem.status_of(note_id) is status:
             return  # no state change → no event (append-only + idempotent, like add_note/add_edge)
         record: dict[str, object] = {"kind": "status", "note_id": note_id, "status": status.value}
         if at is not None:
             record["at"] = at
+        if detail:
+            record["detail"] = detail
         self._append(record)
-        self._mem.set_status(note_id, status, at=at)
+        self._mem.set_status(note_id, status, at=at, detail=detail)
 
     def status_of(self, note_id: str) -> NoteStatus | None:
         return self._mem.status_of(note_id)

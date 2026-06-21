@@ -290,7 +290,11 @@ def approve(
     occurred = pending.original.created
     update = pending.update
     if update is not None:
-        repo.set_status(update.target.id, update.status, at=occurred)
+        # Record the triggering capture's text on the event, so the note's History shows WHAT the
+        # update said (a status update creates no note, so otherwise its content would be invisible).
+        repo.set_status(
+            update.target.id, update.status, at=occurred, detail=pending.original.text.strip()
+        )
         return StatusUpdateResult(
             original=pending.original, target=update.target, status=update.status
         )

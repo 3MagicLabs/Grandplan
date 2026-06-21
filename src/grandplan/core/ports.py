@@ -46,11 +46,14 @@ class NoteRepository(Protocol):
 
     def edges(self) -> tuple[Edge, ...]: ...
 
-    def set_status(self, note_id: str, status: NoteStatus, *, at: str | None = None) -> None:
+    def set_status(
+        self, note_id: str, status: NoteStatus, *, at: str | None = None, detail: str = ""
+    ) -> None:
         """Record a note's new current status as an event (append-only; never mutates the note).
 
         `at` is an optional caller-supplied timestamp (the capture's `created`) for history; no
-        hidden clock. Idempotent: recording the current derived status records nothing.
+        hidden clock. `detail` optionally records the triggering capture's text (so a capture-driven
+        status update shows WHAT it said). Idempotent: recording the current derived status records nothing.
         """
         ...
 

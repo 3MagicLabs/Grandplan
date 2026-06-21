@@ -327,7 +327,7 @@ def _replay_history(events: tuple[NoteEvent, ...], repo: JsonlNoteRepository) ->
             dropped += 1
             continue
         if event.kind == "status" and event.status is not None:
-            repo.set_status(event.note_id, event.status, at=event.at)
+            repo.set_status(event.note_id, event.status, at=event.at, detail=event.detail)
         elif event.kind == "edit" and event.edit is not None:
             repo.record_edit(event.note_id, event.edit, at=event.at)
         elif event.kind == "resource" and event.resource is not None:

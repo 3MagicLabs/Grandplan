@@ -53,10 +53,14 @@ class InMemoryNoteRepository:
     def edges(self) -> tuple[Edge, ...]:
         return tuple(self._edges)
 
-    def set_status(self, note_id: str, status: NoteStatus, *, at: str | None = None) -> None:
+    def set_status(
+        self, note_id: str, status: NoteStatus, *, at: str | None = None, detail: str = ""
+    ) -> None:
         if self.status_of(note_id) is status:
             return  # no change → no event (idempotent, append-only)
-        self._events.append(NoteEvent(note_id=note_id, kind="status", at=at, status=status))
+        self._events.append(
+            NoteEvent(note_id=note_id, kind="status", at=at, status=status, detail=detail)
+        )
 
     def record_edit(self, note_id: str, edit: NoteEdit, *, at: str | None = None) -> None:
         current = self.current_note(note_id)

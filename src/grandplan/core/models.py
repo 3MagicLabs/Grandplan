@@ -223,11 +223,15 @@ class NoteEvent:
     status: NoteStatus | None = None
     edit: NoteEdit | None = None
     resource: Resource | None = None
+    # The triggering capture's text, for a capture-driven status update — so the history shows WHAT
+    # the update said, not just that the status flipped (a status update creates no note of its own).
+    detail: str = ""
 
     def summary(self) -> str:
         """A compact human-readable description, e.g. `status → done` or `+file: resume.pdf`."""
         if self.kind == "status" and self.status is not None:
-            return f"status → {self.status.value}"
+            base = f"status → {self.status.value}"
+            return f'{base} · "{self.detail}"' if self.detail else base
         if self.kind == "edit" and self.edit is not None:
             parts = ", ".join(f"{field} → {value}" for field, value in self.edit.changes())
             return f"edit: {parts}" if parts else "edit"

@@ -179,6 +179,10 @@ def test_approve_update_appends_status_event_and_creates_no_new_note(tmp_path: P
     assert repo.status_of(first.note.id) is NoteStatus.DONE  # event-sourced status applied
     assert len(repo.notes()) == 1  # NO duplicate note — the update is an event, not a note
     assert originals.get(pending.original.id) is not None  # raw capture retained (lossless)
+    # The history records WHAT the update said (the user noted a bare "status → next" was opaque).
+    (status_event,) = [e for e in repo.history_of(first.note.id) if e.kind == "status"]
+    assert status_event.detail == "done building the bug bounty finder tool"
+    assert status_event.detail in status_event.summary()  # surfaced in the rendered history
 
 
 def test_related_new_idea_without_a_cue_is_a_new_note_not_a_silent_update(tmp_path: Path) -> None:
