@@ -29,7 +29,7 @@ def _lazy_encode(model_name: str) -> EncodeFn:  # pragma: no cover - needs the m
                 from sentence_transformers import SentenceTransformer
             except ImportError as exc:
                 raise RuntimeError(
-                    "sentence-transformers not installed; `pip install grandplan[embeddings]`"
+                    f"sentence-transformers unavailable ({exc}); `pip install grandplan[embeddings]`"
                 ) from exc
             model = SentenceTransformer(model_name)
         return [float(value) for value in model.encode(text)]
