@@ -933,6 +933,24 @@ def test_main_gui_without_pyside_reports_missing_dependency(
     assert "PySide6" in capsys.readouterr().err
 
 
+def test_gui_init_and_open_scaffold_and_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `gui --init --open` scaffolds the vault + opens Obsidian, then launches the GUI. run_app and the
+    # Obsidian launcher are stubbed so the test never opens a real window (and works without PySide6).
+    monkeypatch.setattr("grandplan.app.gui.run_app", lambda **_: 0)
+    opened: list[Path] = []
+    monkeypatch.setattr(
+        "grandplan.adapters.obsidian_open.open_in_obsidian",
+        lambda vault_dir: opened.append(vault_dir) or True,
+    )
+    vault = tmp_path / "v"
+    assert main(["gui", "-o", str(vault), "--init", "--open"]) == 0
+    assert (vault / "graph.json").exists()  # --init scaffolded the vault
+    assert (vault / ".obsidian" / "workspace.json").exists()  # opens on the graph
+    assert opened == [vault]  # --open launched the Obsidian opener
+
+
 def test_main_gui_embeddings_without_dep_fails_fast(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

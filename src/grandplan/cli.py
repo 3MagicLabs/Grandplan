@@ -1016,11 +1016,20 @@ def _run_gui(args: argparse.Namespace) -> int:
     if missing:
         print(missing, file=sys.stderr)
         return 1
+    vault_dir = Path(args.vault)
+    if getattr(args, "init", False):
+        _init_vault(vault_dir, migrate_legacy_index(vault_dir))
+        print(f"initialized vault at {vault_dir}")
+    if getattr(args, "open", False):
+        from grandplan.adapters.obsidian_open import obsidian_open_uri, open_in_obsidian
+
+        print(f"opening graph view: {obsidian_open_uri(vault_dir)}")
+        open_in_obsidian(vault_dir)
     try:
         from grandplan.app.gui import run_app
 
         return run_app(
-            vault_dir=Path(args.vault),
+            vault_dir=vault_dir,
             use_llm=not args.no_llm,  # PR-F: the local model is the default; --no-llm opts out
             use_embeddings=args.embeddings,
             model=args.model,
@@ -1302,6 +1311,14 @@ def main(argv: list[str] | None = None) -> int:
         "--embeddings", action="store_true", help="use local sentence-transformer embeddings"
     )
     gui.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model name (default LLM)")
+    gui.add_argument(
+        "--init",
+        action="store_true",
+        help="scaffold a fresh vault (graph-coloured config + a workspace that opens on the graph)",
+    )
+    gui.add_argument(
+        "--open", action="store_true", help="open the vault's graph view in Obsidian on launch"
+    )
 
     args = parser.parse_args(argv)
     _expand_user_paths(args)
