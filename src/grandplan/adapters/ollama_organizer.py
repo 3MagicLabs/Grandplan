@@ -129,7 +129,14 @@ def parse_proposed(raw: str, original: Original) -> ProposedNote:
 
 def _parse_resources(raw: object, text: str) -> tuple[Resource, ...]:
     """Validate the model's `resources` array (skipping malformed entries); fall back to the
-    deterministic extractor when the model omits it or returns nothing usable (PR-D)."""
+    deterministic extractor when the model omits it or returns nothing usable (PR-D).
+
+    Anti-hallucination: a concrete reference (link/image/file — i.e. a real URL or path) is only
+    kept if it actually appears in the capture text. Small models confidently invent plausible links
+    (e.g. a `docs.google.com/...` that was never there); those are dropped. A `placeholder` is a
+    *description* of an expected, not-yet-existing artifact, so it may legitimately be model-authored.
+    """
+    haystack = text.lower()
     parsed: list[Resource] = []
     if isinstance(raw, list):
         for item in raw:
@@ -141,6 +148,8 @@ def _parse_resources(raw: object, text: str) -> tuple[Resource, ...]:
             ref = " ".join(str(item.get("ref") or "").split())
             if kind is None or not ref:
                 continue
+            if kind is not ResourceKind.PLACEHOLDER and ref.lower() not in haystack:
+                continue  # a link/file the model invented (not in the capture) → hallucination, drop it
             label = " ".join(str(item.get("label") or "").split())
             parsed.append(Resource(kind=kind, ref=ref, label=label))
     return tuple(parsed) if parsed else extract_resources(text)

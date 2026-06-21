@@ -73,17 +73,48 @@ def test_parse_maps_resources_and_skips_invalid_entries() -> None:
             ],
         }
     )
-    assert parse_proposed(raw, _original()).resources == (
+    # the link must actually appear in the capture (anti-hallucination), so put it there
+    assert parse_proposed(raw, _original("see https://example.com")).resources == (
         Resource(ResourceKind.LINK, "https://example.com", "site"),
     )
 
 
 def test_resource_ref_newlines_are_stripped_to_prevent_markdown_injection() -> None:
-    raw = json.dumps(
-        {"title": "x", "resources": [{"kind": "link", "ref": "https://x.com\n# evil"}]}
-    )
+    # A placeholder is model-authored (not text-checked), so it exercises the newline-stripping path.
+    raw = json.dumps({"title": "x", "resources": [{"kind": "placeholder", "ref": "a doc\n# evil"}]})
     (resource,) = parse_proposed(raw, _original()).resources
     assert "\n" not in resource.ref
+
+
+def test_hallucinated_link_not_in_capture_is_dropped() -> None:
+    # The headline bug: a small model invents a plausible link that was never in the text.
+    raw = json.dumps(
+        {
+            "title": "write the quickstart doc",
+            "resources": [{"kind": "link", "ref": "https://docs.google.com/document/d/INVENTED"}],
+        }
+    )
+    note = parse_proposed(raw, _original("write the quickstart doc"))
+    assert note.resources == ()  # the invented Google Doc link is rejected
+    assert not any("docs.google.com" in r.ref for r in note.resources)
+
+
+def test_real_link_in_capture_is_kept() -> None:
+    from grandplan.core.resources import Resource, ResourceKind
+
+    raw = json.dumps({"title": "x", "resources": [{"kind": "link", "ref": "https://real.io/x"}]})
+    note = parse_proposed(raw, _original("notes — https://real.io/x has the spec"))
+    assert Resource(ResourceKind.LINK, "https://real.io/x") in note.resources
+
+
+def test_placeholder_resource_allowed_without_being_in_capture() -> None:
+    from grandplan.core.resources import ResourceKind
+
+    raw = json.dumps(
+        {"title": "x", "resources": [{"kind": "placeholder", "ref": "a quickstart doc to write"}]}
+    )
+    note = parse_proposed(raw, _original("write the quickstart"))
+    assert any(r.kind is ResourceKind.PLACEHOLDER for r in note.resources)
 
 
 def test_absent_resources_falls_back_to_heuristic_extraction() -> None:
