@@ -7,10 +7,11 @@ pipelines — exhausting memory — while also silently coalescing back-to-back 
 
 This class extracts that orchestration into a **Qt-free, fully unit-tested** unit:
 
-- **Serialized & bounded** — one worker thread drains a queue capped at `max_pending` (default 1):
-  at most one capture in flight plus one queued; further `submit()`s are *rejected with a visible
-  status*, never stacked or silently dropped. Serialization also means only one local-LLM call runs
-  at a time (so the model runtime can't fan out into parallel copies).
+- **Serialized & bounded** — one worker thread drains a queue capped at `max_pending` (default 16):
+  you can fire several captures in a row (each grabs its own text at submit time) and they're
+  reviewed/committed one after another; only when the buffer fills is a `submit()` *rejected with a
+  visible status*, never stacked or silently dropped. Serialization means only one local-LLM call
+  runs at a time (so the model runtime can't fan out into parallel copies).
 - **Observable** — every stage is logged and emitted as a `CaptureStatus` to an injected `on_status`
   callback (the GUI maps it to the tray tooltip/notifications).
 - **Off the UI thread** — all heavy work runs on the worker; the only main-thread step is the
@@ -138,7 +139,7 @@ class CaptureCoordinator:
         detector: UpdateDetector | None = None,
         edit_detector: EditDetector | None = None,
         placer: Placer | None = None,
-        max_pending: int = 1,
+        max_pending: int = 16,
     ) -> None:
         if max_pending < 1:
             raise ValueError("max_pending must be >= 1")
@@ -164,11 +165,23 @@ class CaptureCoordinator:
     # -- public API -----------------------------------------------------------------------------
 
     def submit(self) -> bool:
-        """Request a capture. Returns False (and emits REJECTED_BUSY) if the buffer is full.
+        """Capture the current selection NOW and enqueue it for review.
 
-        Thread-safe: called from the global-hotkey thread and the tray menu alike.
+        Capturing at **enqueue** time (not when the worker later processes it) is what lets you fire
+        several captures in a row — select → hotkey → select → hotkey → … — and have each keep its
+        OWN text, reviewed one after another. (Reading the selection at process time made every queued
+        press re-read whatever happened to be selected later.) Returns False if nothing is selected
+        (emits EMPTY) or the buffer is full (emits REJECTED_BUSY). Thread-safe.
         """
-        return self._enqueue(_REQUEST)
+        try:
+            text = self._capturer.capture()
+        except Exception:  # noqa: BLE001 - a flaky capture backend must never crash the submitter
+            self._emit(Stage.FAILED, "capture failed")
+            return False
+        if not text or not text.strip():
+            self._emit(Stage.EMPTY, "no text was selected")
+            return False
+        return self._enqueue(text)
 
     def submit_text(self, text: str) -> bool:
         """Quick-capture: enqueue already-typed text (no selection needed). Returns False if the text

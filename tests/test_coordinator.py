@@ -234,11 +234,11 @@ def test_empty_selection_skips_review_entirely(tmp_path: Path) -> None:
         on_status=statuses.append,
     )
 
-    assert coord.submit() is True
-    assert coord.process_one(timeout=0) is None
+    # Capture happens at submit() now, so an empty selection is rejected there (nothing enqueued).
+    assert coord.submit() is False
     assert reviewed == []  # never prompted the user
     assert repo.notes() == ()
-    assert _stages(statuses) == [Stage.CAPTURING, Stage.EMPTY, Stage.IDLE]
+    assert _stages(statuses) == [Stage.EMPTY]
 
 
 def test_failure_is_isolated_reported_and_coordinator_survives(tmp_path: Path) -> None:
@@ -250,14 +250,30 @@ def test_failure_is_isolated_reported_and_coordinator_survives(tmp_path: Path) -
         on_status=statuses.append,
     )
 
-    # A failing capture must not raise out of the coordinator.
-    assert coord.submit() is True
-    assert coord.process_one(timeout=0) is None
+    # A failing capture backend must not raise out of submit(); it's reported as FAILED, nothing
+    # is enqueued, and the coordinator stays usable for the next press.
+    assert coord.submit() is False
     assert Stage.FAILED in _stages(statuses)
-    assert _stages(statuses)[-1] is Stage.IDLE  # always returns to idle
     assert repo.notes() == ()
-    # ...and the coordinator is still usable afterwards (worker would keep serving).
-    assert coord.submit() is True
+    assert coord.submit() is False  # still usable (no crash) — the capturer is still failing
+
+
+def test_several_captures_each_keep_their_own_text(tmp_path: Path) -> None:
+    # Issue: firing several captures in a row (select → hotkey → select → hotkey) must keep each
+    # one's OWN selection — submit() captures at enqueue, so they don't all re-read a later selection.
+    coord, repo, _ = _make(
+        tmp_path,
+        capturer=SeqCapturer(["first idea", "second idea", "third idea"]),
+        review=lambda state: True,
+        max_pending=8,
+    )
+    assert coord.submit() and coord.submit() and coord.submit()  # three distinct selections queued
+    results = [coord.process_one(timeout=0) for _ in range(3)]
+
+    assert all(isinstance(r, CaptureResult) for r in results)
+    titles = {repo.current_note(r.note.id).title for r in results}  # type: ignore[union-attr]
+    assert titles == {"first idea", "second idea", "third idea"}  # each note kept its own text
+    assert len(repo.notes()) == 3  # all three have a place — none lost or merged
 
 
 def test_submit_serializes_and_rejects_overflow_then_processes_in_order(tmp_path: Path) -> None:
@@ -306,7 +322,7 @@ def test_after_commit_failure_keeps_note_and_reports_projection_failed(tmp_path:
 
     coord, repo, _ = _make(
         tmp_path,
-        capturer=SeqCapturer(["keep me"]),
+        capturer=SeqCapturer(["keep me", "still alive"]),  # 2nd value for the survival re-submit
         review=lambda state: True,
         on_status=statuses.append,
         after_commit=boom_after_commit,
