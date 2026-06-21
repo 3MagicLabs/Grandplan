@@ -181,6 +181,34 @@ def test_approve_update_appends_status_event_and_creates_no_new_note(tmp_path: P
     assert originals.get(pending.original.id) is not None  # raw capture retained (lossless)
 
 
+def test_related_new_idea_without_a_cue_is_a_new_note_not_a_silent_update(tmp_path: Path) -> None:
+    # Regression (user-reported data loss): a NEW idea that's topically related to an existing note —
+    # but carries NO explicit progress cue ("done"/"next"/"started") — must become its own note, never
+    # get silently collapsed into the existing one as a status update. The GUI now always uses the
+    # deterministic HeuristicUpdateDetector for exactly this reason (no LLM hallucinating update-intent).
+    from grandplan.core.vault import MarkdownVaultWriter
+
+    repo, originals = InMemoryNoteRepository(), InMemoryOriginalStore()
+    vault = MarkdownVaultWriter(tmp_path / "vault")
+    first = approve(
+        _start("the bug bounty finder tool idea", repo, originals), repo=repo, vault=vault
+    )
+    assert isinstance(first, CaptureResult)
+
+    # A related but distinct new thought, with no update cue → it is NOT an update.
+    pending = _start(
+        "could the bug bounty finder also scan internal repos as a service",
+        repo,
+        originals,
+        detector=HeuristicUpdateDetector(),
+    )
+    assert pending.update is None  # not swallowed as a status update
+    assert pending.edit is None
+    result = approve(pending, repo=repo, vault=vault)
+    assert isinstance(result, CaptureResult)  # a real new note was created
+    assert len(repo.notes()) == 2  # both ideas have a place
+
+
 def test_update_intent_without_confident_match_falls_back_to_new_note(tmp_path: Path) -> None:
     from grandplan.core.vault import MarkdownVaultWriter
 

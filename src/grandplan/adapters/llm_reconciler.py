@@ -59,7 +59,11 @@ def _ollama_chat(model: str, prompt: str) -> str:  # pragma: no cover - needs a 
             f"ollama client unavailable ({exc}); `pip install grandplan[llm]`"
         ) from exc
     response = ollama.Client(timeout=OLLAMA_TIMEOUT_S).chat(
-        model=model, messages=[{"role": "user", "content": prompt}], format="json"
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        format="json",
+        options={"temperature": 0},
+        keep_alive="30m",
     )
     return str(response["message"]["content"])
 

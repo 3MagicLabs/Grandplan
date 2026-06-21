@@ -26,9 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from grandplan.adapters.capture import make_windows_capturer, run_hotkey_listener
-from grandplan.adapters.llm_edit_detector import LlmEditDetector
 from grandplan.adapters.llm_contextual_reconciler import LlmContextualReconciler
-from grandplan.adapters.llm_update_detector import LlmUpdateDetector
 from grandplan.adapters.llm_placer import LlmPlacer
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OllamaOrganizer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
@@ -54,6 +52,16 @@ _DEFAULT_HOTKEY = "<ctrl>+<alt>+g"
 # Stages worth a tray notification (the rest — incl. DISCARDED and REJECTED_BUSY, which follow a
 # user action they already know about — only update the tooltip, to avoid notification spam).
 _NOTIFY_STAGES = frozenset({Stage.SAVED, Stage.EMPTY, Stage.FAILED, Stage.PROJECTION_FAILED})
+
+
+def _clip(text: str, limit: int) -> str:
+    """Bound a progress-popup label so a long title/detail can't blow the popup off-screen.
+
+    Collapses whitespace (so newlines don't make the popup tall) and ellipsises past `limit` chars.
+    Pure + tested even though the Qt popup that uses it is `pragma: no cover`.
+    """
+    collapsed = " ".join(text.split())
+    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1].rstrip() + "…"
 
 
 @dataclass(eq=False)  # identity-keyed: tracked in a set, and has a mutable `approved` (not frozen)
@@ -89,17 +97,15 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     reconciler: Reconciler = (
         LlmContextualReconciler(model=model) if use_llm else SimilarityReconciler()
     )
-    # PR-B: recognise progress-update captures ("done: ...", "started ...") so they update the
-    # matched note's status instead of creating a duplicate. The LLM detector judges intent under
-    # --llm (with a heuristic fallback); otherwise the deterministic cue-based baseline.
-    detector: UpdateDetector = (
-        LlmUpdateDetector(model=model) if use_llm else HeuristicUpdateDetector()
-    )
-    # PR-C: recognise detail-edit captures ("launch slipped to Q3", "rename X to Y") so they edit
-    # the matched note's fields instead of creating a duplicate (LLM under --llm, heuristic fallback).
-    edit_detector: EditDetector = (
-        LlmEditDetector(model=model) if use_llm else HeuristicEditDetector()
-    )
+    # Update/edit intent detection is ALWAYS the deterministic, cue-based heuristic — never the LLM,
+    # even under --llm. The LLM detector hallucinated update-intent on genuinely-new ideas (e.g. a new
+    # AI note read as a "next" status update to a related one), so a distinct idea got silently
+    # collapsed into an existing note instead of becoming its own. Captures must never be lost: a new
+    # idea only becomes an update when the text carries an EXPLICIT progress cue ("done: …", "up next:
+    # …", "started …"); otherwise it's a new note (which the reconciler then LINKS to related ones).
+    # The LLM is still used for the valuable work — organize, placement, relationship classification.
+    detector: UpdateDetector = HeuristicUpdateDetector()
+    edit_detector: EditDetector = HeuristicEditDetector()
     # PR-G: place each new note into the graph's structure (part_of parent + depends_on prereqs) so
     # the plan/masterplan get real hierarchy and sequence — not just similarity links. LLM proposes
     # parent + dependencies under --llm (heuristic fallback); the heuristic baseline does part_of.
@@ -149,6 +155,9 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
             layout.setContentsMargins(14, 12, 14, 12)
             self._title = QtWidgets.QLabel("grandplan")
             self._title.setStyleSheet("font-weight: 600; font-size: 13px;")
+            self._title.setWordWrap(
+                True
+            )  # wrap a long title within the fixed width, never widen it
             self._detail = QtWidgets.QLabel("")
             self._detail.setWordWrap(True)
             self._detail.setStyleSheet("color: palette(mid);")
@@ -175,8 +184,8 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
                 self.hide()
                 return
             self._hide_timer.stop()
-            self._title.setText(view.title)
-            self._detail.setText(view.detail)
+            self._title.setText(_clip(view.title, 90))  # keep the popup compact + on-screen
+            self._detail.setText(_clip(view.detail, 140))
             if view.percent < 0:
                 self._bar.setRange(0, 0)  # indeterminate — working, unknown ETA
             else:

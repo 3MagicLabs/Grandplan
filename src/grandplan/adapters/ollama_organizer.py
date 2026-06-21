@@ -55,7 +55,7 @@ DEFAULT_MODEL = "llama3.2:3b"
 # timeout, so a stalled/loading model pins the capture worker forever and breaks clean shutdown
 # (robustness audit, HIGH). On timeout the call raises → the adapter's except catches it and falls
 # back to the deterministic baseline (or raises OrganizerUnavailable under require=True).
-OLLAMA_TIMEOUT_S = 60.0
+OLLAMA_TIMEOUT_S = 180.0
 _MAX_TITLE = 80
 _VALID_TYPES = {note_type.value: note_type for note_type in NoteType}
 _VALID_RESOURCE_KINDS = {kind.value: kind for kind in ResourceKind}
@@ -170,7 +170,11 @@ def _ollama_chat(model: str, prompt: str) -> str:  # pragma: no cover - needs a 
             f"ollama client unavailable ({exc}); `pip install grandplan[llm]`"
         ) from exc
     response = ollama.Client(timeout=OLLAMA_TIMEOUT_S).chat(
-        model=model, messages=[{"role": "user", "content": prompt}], format="json"
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        format="json",
+        options={"temperature": 0},
+        keep_alive="30m",
     )
     return str(response["message"]["content"])
 

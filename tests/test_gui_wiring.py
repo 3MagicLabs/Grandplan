@@ -45,3 +45,15 @@ def test_review_requests_are_distinct_by_identity() -> None:
 def test_review_request_defaults_to_not_approved() -> None:
     # On quit we set the event without setting approved → it must default to a discard (False).
     assert _ReviewRequest(state=_state()).approved is False
+
+
+def test_clip_bounds_popup_label_length_and_collapses_whitespace() -> None:
+    from grandplan.app.gui import _clip
+
+    assert _clip("short title", 90) == "short title"  # under the limit → unchanged
+    long = "x" * 200
+    clipped = _clip(long, 90)
+    assert len(clipped) == 90 and clipped.endswith("…")  # bounded so the popup can't blow up
+    assert (
+        _clip("line one\nline two", 90) == "line one line two"
+    )  # newlines collapsed (no tall popup)
