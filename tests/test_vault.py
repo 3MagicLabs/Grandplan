@@ -155,13 +155,19 @@ def test_resources_render_natively_and_list_in_frontmatter() -> None:
         Resource(ResourceKind.PLACEHOLDER, "resume"),
     )
     md = render_markdown(note, _original(), ())
+    resources_section = md.split("## Resources", 1)[1]
     assert "## Resources" in md
+    # URLs stay clickable links/embeds (no graph node — Obsidian treats http(s) as external)
     assert "- [site](https://example.com)" in md
-    assert "- ![image](https://cdn.x/i.png)" in md  # markdown embeds, never [[wikilinks]] that
-    assert "- ![image](~/pics/a.png)" in md  # would add phantom nodes to the Obsidian graph
-    assert "- [/Users/me/plan.pdf](/Users/me/plan.pdf)" in md
-    assert "- [notes](notes)" in md  # even a bare name is a plain link, not a graph-polluting [[]]
-    assert "[[" not in md.split("## Resources", 1)[1]  # NO wikilinks anywhere in Resources
+    assert "- ![image](https://cdn.x/i.png)" in md
+    # LOCAL paths render as INLINE CODE, never a `[x](path)` link — a relative-path link would spawn
+    # a phantom Obsidian node (the `path/to/key_points.docx` graph-pollution bug). No nodes now.
+    assert "- `~/pics/a.png`" in resources_section
+    assert "- `/Users/me/plan.pdf`" in resources_section
+    assert "- `notes`" in resources_section
+    assert "](~/pics/" not in resources_section  # not a markdown link → no graph node
+    assert "](/Users/me/" not in resources_section
+    assert "[[" not in resources_section  # NO wikilinks anywhere in Resources
     assert "⬜ resume" in md  # placeholder rendered visibly
     # Frontmatter lists the concrete refs (not placeholders).
     front = md.split("\n---", 1)[0]

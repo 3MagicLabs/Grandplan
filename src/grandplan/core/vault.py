@@ -171,17 +171,24 @@ def render_markdown(
 
 
 def _resource_line(resource: Resource) -> str:
-    """Render a resource as native Obsidian: a link/embed for URLs, a wikilink/embed for files."""
+    """Render a resource WITHOUT ever creating an Obsidian graph node.
+
+    The trap: a Markdown link to a *relative path* — `[x](path/to/key_points.docx)` — is still an
+    INTERNAL link to Obsidian, so it spawns an unresolved phantom node (and a `path/to/…` tree in the
+    file list). Only an http(s) URL is treated as external (no node). So: URLs render as clickable
+    links/embeds; local file paths render as **inline code** — visible, copyable, but never a link
+    and never a node. Placeholders are plain text. (Wikilinks are never used for resources at all.)
+    """
     ref = resource.ref
-    # Resources render as plain Markdown links/embeds — NEVER `[[wikilinks]]`/`![[embeds]]`. A
-    # wikilink to a file that isn't in the vault becomes an unresolved phantom node that clutters
-    # the Obsidian graph (a real bug seen on a live vault); a `[label](ref)` link stays clickable
-    # in the note without ever adding a graph node.
     if resource.kind is ResourceKind.PLACEHOLDER:
         return f"- ⬜ {ref} _(placeholder — to be attached)_"
-    if resource.kind is ResourceKind.IMAGE:
-        return f"- ![{resource.label or 'image'}]({ref})"
-    return f"- [{resource.label or ref}]({ref})"
+    if ref.startswith(("http://", "https://")):  # external URL — safe to link/embed, no graph node
+        if resource.kind is ResourceKind.IMAGE:
+            return f"- ![{resource.label or 'image'}]({ref})"
+        return f"- [{resource.label or ref}]({ref})"
+    # a local file path → inline code, never an internal link, so Obsidian adds no phantom node
+    label = f"{resource.label}: " if resource.label else ""
+    return f"- {label}`{ref}`"
 
 
 def _history_lines(history: tuple[NoteEvent, ...]) -> list[str]:
