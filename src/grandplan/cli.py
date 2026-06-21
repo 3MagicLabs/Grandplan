@@ -644,6 +644,22 @@ def _run_directive(args: argparse.Namespace) -> int:
     return 0
 
 
+def _open_graph_in_obsidian(vault_dir: Path) -> None:
+    """Open the vault's graph in Obsidian, printing the URI + a first-time-registration hint.
+
+    Obsidian won't open a vault it has never seen from a URL, so a brand-new vault needs a one-time
+    "Open folder as vault" — the hint tells the user exactly what to do if nothing opens.
+    """
+    from grandplan.adapters.obsidian_open import obsidian_open_uri, open_in_obsidian
+
+    print(f"opening graph view: {obsidian_open_uri(vault_dir)}")
+    open_in_obsidian(vault_dir)
+    print(
+        "  first time? if Obsidian doesn't open the vault, register it once: "
+        f"Open folder as vault → {vault_dir}"
+    )
+
+
 def _init_vault(vault_dir: Path, index_root: Path) -> None:
     """Scaffold a fresh, Obsidian-ready vault: graph-coloured config, guide, empty projections, and a
     workspace that opens on the graph. Idempotent + non-destructive (reuses `write_projections`)."""
@@ -818,10 +834,7 @@ def _run_up(args: argparse.Namespace) -> int:
         )
     )
     if args.open:
-        from grandplan.adapters.obsidian_open import obsidian_open_uri, open_in_obsidian
-
-        print(f"opening graph view: {obsidian_open_uri(vault_dir)}")
-        open_in_obsidian(vault_dir)
+        _open_graph_in_obsidian(vault_dir)
     if args.dry_run:
         return 0
     _serve_all(  # pragma: no cover - launches the long-running server + watch threads
@@ -1021,10 +1034,7 @@ def _run_gui(args: argparse.Namespace) -> int:
         _init_vault(vault_dir, migrate_legacy_index(vault_dir))
         print(f"initialized vault at {vault_dir}")
     if getattr(args, "open", False):
-        from grandplan.adapters.obsidian_open import obsidian_open_uri, open_in_obsidian
-
-        print(f"opening graph view: {obsidian_open_uri(vault_dir)}")
-        open_in_obsidian(vault_dir)
+        _open_graph_in_obsidian(vault_dir)
     try:
         from grandplan.app.gui import run_app
 
