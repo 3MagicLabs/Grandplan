@@ -55,7 +55,9 @@ def _ollama_chat(model: str, prompt: str) -> str:  # pragma: no cover - needs a 
     try:
         import ollama
     except ImportError as exc:
-        raise RuntimeError("ollama not installed; `pip install grandplan[llm]`") from exc
+        raise RuntimeError(
+            f"ollama client unavailable ({exc}); `pip install grandplan[llm]`"
+        ) from exc
     response = ollama.Client(timeout=OLLAMA_TIMEOUT_S).chat(
         model=model, messages=[{"role": "user", "content": prompt}], format="json"
     )
