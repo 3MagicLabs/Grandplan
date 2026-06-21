@@ -67,6 +67,14 @@ _RULES: tuple[tuple[NoteStatus, re.Pattern[str]], ...] = tuple(
     (UPDATE_STATUS[intent], _compile(cues)) for intent, cues in _CUES
 )
 
+# A progress update is a SHORT ping ("done: built the resume", "up next: research", "no longer done").
+# We only treat a TERSE capture as update-intent; a longer capture is a note, even if it happens to
+# contain a cue word deep in its prose. Without this, re-capturing an existing note whose own content
+# mentions "done"/"queue"/"shipped" was misread as completing the matched note — a false status update
+# that the user hit directly (an unchanged re-capture got marked done). Length is the deterministic
+# signal that separates a progress ping from re-pasted content.
+_MAX_UPDATE_WORDS = 10
+
 
 class UpdateDetector(Protocol):
     """Classify whether a capture expresses update-intent, and toward which status (Strategy)."""
@@ -78,6 +86,8 @@ class HeuristicUpdateDetector:
     """Deterministic, offline baseline: ordered cue matching → a target status (or None)."""
 
     def detect(self, text: str) -> NoteStatus | None:
+        if len(text.split()) > _MAX_UPDATE_WORDS:
+            return None  # too long to be a progress ping — it's a note, not an update
         lowered = text.lower()
         for status, pattern in _RULES:
             if pattern.search(lowered):

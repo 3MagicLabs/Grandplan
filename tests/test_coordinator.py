@@ -13,7 +13,12 @@ from pathlib import Path
 
 import pytest
 
-from grandplan.app.coordinator import CaptureCoordinator, CaptureStatus, Stage
+from grandplan.app.coordinator import (
+    CaptureCoordinator,
+    CaptureStatus,
+    Stage,
+    committed_note_id,
+)
 from grandplan.app.review import EditResult, ReviewState, StatusUpdateResult
 from grandplan.core.edit_detect import HeuristicEditDetector
 from grandplan.core.embed import HashingEmbedder
@@ -158,6 +163,10 @@ def test_capture_driven_status_update_applies_event_without_new_note(tmp_path: P
     assert isinstance(second, StatusUpdateResult)
     assert repo.status_of(first.note.id) is NoteStatus.DONE  # event-sourced status applied
     assert len(repo.notes()) == 1  # the update added NO note
+    # The reproject must PROTECT the note the update touched (else reconcile_deletions could
+    # tombstone the very note we just updated — the observed "marked done and then deleted" loss).
+    assert committed_note_id(first) == first.note.id
+    assert committed_note_id(second) == first.note.id
     assert len(committed) == 2  # re-projection ran for the note AND the update
     stages = _stages(statuses)
     assert stages[-1] is Stage.IDLE
@@ -190,6 +199,7 @@ def test_capture_driven_edit_applies_event_without_new_note(tmp_path: Path) -> N
 
     assert isinstance(first, CaptureResult)
     assert isinstance(second, EditResult)
+    assert committed_note_id(second) == first.note.id  # the edit protects the note it touched
     current = repo.current_note(first.note.id)
     assert current is not None and current.title == "bounty hunter"  # edit applied (derived)
     assert len(repo.notes()) == 1  # the edit added NO note

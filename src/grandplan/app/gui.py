@@ -30,7 +30,13 @@ from grandplan.adapters.llm_contextual_reconciler import LlmContextualReconciler
 from grandplan.adapters.llm_placer import LlmPlacer
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OllamaOrganizer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
-from grandplan.app.coordinator import CaptureCoordinator, CaptureStatus, Committed, Stage
+from grandplan.app.coordinator import (
+    CaptureCoordinator,
+    CaptureStatus,
+    Committed,
+    Stage,
+    committed_note_id,
+)
 from grandplan.app.progress import ProgressView, progress_for
 from grandplan.app.review import ReviewState
 from grandplan.core.edit_detect import EditDetector, HeuristicEditDetector
@@ -234,9 +240,9 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         # note's title/body/due + its History section). Runs on the worker thread (PR-B/PR-C).
         # reconcile_deletions: a note whose .md the user deleted in Obsidian is tombstoned (not
         # resurrected); protect the just-committed note so it isn't mistaken for a deletion.
-        from grandplan.core.pipeline import CaptureResult
-
-        protect = frozenset({result.note.id}) if isinstance(result, CaptureResult) else frozenset()
+        # Protect the just-touched note (new OR the target of a status update / edit) so the
+        # deletion-reconciler never mistakes it for a note the user removed in Obsidian.
+        protect = frozenset({committed_note_id(result)})
         write_projections(
             repo, vault_dir, originals=originals, reconcile_deletions=True, protect_ids=protect
         )
@@ -346,11 +352,13 @@ def _show_review(state: ReviewState) -> bool:  # pragma: no cover - Qt dialog
     original = QtWidgets.QPlainTextEdit(state.original_text)
     original.setReadOnly(True)
     layout.addWidget(original)
-    buttons = QtWidgets.QDialogButtonBox(
-        QtWidgets.QDialogButtonBox.StandardButton.Save
-        | QtWidgets.QDialogButtonBox.StandardButton.Discard
-    )
-    buttons.accepted.connect(dialog.accept)
-    buttons.rejected.connect(dialog.reject)
+    buttons = QtWidgets.QDialogButtonBox()
+    save_btn = buttons.addButton(QtWidgets.QDialogButtonBox.StandardButton.Save)
+    discard_btn = buttons.addButton(QtWidgets.QDialogButtonBox.StandardButton.Discard)
+    # Wire each button's own `clicked` signal. We must NOT rely on QDialogButtonBox.rejected here:
+    # Discard carries Qt's *DestructiveRole*, which never fires `rejected` (only RejectRole buttons
+    # like Cancel do) — so the previous `buttons.rejected.connect(...)` left Discard completely dead.
+    save_btn.clicked.connect(dialog.accept)
+    discard_btn.clicked.connect(dialog.reject)
     layout.addWidget(buttons)
     return bool(dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted)

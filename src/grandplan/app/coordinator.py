@@ -101,6 +101,21 @@ def _committing_detail(pending: PendingReview) -> str:
     return "saving the note"
 
 
+def committed_note_id(result: Committed) -> str:
+    """The id of the note a commit touched — a NEW note, or the target of a status update / edit.
+
+    The reproject pass runs `reconcile_deletions` (tombstoning notes whose .md the user removed in
+    Obsidian); the just-touched note MUST be protected so it is never mistaken for a user deletion.
+    A new note exposes `result.note.id`; an update/edit touched an existing note (`result.target.id`).
+    Previously only new notes were protected, so a capture-driven status update could silently
+    tombstone the very note it had just updated (observed data loss)."""
+    if isinstance(result, CaptureResult):
+        return result.note.id
+    if isinstance(result, (StatusUpdateResult, EditResult)):
+        return result.target.id
+    raise AssertionError(f"unhandled Committed variant: {type(result).__name__}")
+
+
 def _saved_detail(result: Committed) -> str:
     """Human-readable SAVED detail for any outcome (an update/edit has no file path)."""
     if isinstance(result, StatusUpdateResult):

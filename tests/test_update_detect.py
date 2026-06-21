@@ -77,3 +77,37 @@ def test_update_status_map_targets_only_existing_statuses() -> None:
     # The vocabulary never introduces a new status, and never reaches needs-review/superseded.
     assert set(UPDATE_STATUS.values()) <= {NoteStatus.DONE, NoteStatus.ACTIVE, NoteStatus.NEXT}
     assert UPDATE_STATUS["reopen"] is NoteStatus.ACTIVE
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A re-paste / longer note that merely *mentions* a cue word deep in the body is content,
+        # not a progress ping — it must NOT be read as a status update (the user re-captured an
+        # unchanged note and it was wrongly marked done).
+        "Research how we know the AI considered everything before we call it done and ship",
+        "Figure out the right way to queue background jobs so the worker never stalls",
+        "Notes on the launch plan: the landing page redesign is something I am working on later",
+        "A checklist idea where each finished item gets a green check so progress is visible",
+    ],
+)
+def test_buried_cue_in_a_longer_note_is_not_an_update(
+    detector: HeuristicUpdateDetector, text: str
+) -> None:
+    assert detector.detect(text) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("done: built the resume generator", NoteStatus.DONE),
+        ("done building the bug bounty finder tool", NoteStatus.DONE),
+        ("up next: the prior-art research", NoteStatus.NEXT),
+        ("started the landing page redesign", NoteStatus.ACTIVE),
+        ("currently working on the onboarding flow", NoteStatus.ACTIVE),  # cue within the lead
+    ],
+)
+def test_short_cue_led_pings_still_fire(
+    detector: HeuristicUpdateDetector, text: str, expected: NoteStatus
+) -> None:
+    assert detector.detect(text) is expected
