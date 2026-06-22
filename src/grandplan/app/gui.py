@@ -53,9 +53,13 @@ from grandplan.core.store import JsonlOriginalStore
 from grandplan.core.update_detect import HeuristicUpdateDetector, UpdateDetector
 from grandplan.core.vault import MarkdownVaultWriter
 
-# Ctrl+Shift+Space avoids Ctrl+Alt (= AltGr on Windows, which fires while typing). Pass --hotkey-combo
-# to override (e.g. "copilot" for the dedicated Windows Copilot key). resolve_hotkey() normalizes it.
-_DEFAULT_HOTKEY = "ctrl+shift+space"
+# Ctrl+Shift+G avoids two traps: Ctrl+Alt (= AltGr on Windows, fires while typing) AND printable keys
+# like Space — pynput does NOT consume the hotkey, so the keystroke also reaches the focused app, and a
+# Space would overwrite the current selection (in Word, Ctrl+Shift+Space inserts a non-breaking space).
+# Ctrl held suppresses character insertion, so a letter can't delete the selection. Pass --hotkey-combo
+# to override; for a remapped key (e.g. the Windows Copilot key via PowerToys) bind a function key like
+# f13 — a single non-printable key that triggers nothing in the focused app. resolve_hotkey() normalizes.
+_DEFAULT_HOTKEY = "ctrl+shift+g"
 
 # Stages worth a tray notification (the rest — incl. DISCARDED and REJECTED_BUSY, which follow a
 # user action they already know about — only update the tooltip, to avoid notification spam).

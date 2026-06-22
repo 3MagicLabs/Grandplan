@@ -117,7 +117,8 @@ def test_resolved_default_and_copilot_chords_parse_under_pynput() -> None:
     # Guard the contract with the listener: whatever resolve_hotkey emits MUST be parseable by
     # pynput's GlobalHotKeys, or the listener would crash at startup.
     keyboard = pytest.importorskip("pynput.keyboard")
-    for spec in ("ctrl+shift+space", "ctrl+shift+g", "copilot"):
+    # The default + the recommended remapped-key target (f13, a single non-printable key) + copilot.
+    for spec in ("ctrl+shift+g", "f13", "copilot"):
         keyboard.HotKey.parse(resolve_hotkey(spec))  # raises ValueError if unparseable
 
 

@@ -592,7 +592,7 @@ def test_up_hotkey_shows_ai_enhanced_by_default(
     code = main(["up", "-o", str(tmp_path / "v"), "--hotkey", "--dry-run"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "global hotkey: ctrl+shift+space" in out
+    assert "global hotkey: ctrl+shift+g" in out
     assert "AI-enhanced (gemma4:e4b)" in out
 
 

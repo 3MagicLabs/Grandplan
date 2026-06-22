@@ -1277,9 +1277,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     up_cmd.add_argument(
         "--hotkey-combo",
-        default="ctrl+shift+space",
-        help="the global hotkey: e.g. ctrl+shift+space (default), ctrl+shift+g, or 'copilot' for the "
-        "dedicated Windows Copilot key. Avoid ctrl+alt (= AltGr on Windows; fires while typing).",
+        default="ctrl+shift+g",
+        help="the global hotkey: e.g. ctrl+shift+g (default), or f13 for a remapped key like the "
+        "Windows Copilot key (PowerToys → F13). Avoid ctrl+alt (= AltGr; fires while typing) and "
+        "printable keys like Space (the keystroke isn't consumed, so it overwrites your selection).",
     )
     up_cmd.add_argument(
         "--no-llm",
@@ -1333,9 +1334,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     gui.add_argument(
         "--hotkey-combo",
-        default="ctrl+shift+space",
-        help="the global capture hotkey: e.g. ctrl+shift+space (default), ctrl+shift+g, or 'copilot' "
-        "for the dedicated Windows Copilot key. Avoid ctrl+alt (= AltGr on Windows; fires while typing).",
+        default="ctrl+shift+g",
+        help="the global capture hotkey: e.g. ctrl+shift+g (default), or f13 for a remapped key like "
+        "the Windows Copilot key (PowerToys → F13). Avoid ctrl+alt (= AltGr; fires while typing) and "
+        "printable keys like Space (the keystroke isn't consumed, so it overwrites your selection).",
     )
 
     args = parser.parse_args(argv)
