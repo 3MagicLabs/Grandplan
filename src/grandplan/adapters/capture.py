@@ -12,6 +12,7 @@ injected, so the save/restore/fallback LOGIC is unit-tested here; the real backe
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from collections.abc import Callable
@@ -81,6 +82,34 @@ class _WindowsClipboardBackend:  # pragma: no cover - needs Windows + grandplan[
         from pynput.keyboard import Controller, Key
 
         keyboard = Controller()
+        # The capture hotkey is a modifier combo (e.g. ctrl+shift+g, or ctrl+shift+f13 via the Copilot
+        # key). pynput does not consume it, so when this runs those modifiers are still held — a raw
+        # Ctrl+C would collide with the held SHIFT and become Ctrl+Shift+C, which copies NOTHING (the
+        # clipboard stays empty and we wrongly report "no text selected"). Release every modifier and
+        # let the key-up events register, THEN send a clean Ctrl+C. (Releasing a not-held key is a
+        # harmless no-op, so this is safe regardless of which modifiers the chosen hotkey used.)
+        for name in (
+            "shift",
+            "shift_l",
+            "shift_r",
+            "alt",
+            "alt_l",
+            "alt_r",
+            "alt_gr",
+            "cmd",
+            "cmd_l",
+            "cmd_r",
+            "ctrl",
+            "ctrl_l",
+            "ctrl_r",
+        ):
+            modifier = getattr(Key, name, None)
+            if modifier is not None:
+                # Releasing a not-held key is a harmless no-op; suppress any backend error so a flaky
+                # key-release can never break the capture itself.
+                with contextlib.suppress(Exception):
+                    keyboard.release(modifier)
+        time.sleep(0.05)  # let the modifier-up events land before the synthetic copy
         with keyboard.pressed(Key.ctrl):
             keyboard.press("c")
             keyboard.release("c")
