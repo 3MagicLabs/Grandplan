@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import logging
 import re
 import shutil
 import sys
@@ -1029,6 +1030,10 @@ def _run_gui(args: argparse.Namespace) -> int:
     if missing:
         print(missing, file=sys.stderr)
         return 1
+    if getattr(args, "debug", False):
+        logging.basicConfig(
+            level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+        )
     vault_dir = Path(args.vault)
     if getattr(args, "init", False):
         _init_vault(vault_dir, migrate_legacy_index(vault_dir))
@@ -1338,6 +1343,12 @@ def main(argv: list[str] | None = None) -> int:
         help="the global capture hotkey: e.g. ctrl+shift+g (default), or f13 for a remapped key like "
         "the Windows Copilot key (PowerToys → F13). Avoid ctrl+alt (= AltGr; fires while typing) and "
         "printable keys like Space (the keystroke isn't consumed, so it overwrites your selection).",
+    )
+    gui.add_argument(
+        "--debug",
+        action="store_true",
+        help="stream INFO logs to the console (shows hotkey registration, each hotkey fire, and every "
+        "capture stage) — use this to diagnose a hotkey or capture that isn't responding",
     )
 
     args = parser.parse_args(argv)

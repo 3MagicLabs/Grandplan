@@ -212,11 +212,18 @@ class HotkeyDebouncer:
 def run_hotkey_listener(hotkey: str, on_trigger: Callable[[], None]) -> None:  # pragma: no cover
     from pynput import keyboard
 
+    resolved = resolve_hotkey(hotkey)
     debouncer = HotkeyDebouncer(_HOTKEY_DEBOUNCE_S)
 
     def fire() -> None:
+        # Logged so `--debug` shows the hotkey is actually being detected (vs. a remap/parse problem):
+        # if you press the key and see no "hotkey fired" line, pynput never received the combo.
+        logger.info("hotkey fired: %s", resolved)
         if debouncer.allow():
             on_trigger()
+        else:
+            logger.info("hotkey fire ignored (debounced — too soon after the last)")
 
-    with keyboard.GlobalHotKeys({resolve_hotkey(hotkey): fire}) as listener:
+    logger.info("hotkey listener registered on %s (from spec %r)", resolved, hotkey)
+    with keyboard.GlobalHotKeys({resolved: fire}) as listener:
         listener.join()
