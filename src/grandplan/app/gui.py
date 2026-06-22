@@ -53,7 +53,9 @@ from grandplan.core.store import JsonlOriginalStore
 from grandplan.core.update_detect import HeuristicUpdateDetector, UpdateDetector
 from grandplan.core.vault import MarkdownVaultWriter
 
-_DEFAULT_HOTKEY = "<ctrl>+<alt>+g"
+# Ctrl+Shift+Space avoids Ctrl+Alt (= AltGr on Windows, which fires while typing). Pass --hotkey-combo
+# to override (e.g. "copilot" for the dedicated Windows Copilot key). resolve_hotkey() normalizes it.
+_DEFAULT_HOTKEY = "ctrl+shift+space"
 
 # Stages worth a tray notification (the rest — incl. DISCARDED and REJECTED_BUSY, which follow a
 # user action they already know about — only update the tooltip, to avoid notification spam).

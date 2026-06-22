@@ -47,10 +47,14 @@ class OrganizerUnavailable(RuntimeError):
 
 
 ChatClient = Callable[[str, str], str]
-# Default sized for the project's "runs on 16 GB RAM, no GPU" constraint (ADR-0006): llama3.2:3b
-# (~2 GB resident) keeps capture memory-safe on modest hardware. Swap in a stronger model with
-# --model on machines with headroom (e.g. qwen2.5:7b ~5 GB, gemma2:9b). All local/offline via Ollama.
-DEFAULT_MODEL = "llama3.2:3b"
+# Default sized for the project's "runs on 16 GB RAM, no GPU" constraint (ADR-0006). gemma4:e4b is
+# Gemma 4's edge variant (~4.5B effective, ~9.6 GB) — strong at the structured title/summary/cleanup
+# the capture loop needs while staying memory-safe on modest hardware. Pull it once: `ollama pull
+# gemma4:e4b`. Swap in another local model with --model: gemma4:e2b (~2.3B, faster for the frequent
+# capture loop), or a heavier model for the future knowledge-base agent (e.g. qwen2.5:14b). All
+# local/offline via Ollama. (If a model isn't pulled, the LLM organizer fails loudly and the verbatim
+# capture is kept in the inbox — pass --no-llm for the deterministic offline baseline.)
+DEFAULT_MODEL = "gemma4:e4b"
 # Hard wall-clock cap (seconds) on ONE local-LLM call. Without it the underlying httpx client has no
 # timeout, so a stalled/loading model pins the capture worker forever and breaks clean shutdown
 # (robustness audit, HIGH). On timeout the call raises → the adapter's except catches it and falls

@@ -1043,6 +1043,7 @@ def _run_gui(args: argparse.Namespace) -> int:
             use_llm=not args.no_llm,  # PR-F: the local model is the default; --no-llm opts out
             use_embeddings=args.embeddings,
             model=args.model,
+            hotkey=args.hotkey_combo,
         )
     except ImportError as exc:
         print(
@@ -1276,8 +1277,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     up_cmd.add_argument(
         "--hotkey-combo",
-        default="<ctrl>+<alt>+g",
-        help="the global hotkey (pynput format; default <ctrl>+<alt>+g)",
+        default="ctrl+shift+space",
+        help="the global hotkey: e.g. ctrl+shift+space (default), ctrl+shift+g, or 'copilot' for the "
+        "dedicated Windows Copilot key. Avoid ctrl+alt (= AltGr on Windows; fires while typing).",
     )
     up_cmd.add_argument(
         "--no-llm",
@@ -1328,6 +1330,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     gui.add_argument(
         "--open", action="store_true", help="open the vault's graph view in Obsidian on launch"
+    )
+    gui.add_argument(
+        "--hotkey-combo",
+        default="ctrl+shift+space",
+        help="the global capture hotkey: e.g. ctrl+shift+space (default), ctrl+shift+g, or 'copilot' "
+        "for the dedicated Windows Copilot key. Avoid ctrl+alt (= AltGr on Windows; fires while typing).",
     )
 
     args = parser.parse_args(argv)
