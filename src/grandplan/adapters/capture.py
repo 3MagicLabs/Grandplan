@@ -224,6 +224,13 @@ def run_hotkey_listener(hotkey: str, on_trigger: Callable[[], None]) -> None:  #
         else:
             logger.info("hotkey fire ignored (debounced — too soon after the last)")
 
-    logger.info("hotkey listener registered on %s (from spec %r)", resolved, hotkey)
-    with keyboard.GlobalHotKeys({resolved: fire}) as listener:
-        listener.join()
+    try:
+        logger.info("hotkey listener registered on %s (from spec %r)", resolved, hotkey)
+        with keyboard.GlobalHotKeys({resolved: fire}) as listener:
+            listener.join()
+    except Exception:
+        # This runs on a daemon thread; without this the global hotkey could fail to register
+        # (bad combo, OS hook refused, missing backend) and die SILENTLY — the user just sees a
+        # hotkey that never works. logger.exception is ERROR level, so it surfaces on stderr even
+        # without --debug. The tray "Capture now" still works; only the global hotkey is down.
+        logger.exception("hotkey listener crashed — the global capture hotkey is NOT active")

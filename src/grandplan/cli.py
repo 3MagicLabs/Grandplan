@@ -19,6 +19,7 @@ import logging
 import re
 import shutil
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -465,6 +466,89 @@ def _run_doctor(args: argparse.Namespace) -> int:
     repo = JsonlNoteRepository(index_path)
     originals = JsonlOriginalStore(index_root / "inbox.jsonl")
     print(render_report(build_run_report(repo, originals), organizer_label="(existing vault)"))
+    return 0
+
+
+# Input backends the capture path needs. (name, required, why) — uiautomation is an optional
+# enhancement (direct selection read); pynput + pyperclip are required for hotkey + clipboard capture.
+_CAPTURE_DEPS: tuple[tuple[str, bool, str], ...] = (
+    ("pynput", True, "global hotkey + synthesized Ctrl+C"),
+    ("pyperclip", True, "clipboard read/write"),
+    ("uiautomation", False, "direct selection read (optional, clipboard-free)"),
+)
+
+
+def _capture_check_deps(find_spec: Callable[[str], object | None]) -> tuple[str, bool]:
+    """Render the input-dependency report and whether all REQUIRED backends are importable (pure)."""
+    lines, ok = [], True
+    for name, required, why in _CAPTURE_DEPS:
+        present = find_spec(name) is not None
+        mark = "OK     " if present else ("MISSING" if required else "absent ")
+        lines.append(f"  [{mark}] {name:<13} — {why}")
+        if required and not present:
+            ok = False
+    return "\n".join(lines), ok
+
+
+def _run_capture_check(
+    args: argparse.Namespace,
+) -> int:  # pragma: no cover - interactive Windows IO
+    """`grandplan capture-check`: foreground diagnostic for the hotkey + clipboard. The GUI runs these
+    on a daemon thread where failures are invisible; here every step prints to the console so we can
+    see exactly which subsystem is broken (wrong venv, missing backend, hotkey not delivered, etc.)."""
+    import time
+
+    import grandplan
+
+    print("grandplan capture-check — diagnosing the capture hotkey + clipboard\n")
+    print(f"  running code: {grandplan.__file__}")
+    print(f"  python:       {sys.executable}\n")
+    report, ok = _capture_check_deps(importlib.util.find_spec)
+    print(report)
+    if not ok:
+        print('\n=> Missing a REQUIRED backend. Install:  pip install -e ".[windows]"')
+        return 1
+
+    import pyperclip
+
+    saved = pyperclip.paste()
+    pyperclip.copy("grandplan-clipboard-test")
+    roundtrip = pyperclip.paste()
+    pyperclip.copy(saved or "")
+    print(
+        f"\n  clipboard round-trip: "
+        f"{'OK' if roundtrip == 'grandplan-clipboard-test' else f'FAILED (read {roundtrip!r})'}"
+    )
+
+    from pynput import keyboard
+
+    from grandplan.adapters.capture import make_windows_capturer, resolve_hotkey
+
+    combo = resolve_hotkey(args.hotkey_combo)
+    fires = [0]
+
+    def _fired() -> None:
+        fires[0] += 1
+        print(f"    >> HOTKEY FIRED ({fires[0]})")
+
+    print(f"\n  Listening for {combo} for {args.seconds}s — PRESS YOUR HOTKEY / COPILOT KEY NOW…")
+    try:
+        with keyboard.GlobalHotKeys({combo: _fired}):
+            time.sleep(args.seconds)
+    except Exception as exc:  # noqa: BLE001 - report any listener/registration failure, don't crash
+        print(f"  !! hotkey listener error: {exc!r}")
+        return 1
+    if fires[0]:
+        print(f"  => hotkey fired {fires[0]} time(s) — pynput IS receiving it. ✓")
+    else:
+        print(
+            "  => hotkey NEVER fired — pynput did not receive the combo (remap or backend issue)."
+        )
+
+    print("\n  Clipboard capture test: switch to another window and SELECT some text now…")
+    time.sleep(5)
+    captured = make_windows_capturer().capture()
+    print(f"  => {'CAPTURED: ' + repr(captured[:120]) if captured else 'captured NOTHING'}")
     return 0
 
 
@@ -1141,6 +1225,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     doctor.add_argument("-o", "--vault", required=True, help="the vault directory")
 
+    capture_check = subparsers.add_parser(
+        "capture-check",
+        help="Diagnose the capture hotkey + clipboard in the foreground (deps, live hotkey, capture).",
+    )
+    capture_check.add_argument(
+        "--hotkey-combo", default="ctrl+shift+g", help="the hotkey to test (default ctrl+shift+g)"
+    )
+    capture_check.add_argument(
+        "--seconds", type=int, default=20, help="how long to listen for the hotkey (default 20)"
+    )
+
     reset = subparsers.add_parser(
         "reset",
         help="Wipe a vault back to empty — deletes the Obsidian folder + grandplan's index.",
@@ -1363,6 +1458,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_regenerate(args)
     if args.command == "doctor":
         return _run_doctor(args)
+    if args.command == "capture-check":
+        return _run_capture_check(args)
     if args.command == "reset":
         return _run_reset(args)
     if args.command == "calendar":

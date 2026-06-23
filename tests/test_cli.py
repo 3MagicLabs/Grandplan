@@ -967,3 +967,39 @@ def test_main_gui_embeddings_without_dep_fails_fast(
     code = main(["gui", "-o", str(tmp_path / "vault"), "--embeddings"])
     assert code == 1
     assert "sentence-transformers" in capsys.readouterr().err
+
+
+# -- capture-check input diagnostics -------------------------------------------------------------
+
+from grandplan.cli import _capture_check_deps  # noqa: E402
+
+
+def test_capture_check_deps_flags_missing_required_backend() -> None:
+    # pynput + pyperclip missing (only the optional uiautomation present) → NOT ok, MISSING shown.
+    report, ok = _capture_check_deps(lambda mod: object() if mod == "uiautomation" else None)
+    assert ok is False
+    assert "MISSING" in report
+    assert "pynput" in report and "pyperclip" in report
+
+
+def test_capture_check_deps_ok_when_required_present_optional_absent() -> None:
+    # Required backends present; the optional uiautomation may be absent and that's still OK.
+    report, ok = _capture_check_deps(
+        lambda mod: object() if mod in {"pynput", "pyperclip"} else None
+    )
+    assert ok is True
+    assert "absent" in report  # uiautomation reported as optional/absent, not a failure
+
+
+def test_capture_check_command_reports_missing_deps_and_exits_nonzero(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # With no input backends importable, `capture-check` must fail clearly with the install hint
+    # (and never reach the interactive pynput/clipboard steps).
+    import importlib.util as _il
+
+    monkeypatch.setattr(_il, "find_spec", lambda name, *a, **k: None)
+    assert main(["capture-check"]) == 1
+    out = capsys.readouterr().out
+    assert "MISSING" in out
+    assert ".[windows]" in out
