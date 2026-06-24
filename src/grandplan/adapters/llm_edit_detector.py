@@ -12,11 +12,11 @@ unit-tested here; running a real Ollama + pulled model integration-tests it on t
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 from typing import Any
 
+from grandplan.adapters._ollama import chat_json, loads_lenient
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OLLAMA_TIMEOUT_S
 from grandplan.core.edit_detect import EditDetector, HeuristicEditDetector
 from grandplan.core.models import NoteEdit
@@ -39,7 +39,7 @@ def build_edit_prompt(text: str) -> str:
 
 
 def parse_edit(raw: str) -> NoteEdit | None:
-    data = json.loads(raw)
+    data = loads_lenient(raw)
     if not isinstance(data, dict):
         raise ValueError("expected a JSON object")
     if "edit" not in data:
@@ -73,20 +73,7 @@ def _opt_tags(value: Any) -> tuple[str, ...] | None:
 
 
 def _ollama_chat(model: str, prompt: str) -> str:  # pragma: no cover - needs a running Ollama
-    try:
-        import ollama
-    except ImportError as exc:
-        raise RuntimeError(
-            f"ollama client unavailable ({exc}); `pip install grandplan[llm]`"
-        ) from exc
-    response = ollama.Client(timeout=OLLAMA_TIMEOUT_S).chat(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        format="json",
-        options={"temperature": 0},
-        keep_alive="30m",
-    )
-    return str(response["message"]["content"])
+    return chat_json(model, prompt, timeout=OLLAMA_TIMEOUT_S)
 
 
 class LlmEditDetector:

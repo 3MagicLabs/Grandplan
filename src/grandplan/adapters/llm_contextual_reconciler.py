@@ -17,10 +17,10 @@ prompt/parse/validation/fallback are unit-tested here.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 
+from grandplan.adapters._ollama import chat_json, loads_lenient
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OLLAMA_TIMEOUT_S
 from grandplan.core.models import NoteStatus, ProposedNote
 from grandplan.core.ports import NoteRepository
@@ -87,7 +87,7 @@ def build_reconcile_prompt(
 
 def parse_relationships(raw: str, valid_ids: set[str]) -> dict[str, Relationship]:
     """Map the model's JSON to {existing id -> Relationship}, dropping unknown ids/relationships."""
-    data = json.loads(raw)
+    data = loads_lenient(raw)
     if not isinstance(data, dict):
         raise ValueError("expected a JSON object")
     items = data.get("relationships", [])
@@ -107,7 +107,7 @@ def parse_relationships(raw: str, valid_ids: set[str]) -> dict[str, Relationship
 def parse_status_changes(raw: str, valid_ids: set[str]) -> dict[str, NoteStatus]:
     """Map the model's per-existing-note `status_change` to {id -> NoteStatus} (Slice B), dropping
     unknown ids / statuses / nulls."""
-    data = json.loads(raw)
+    data = loads_lenient(raw)
     items = data.get("relationships", []) if isinstance(data, dict) else []
     out: dict[str, NoteStatus] = {}
     if isinstance(items, list):
@@ -122,20 +122,7 @@ def parse_status_changes(raw: str, valid_ids: set[str]) -> dict[str, NoteStatus]
 
 
 def _ollama_chat(model: str, prompt: str) -> str:  # pragma: no cover - needs a running Ollama
-    try:
-        import ollama
-    except ImportError as exc:
-        raise RuntimeError(
-            f"ollama client unavailable ({exc}); `pip install grandplan[llm]`"
-        ) from exc
-    response = ollama.Client(timeout=OLLAMA_TIMEOUT_S).chat(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        format="json",
-        options={"temperature": 0},
-        keep_alive="30m",
-    )
-    return str(response["message"]["content"])
+    return chat_json(model, prompt, timeout=OLLAMA_TIMEOUT_S)
 
 
 class LlmContextualReconciler:

@@ -12,10 +12,10 @@ unit-tested here; running a real Ollama + pulled model integration-tests it on W
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 
+from grandplan.adapters._ollama import chat_json, loads_lenient
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OLLAMA_TIMEOUT_S
 from grandplan.core.models import Note, ProposedNote
 from grandplan.core.reconcile import Relationship, RelationshipClassifier, SimilarityClassifier
@@ -42,7 +42,7 @@ def build_classify_prompt(new: ProposedNote, candidate: Note) -> str:
 
 
 def parse_relationship(raw: str) -> Relationship:
-    data = json.loads(raw)
+    data = loads_lenient(raw)
     if not isinstance(data, dict):
         raise ValueError("expected a JSON object")
     key = str(data.get("relationship", "")).strip().lower()
@@ -52,20 +52,7 @@ def parse_relationship(raw: str) -> Relationship:
 
 
 def _ollama_chat(model: str, prompt: str) -> str:  # pragma: no cover - needs a running Ollama
-    try:
-        import ollama
-    except ImportError as exc:
-        raise RuntimeError(
-            f"ollama client unavailable ({exc}); `pip install grandplan[llm]`"
-        ) from exc
-    response = ollama.Client(timeout=OLLAMA_TIMEOUT_S).chat(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        format="json",
-        options={"temperature": 0},
-        keep_alive="30m",
-    )
-    return str(response["message"]["content"])
+    return chat_json(model, prompt, timeout=OLLAMA_TIMEOUT_S)
 
 
 class LlmRelationshipClassifier:

@@ -12,10 +12,10 @@ unit-tested here; a real Ollama + pulled model integration-tests it on the user'
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 
+from grandplan.adapters._ollama import chat_json, loads_lenient
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OLLAMA_TIMEOUT_S
 from grandplan.core.models import ProposedNote
 from grandplan.core.placement import (
@@ -62,7 +62,7 @@ def build_placement_prompt(
 
 def parse_placement(raw: str, valid_ids: set[str]) -> Placement:
     """Validate the model's JSON against the candidate ids (drops hallucinated / self ids)."""
-    data = json.loads(raw)
+    data = loads_lenient(raw)
     if not isinstance(data, dict):
         raise ValueError("expected a JSON object")
     parent_raw = data.get("parent")
@@ -92,20 +92,7 @@ def _valid_ids(raw: object, valid_ids: set[str], claimed: set[str]) -> tuple[str
 
 
 def _ollama_chat(model: str, prompt: str) -> str:  # pragma: no cover - needs a running Ollama
-    try:
-        import ollama
-    except ImportError as exc:
-        raise RuntimeError(
-            f"ollama client unavailable ({exc}); `pip install grandplan[llm]`"
-        ) from exc
-    response = ollama.Client(timeout=OLLAMA_TIMEOUT_S).chat(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        format="json",
-        options={"temperature": 0},
-        keep_alive="30m",
-    )
-    return str(response["message"]["content"])
+    return chat_json(model, prompt, timeout=OLLAMA_TIMEOUT_S)
 
 
 class LlmPlacer:

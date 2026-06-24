@@ -12,10 +12,10 @@ unit-tested here; a real Ollama + pulled model integration-tests it on the user'
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 
+from grandplan.adapters._ollama import loads_lenient
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL
 from grandplan.core.entities import EntityExtractor, EntityMention, HeuristicEntityExtractor
 
@@ -39,7 +39,7 @@ def build_entity_prompt(text: str) -> str:
 
 def parse_entities(raw: str) -> tuple[EntityMention, ...]:
     """Validate the model's JSON into sanitized, de-duplicated mentions (case-insensitive)."""
-    data = json.loads(raw)
+    data = loads_lenient(raw)
     if not isinstance(data, dict):
         raise ValueError("expected a JSON object")
     items = data.get("entities")

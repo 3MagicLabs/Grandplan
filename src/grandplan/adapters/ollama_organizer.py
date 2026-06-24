@@ -16,11 +16,11 @@ running a real Ollama + pulled model integration-tests it on the user's machine
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections.abc import Callable
 
+from grandplan.adapters._ollama import chat_json, loads_lenient
 from grandplan.core.models import NoteType, Original, ProposedNote, default_horizon
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.ports import Organizer
@@ -104,7 +104,7 @@ _REFUSAL = re.compile(
 
 
 def parse_proposed(raw: str, original: Original) -> ProposedNote:
-    data = json.loads(raw)
+    data = loads_lenient(raw)
     if not isinstance(data, dict):
         raise ValueError("expected a JSON object")
     title = (str(data.get("title") or "").strip() or _first_line(original.text))[:_MAX_TITLE]
@@ -167,20 +167,7 @@ def _first_line(text: str) -> str:
 
 
 def _ollama_chat(model: str, prompt: str) -> str:  # pragma: no cover - needs a running Ollama
-    try:
-        import ollama
-    except ImportError as exc:
-        raise RuntimeError(
-            f"ollama client unavailable ({exc}); `pip install grandplan[llm]`"
-        ) from exc
-    response = ollama.Client(timeout=OLLAMA_TIMEOUT_S).chat(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        format="json",
-        options={"temperature": 0},
-        keep_alive="30m",
-    )
-    return str(response["message"]["content"])
+    return chat_json(model, prompt, timeout=OLLAMA_TIMEOUT_S)
 
 
 class OllamaOrganizer:

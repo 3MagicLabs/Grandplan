@@ -130,6 +130,37 @@ def test_parse_invalid_json_raises() -> None:
         parse_proposed("not json at all", _original())
 
 
+def test_parse_recovers_truncated_body_without_falling_back() -> None:
+    # The reported stress-test failure: the model's JSON was cut off mid-`body` when it hit the
+    # context window ("Expecting ',' delimiter"). The lenient parser must recover a usable note
+    # (title/type/tags intact, body present) instead of raising → silent heuristic fallback.
+    truncated = (
+        '{"title": "Launch plan", "type": "project", "tags": ["launch", "q3"], '
+        '"body": "Summary line.\\n\\n- point one\\n- point two and then a lot more detail that got cut o'
+    )
+    note = parse_proposed(truncated, _original())
+    assert note.title == "Launch plan"
+    assert note.type is NoteType.PROJECT
+    assert note.tags == ("launch", "q3")
+    assert note.body.startswith("Summary line.")
+
+
+def test_organizer_recovers_truncated_reply_on_first_attempt() -> None:
+    # End-to-end: one truncated reply now yields the LLM note directly — no retry, no fallback.
+    calls: list[str] = []
+
+    def truncated_once(model: str, prompt: str) -> str:
+        calls.append(prompt)
+        return (
+            '{"title": "Recovered", "type": "task", "tags": ["a"], "body": "did the thing and then'
+        )
+
+    note = OllamaOrganizer(chat=truncated_once).organize(_original())
+    assert note.title == "Recovered"  # recovered from the truncated reply, not the heuristic
+    assert note.type is NoteType.TASK
+    assert len(calls) == 1  # no strict-retry needed
+
+
 def test_organizer_uses_llm_response_when_valid() -> None:
     def chat(model: str, prompt: str) -> str:
         return '{"title": "From LLM", "type": "task", "tags": ["a"]}'
