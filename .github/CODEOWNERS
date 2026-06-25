@@ -1,0 +1,3 @@
+# Default owner for everything in the repo — automatically requested for review on every PR.
+# Branch protection requires a code-owner approval before merge (admins may bypass).
+* @wimaan3
