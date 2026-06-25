@@ -11,6 +11,18 @@ a failure becomes a new check. The verifier is external to the generator.
 
 CI mirrors this gate on every push/PR (`.github/workflows/ci.yml`).
 
+## Setup
+
+```bash
+git clone https://github.com/3MagicLabs/Grandplan && cd Grandplan
+python -m venv .venv && . .venv/bin/activate
+pip install -e ".[llm,embeddings,mcp]"   # core + optional extras; add ,windows,gui on Windows
+pytest -q                                 # sanity-check the suite (Linux/WSL2)
+```
+
+Please also read **[SECURITY.md](./SECURITY.md)** (how to report vulnerabilities — privately, never a
+public issue) and **[CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)** (community expectations).
+
 ## Workflow (TDD + spec-driven)
 
 1. Work from **[SPEC.md](./SPEC.md)**. Reference the relevant user story (`US-n`) in commits/PRs.
