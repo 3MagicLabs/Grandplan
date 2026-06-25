@@ -76,3 +76,17 @@ def test_scan_is_idempotent_on_identical_content_across_fresh_seen(tmp_path: Pat
     second = _scan(tmp_path, store, set())  # fresh seen → re-reads, but same id
     assert first == second
     assert len(store.all()) == 1
+
+
+def test_scan_skips_symlinks(tmp_path: Path) -> None:
+    # A planted symlink (even with a capture suffix) must not be read and shipped to the LLM —
+    # only the real file is enqueued.
+    target = tmp_path / "outside.txt"
+    target.write_text("secret contents", encoding="utf-8")
+    inbox = tmp_path / "inbox"
+    _drop(inbox, "real.txt", "a real note")
+    (inbox / "link.txt").symlink_to(target)
+    store, seen = InMemoryDirectiveStore(), set()
+    ids = _scan(inbox, store, seen)
+    assert len(ids) == 1
+    assert store.pending()[0].content == "a real note"

@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import logging
+import os
 import re
 import shutil
 import sys
@@ -860,6 +861,14 @@ def _run_hotkey(  # pragma: no cover - global hotkey listener + Windows selectio
     run_hotkey_listener(hotkey, _on_trigger)
 
 
+def _resolve_token(arg_token: str) -> str:
+    """The intake shared secret: an explicit --token wins, else the `GRANDPLAN_TOKEN` env var.
+
+    Preferring the env var keeps the secret off the process command line (`ps` / `/proc/<pid>/cmdline`).
+    """
+    return arg_token or os.environ.get("GRANDPLAN_TOKEN", "")
+
+
 def _run_up(args: argparse.Namespace) -> int:
     """`grandplan up -o <vault> [--init] [--open] [--folder DIR] [--host] [--port] [--token] [--dry-run]`.
 
@@ -870,7 +879,8 @@ def _run_up(args: argparse.Namespace) -> int:
     a --token. `--dry-run` sets everything up (incl. --init/--open) without serving. Offline.
     """
     vault_dir = Path(args.vault)
-    if args.host not in ("127.0.0.1", "localhost") and not args.token:
+    token = _resolve_token(args.token)
+    if args.host not in ("127.0.0.1", "localhost") and not token:
         print(
             "error: refusing to bind a non-localhost host without a --token "
             "(anyone on the network could enqueue directives)",
@@ -913,7 +923,7 @@ def _run_up(args: argparse.Namespace) -> int:
             host=args.host,
             port=args.port,
             watch_dir=watch_dir,
-            tokened=bool(args.token),
+            tokened=bool(token),
             hotkey=hotkey,
             ai=(args.model if (hotkey and use_llm) else None),
         )
@@ -929,7 +939,7 @@ def _run_up(args: argparse.Namespace) -> int:
         watch_dir=watch_dir,
         host=args.host,
         port=args.port,
-        token=args.token,
+        token=token,
         instruction=instruction,
         playbook=playbook,
         interval=args.interval,
@@ -1039,7 +1049,8 @@ def _run_serve(args: argparse.Namespace) -> int:
     vault_dir = Path(args.vault)
     index_root = migrate_legacy_index(vault_dir)
     store = JsonlDirectiveStore(index_root / "directives.jsonl")
-    if args.host not in ("127.0.0.1", "localhost") and not args.token:
+    token = _resolve_token(args.token)
+    if args.host not in ("127.0.0.1", "localhost") and not token:
         print(
             "error: refusing to bind a non-localhost host without a --token "
             "(anyone on the network could enqueue directives)",
@@ -1049,7 +1060,7 @@ def _run_serve(args: argparse.Namespace) -> int:
     from grandplan.adapters.http_intake import serve_intake
 
     serve_intake(  # pragma: no cover - binds a socket; the request logic is tested via handle_intake
-        store, host=args.host, port=args.port, token=args.token
+        store, host=args.host, port=args.port, token=token
     )
     return 0
 
@@ -1336,7 +1347,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     serve_cmd.add_argument("--port", type=int, default=8765, help="bind port (default 8765)")
     serve_cmd.add_argument(
-        "--token", default="", help="shared secret required in 'Authorization: Bearer <token>'"
+        "--token",
+        default="",
+        help="shared secret required as 'Authorization: Bearer <token>' (or set GRANDPLAN_TOKEN)",
     )
 
     up_cmd = subparsers.add_parser(
@@ -1361,7 +1374,11 @@ def main(argv: list[str] | None = None) -> int:
         help="HTTP bind host (default 127.0.0.1; routable needs --token)",
     )
     up_cmd.add_argument("--port", type=int, default=8765, help="HTTP bind port (default 8765)")
-    up_cmd.add_argument("--token", default="", help="shared secret for the HTTP intake (Bearer)")
+    up_cmd.add_argument(
+        "--token",
+        default="",
+        help="shared secret for the HTTP intake (Bearer; or set GRANDPLAN_TOKEN)",
+    )
     up_cmd.add_argument(
         "--playbook", default="capture-and-file", help="default playbook for captured content"
     )

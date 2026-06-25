@@ -1003,3 +1003,24 @@ def test_capture_check_command_reports_missing_deps_and_exits_nonzero(
     out = capsys.readouterr().out
     assert "MISSING" in out
     assert ".[windows]" in out
+
+
+def test_resolve_token_prefers_explicit_arg(monkeypatch: pytest.MonkeyPatch) -> None:
+    from grandplan.cli import _resolve_token
+
+    monkeypatch.setenv("GRANDPLAN_TOKEN", "from-env")
+    assert _resolve_token("from-arg") == "from-arg"  # explicit --token wins over the env var
+
+
+def test_resolve_token_falls_back_to_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from grandplan.cli import _resolve_token
+
+    monkeypatch.setenv("GRANDPLAN_TOKEN", "from-env")
+    assert _resolve_token("") == "from-env"  # no --token → GRANDPLAN_TOKEN keeps it off the cmdline
+
+
+def test_resolve_token_empty_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    from grandplan.cli import _resolve_token
+
+    monkeypatch.delenv("GRANDPLAN_TOKEN", raising=False)
+    assert _resolve_token("") == ""  # neither set → no auth (localhost-trust default)
