@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from grandplan.adapters.http_intake import handle_intake, parse_payload
+from grandplan.adapters.http_intake import (
+    MAX_BODY_BYTES,
+    bearer_token,
+    check_auth,
+    handle_intake,
+    parse_payload,
+    precheck_request,
+)
 from grandplan.core.directive import InMemoryDirectiveStore
 
 
@@ -76,3 +83,47 @@ def test_parse_payload_rejects_bad_json() -> None:
 def test_parse_payload_rejects_non_object() -> None:
     with pytest.raises(ValueError, match="JSON object"):
         parse_payload(b"[1, 2]")
+
+
+def test_bearer_token_extracts_and_rejects() -> None:
+    assert bearer_token("Bearer abc123") == "abc123"
+    assert bearer_token("Basic abc123") is None
+    assert bearer_token("") is None
+
+
+def test_check_auth_open_when_no_token_configured() -> None:
+    assert check_auth("", None) is True
+    assert check_auth("", "anything") is True
+
+
+def test_check_auth_constant_time_match() -> None:
+    assert check_auth("secret", "secret") is True
+    assert check_auth("secret", "wrong") is False
+    assert check_auth("secret", None) is False
+
+
+def test_precheck_allows_clean_request() -> None:
+    assert precheck_request("/directive", 100, "", "") is None
+    assert precheck_request("/directive/", 100, "Bearer s", "s") is None
+
+
+def test_precheck_rejects_wrong_path() -> None:
+    result = precheck_request("/nope", 10, "", "")
+    assert result is not None and result.status == 404
+
+
+def test_precheck_caps_body_before_read() -> None:
+    result = precheck_request("/directive", MAX_BODY_BYTES + 1, "", "")
+    assert result is not None and result.status == 413
+
+
+def test_precheck_rejects_negative_length() -> None:
+    result = precheck_request("/directive", -1, "", "")
+    assert result is not None and result.status == 400
+
+
+def test_precheck_rejects_bad_token_before_read() -> None:
+    result = precheck_request("/directive", 10, "Bearer wrong", "secret")
+    assert result is not None and result.status == 401
+    missing = precheck_request("/directive", 10, "", "secret")
+    assert missing is not None and missing.status == 401

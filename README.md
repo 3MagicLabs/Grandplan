@@ -33,6 +33,25 @@ ports. The core is fully unit-testable and is the part the quality gate governs.
 - **Lossless** — every original captured selection is preserved byte-for-byte; never mutated.
 - **Modest hardware** — runs on a 16GB-RAM machine, no dedicated GPU.
 
+## Security model
+
+grandplan is a **single-user, local-trust** tool — the capture surfaces assume the local machine and
+its user are trusted:
+
+- **HTTP intake** (`grandplan serve` / `up`) **binds `127.0.0.1` by default** and is then reachable by
+  any local process: there is **no authentication on localhost** (intentional for the desktop model).
+  Every request body is capped at **1 MiB** and rejected *before* it is read if it is oversized,
+  malformed, or — when a token is set — unauthorized.
+- **Exposing it on a LAN** (a routable `--host`, e.g. a phone shortcut) **requires a shared secret** —
+  the server refuses to start on a non-localhost host without one. Provide it via the **`GRANDPLAN_TOKEN`
+  env var** (preferred — keeps it out of `ps` / `/proc`) or `--token`, sent as `Authorization: Bearer <token>`.
+- An intake request's optional `prompt` becomes the **instruction** an MCP-connected agent later runs,
+  and captured text is fed verbatim to the local LLM — so treat the prompt and note content as a trust
+  boundary, and only expose the port to callers you trust.
+- Captured originals are stored **unencrypted** as JSONL under `~/.grandplan/` (or `GRANDPLAN_HOME`).
+
+Nothing is fetched and nothing leaves the machine; this is about *local* process trust, not network exposure.
+
 ## Quality gate (borromeo)
 
 This repo is governed by [borromeo](https://github.com/3MagicLabs/borromeo). Nothing is "done" until the

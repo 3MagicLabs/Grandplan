@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 from dataclasses import dataclass
 
 from grandplan.core.directive import Directive, DirectiveStore, resolve_instruction
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -40,7 +43,7 @@ def handle_intake(
     `payload` = `{content, playbook?, prompt?}`. When `token` is set, `provided_token` must match it
     (constant-time). Returns 401 on auth failure, 400 on a bad request, 201 with the new id on success.
     """
-    if token and not (provided_token and hmac.compare_digest(token, provided_token)):
+    if not check_auth(token, provided_token):
         return IntakeResult(401, {"error": "unauthorized"})
     content = payload.get("content")
     if not isinstance(content, str) or not content.strip():
@@ -69,6 +72,49 @@ def parse_payload(raw: bytes) -> dict[str, object]:
     return data
 
 
+MAX_BODY_BYTES = 1 * 1024 * 1024
+"""Largest request body the server will read (1 MiB). A larger declared Content-Length is rejected
+with 413 *before* any bytes are read — capping memory use from a hostile or oversized request."""
+
+
+def bearer_token(authorization: str) -> str | None:
+    """Pull the token from an `Authorization: Bearer <token>` header value (None if absent/other scheme)."""
+    prefix = "Bearer "
+    return authorization[len(prefix) :] if authorization.startswith(prefix) else None
+
+
+def check_auth(token: str, provided_token: str | None) -> bool:
+    """Authorized iff no token is configured, or the provided token matches it (constant-time)."""
+    if not token:
+        return True
+    return provided_token is not None and hmac.compare_digest(token, provided_token)
+
+
+def precheck_request(
+    path: str,
+    content_length: int,
+    authorization: str,
+    token: str,
+    *,
+    max_body: int = MAX_BODY_BYTES,
+) -> IntakeResult | None:
+    """Body-independent gate run BEFORE the body is read; None means "read the body and handle it".
+
+    Folds the rejections that must happen pre-read — wrong path (404), missing/oversized/garbled
+    Content-Length (400/413), and failed auth (401) — so the socket shell never reads an unauthenticated
+    or unbounded body. This is the fix for the read-before-auth and no-size-cap DoS amplifiers.
+    """
+    if path.rstrip("/") != "/directive":
+        return IntakeResult(404, {"error": "not found"})
+    if content_length < 0:
+        return IntakeResult(400, {"error": "invalid Content-Length"})
+    if content_length > max_body:
+        return IntakeResult(413, {"error": "payload too large"})
+    if not check_auth(token, bearer_token(authorization)):
+        return IntakeResult(401, {"error": "unauthorized"})
+    return None
+
+
 def serve_intake(
     store: DirectiveStore, *, host: str = "127.0.0.1", port: int = 8765, token: str = ""
 ) -> None:  # pragma: no cover - binds a socket; the request logic is tested via handle_intake
@@ -82,6 +128,9 @@ def serve_intake(
 
     class _Handler(BaseHTTPRequestHandler):
         def _reply(self, result: IntakeResult) -> None:
+            # One audit line per response (status + client IP, never the token or body) — the default
+            # access log stays off (log_message below), so this is the sole, intentional trail.
+            logger.info("intake %s from %s -> %d", self.path, self.client_address[0], result.status)
             encoded = json.dumps(result.body).encode("utf-8")
             self.send_response(result.status)
             self.send_header("Content-Type", "application/json")
@@ -90,28 +139,32 @@ def serve_intake(
             self.wfile.write(encoded)
 
         def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-            if self.path.rstrip("/") != "/directive":
-                self._reply(IntakeResult(404, {"error": "not found"}))
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+            except ValueError:
+                length = -1  # unparseable Content-Length → precheck rejects with 400
+            authorization = self.headers.get("Authorization", "")
+            # bad path / oversized body / unauthorized → reply without reading the body off the socket
+            early = precheck_request(self.path, length, authorization, token)
+            if early is not None:
+                self._reply(early)
                 return
-            length = int(self.headers.get("Content-Length", 0))
             try:
                 payload = parse_payload(self.rfile.read(length))
             except ValueError as exc:
                 self._reply(IntakeResult(400, {"error": str(exc)}))
                 return
-            auth = self.headers.get("Authorization", "")
-            provided = auth[len("Bearer ") :] if auth.startswith("Bearer ") else None
             result = handle_intake(
                 store,
                 payload,
                 datetime.now(timezone.utc).isoformat(),
                 token=token,
-                provided_token=provided,
+                provided_token=bearer_token(authorization),
             )
             self._reply(result)
 
         def log_message(self, *args: object) -> None:
-            pass  # quiet by default
+            pass  # default access log stays off; we emit our own audit line in _reply
 
     server = ThreadingHTTPServer((host, port), _Handler)
     print(f"intake listening on http://{host}:{port}/directive (Ctrl+C to stop)")

@@ -40,8 +40,13 @@ def scan_folder(
     enqueued: list[str] = []
     for path in sorted(folder.iterdir()):
         key = str(path.resolve())
-        if key in seen or path.suffix.lower() not in _CAPTURE_SUFFIXES or not path.is_file():
-            continue
+        if (
+            key in seen
+            or path.suffix.lower() not in _CAPTURE_SUFFIXES
+            or not path.is_file()
+            or path.is_symlink()
+        ):
+            continue  # symlinks skipped: a planted link could read arbitrary files (e.g. /etc/shadow)
         seen.add(key)
         try:
             content = path.read_text(encoding="utf-8")
