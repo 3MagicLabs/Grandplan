@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import signal
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -76,6 +77,47 @@ def _clip(text: str, limit: int) -> str:
     return collapsed if len(collapsed) <= limit else collapsed[: limit - 1].rstrip() + "…"
 
 
+def _corner_position(
+    width: int,
+    height: int,
+    area_x: int,
+    area_y: int,
+    area_w: int,
+    area_h: int,
+    margin: int = 24,
+) -> tuple[int, int]:
+    """Bottom-right placement of a (width x height) window inside a screen work-area, clamped so an
+    oversized popup never gets pushed off the top/left edge. Pure + tested; the Qt popup is no-cover."""
+    x = area_x + area_w - width - margin
+    y = area_y + area_h - height - margin
+    return max(area_x, x), max(area_y, y)
+
+
+def _bounded_size(
+    content_w: int,
+    content_h: int,
+    screen_w: int,
+    screen_h: int,
+    *,
+    w_frac: float = 0.55,
+    h_frac: float = 0.75,
+    min_w: int = 360,
+    min_h: int = 240,
+) -> tuple[int, int]:
+    """A window size that fits the content but never exceeds a fraction of the screen, so the review
+    dialog can't grow to fill (or overflow) the display on a long capture. Pure + tested."""
+    max_w = max(min_w, int(screen_w * w_frac))
+    max_h = max(min_h, int(screen_h * h_frac))
+    return min(max(content_w, min_w), max_w), min(max(content_h, min_h), max_h)
+
+
+def _centered_position(
+    width: int, height: int, area_x: int, area_y: int, area_w: int, area_h: int
+) -> tuple[int, int]:
+    """Top-left so a (width x height) window is centred within a screen work-area. Pure + tested."""
+    return area_x + (area_w - width) // 2, area_y + (area_h - height) // 2
+
+
 @dataclass(eq=False)  # identity-keyed: tracked in a set, and has a mutable `approved` (not frozen)
 class _ReviewRequest:
     """A worker-thread request for a main-thread review decision; the worker waits on `event`."""
@@ -93,7 +135,7 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     use_embeddings: bool = False,
     model: str = DEFAULT_MODEL,
 ) -> int:
-    from PySide6 import QtCore, QtWidgets
+    from PySide6 import QtCore, QtGui, QtWidgets
 
     # PR-F (RC1): the local model is the default and is REQUIRED when selected — a missing/unreachable
     # model raises `OrganizerUnavailable`, which the coordinator surfaces as a FAILED status while the
@@ -149,10 +191,12 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     bridge = _Bridge()
 
     class _ProgressPopup(QtWidgets.QWidget):
-        """A small frameless, always-on-top popup that shows the live capture stage + a progress bar.
+        """A small frameless, always-on-top popup showing the live capture stage + a progress bar.
 
-        Renders a pure `ProgressView` (app.progress) so the user always sees what's happening after
-        hitting the hotkey; auto-hides shortly after a terminal stage (saved / discarded / failed)."""
+        Renders a pure `ProgressView`. You can **drag it anywhere** (it then stays put instead of
+        snapping back to the corner) and **hide it** with the "–" button — after which status updates
+        go to the tray icon only. It reappears via the tray's "Show progress popup" toggle. Auto-hides
+        shortly after a terminal stage (saved / discarded / failed)."""
 
         def __init__(self) -> None:
             super().__init__(
@@ -163,33 +207,74 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
             )
             self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating)
             self.setFixedWidth(340)
+            self._user_positioned = False  # once dragged, stop snapping back to the corner
+            self._drag_offset: QtCore.QPoint | None = None
+            self._on_minimize: Callable[[], None] | None = None
             layout = QtWidgets.QVBoxLayout(self)
             layout.setContentsMargins(14, 12, 14, 12)
+            header = QtWidgets.QHBoxLayout()
             self._title = QtWidgets.QLabel("grandplan")
             self._title.setStyleSheet("font-weight: 600; font-size: 13px;")
             self._title.setWordWrap(
                 True
             )  # wrap a long title within the fixed width, never widen it
+            header.addWidget(self._title, 1)
+            min_btn = QtWidgets.QPushButton("–")
+            min_btn.setFixedSize(22, 22)
+            min_btn.setToolTip("Hide — keep status updates in the tray icon")
+            min_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+            min_btn.clicked.connect(self._minimize)
+            header.addWidget(min_btn, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+            layout.addLayout(header)
             self._detail = QtWidgets.QLabel("")
             self._detail.setWordWrap(True)
             self._detail.setStyleSheet("color: palette(mid);")
             self._bar = QtWidgets.QProgressBar()
             self._bar.setTextVisible(False)
             self._bar.setFixedHeight(8)
-            layout.addWidget(self._title)
             layout.addWidget(self._detail)
             layout.addWidget(self._bar)
             self._hide_timer = QtCore.QTimer(self)
             self._hide_timer.setSingleShot(True)
             self._hide_timer.timeout.connect(self.hide)
 
-        def _move_to_corner(self) -> None:
+        def set_on_minimize(self, callback: Callable[[], None]) -> None:
+            self._on_minimize = callback
+
+        def _minimize(self) -> None:
+            self.hide()
+            if self._on_minimize is not None:
+                self._on_minimize()  # let run_app flip the tray toggle → tray-only mode
+
+        # Frameless windows have no title bar to grab, so make the whole popup draggable.
+        def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802 - Qt API
+            if event.button() == QtCore.Qt.MouseButton.LeftButton:
+                self._drag_offset = (
+                    event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                )
+                event.accept()
+
+        def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802 - Qt API
+            if self._drag_offset is not None:
+                self.move(event.globalPosition().toPoint() - self._drag_offset)
+                self._user_positioned = True  # respect this position from now on
+                event.accept()
+
+        def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802 - Qt API
+            self._drag_offset = None
+
+        def _position(self) -> None:
+            if self._user_positioned:
+                return  # the user dragged it somewhere — leave it there
             screen = QtWidgets.QApplication.primaryScreen()
             if screen is None:
                 return
             self.adjustSize()
             area = screen.availableGeometry()
-            self.move(area.right() - self.width() - 24, area.bottom() - self.height() - 24)
+            x, y = _corner_position(
+                self.width(), self.height(), area.x(), area.y(), area.width(), area.height()
+            )
+            self.move(x, y)
 
         def render_view(self, view: ProgressView) -> None:
             if not view.visible:
@@ -205,13 +290,19 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
                 self._bar.setValue(view.percent)
             colour = "#d33" if not view.ok else ("#3a3" if view.terminal else "#39f")
             self._bar.setStyleSheet(f"QProgressBar::chunk {{ background-color: {colour}; }}")
-            self._move_to_corner()
+            self._position()
             self.show()
             self.raise_()
             if view.terminal:
                 self._hide_timer.start(2500)  # linger briefly so the outcome is readable
 
     progress_popup = _ProgressPopup()
+    ui_state = {"show_popup": True}  # toggled by the popup's "–" button and the tray menu item
+
+    def _set_show_popup(show: bool) -> None:
+        ui_state["show_popup"] = show
+        if not show:
+            progress_popup.hide()  # tray-only mode; reappears on the next status when re-enabled
 
     def _on_review_requested(request: _ReviewRequest) -> None:
         request.approved = _show_review(request.state)
@@ -219,7 +310,10 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
 
     def _on_status_changed(status: CaptureStatus) -> None:
         tray.setToolTip(f"grandplan — {status.detail or status.stage.value}")
-        progress_popup.render_view(progress_for(status))  # the always-visible live progress popup
+        if ui_state["show_popup"]:
+            progress_popup.render_view(progress_for(status))  # live progress popup
+        else:
+            progress_popup.hide()  # minimized → status stays in the tray (tooltip + notifications)
         if status.stage in _NOTIFY_STAGES:
             tray.showMessage("grandplan", status.detail or status.stage.value)
 
@@ -281,6 +375,12 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
 
     menu = QtWidgets.QMenu()
     menu.addAction("Capture now", lambda: coordinator.submit())
+    show_action = menu.addAction("Show progress popup")
+    show_action.setCheckable(True)
+    show_action.setChecked(True)
+    show_action.toggled.connect(_set_show_popup)
+    # The popup's "–" button and this menu item share one source of truth (the action's checked state).
+    progress_popup.set_on_minimize(lambda: show_action.setChecked(False))
     menu.addAction("Quit", quit_app)
     tray.setContextMenu(menu)
     tray.show()
@@ -323,40 +423,41 @@ def _show_review(state: ReviewState) -> bool:  # pragma: no cover - Qt dialog
     dialog = QtWidgets.QDialog()
     dialog.setWindowTitle("grandplan — review capture")
     layout = QtWidgets.QVBoxLayout(dialog)
+
+    def add_label(html: str) -> None:
+        # Word-wrap EVERY label: an unwrapped label sets a large minimum width for a long title /
+        # relationship list, which would override the screen cap below and stretch the dialog wide.
+        label = QtWidgets.QLabel(html)
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
     if state.is_status_update:
         # PR-B: this capture is a progress update — approving marks the matched note, not a new note.
-        layout.addWidget(
-            QtWidgets.QLabel(
-                f"<b>Update</b>: mark “{state.update_target_title}” as "
-                f"<b>{state.update_status}</b> (no new note will be created)."
-            )
+        add_label(
+            f"<b>Update</b>: mark “{state.update_target_title}” as "
+            f"<b>{state.update_status}</b> (no new note will be created)."
         )
     if state.is_edit:
         # PR-C: this capture is a detail edit — approving edits the matched note's fields in place.
-        layout.addWidget(
-            QtWidgets.QLabel(
-                f"<b>Edit</b> “{state.edit_target_title}”: <b>{state.edit_summary}</b> "
-                "(no new note will be created)."
-            )
+        add_label(
+            f"<b>Edit</b> “{state.edit_target_title}”: <b>{state.edit_summary}</b> "
+            "(no new note will be created)."
         )
-    layout.addWidget(QtWidgets.QLabel(f"<b>{state.title}</b>  ({state.note_type})"))
+    add_label(f"<b>{state.title}</b>  ({state.note_type})")
     if state.is_probable_duplicate:
-        layout.addWidget(QtWidgets.QLabel("⚠ Looks like a duplicate of an existing note."))
+        add_label("⚠ Looks like a duplicate of an existing note.")
     if state.requires_review:
-        layout.addWidget(
-            QtWidgets.QLabel("⚠ Conflicts with an existing note — will be saved as needs-review.")
-        )
+        add_label("⚠ Conflicts with an existing note — will be saved as needs-review.")
     if state.links:
         summary = ", ".join(f"{relationship} {title}" for relationship, title in state.links)
-        layout.addWidget(QtWidgets.QLabel("Relationships: " + summary))
+        add_label("Relationships: " + summary)
     if state.proposed_updates:
         updates = ", ".join(f"“{title}” → {status}" for title, status in state.proposed_updates)
-        label = QtWidgets.QLabel("Also updating on save: " + updates)
-        label.setWordWrap(True)
-        layout.addWidget(label)
-    layout.addWidget(QtWidgets.QLabel("Original (preserved verbatim):"))
+        add_label("Also updating on save: " + updates)
+    add_label("Original (preserved verbatim):")
     original = QtWidgets.QPlainTextEdit(state.original_text)
     original.setReadOnly(True)
+    original.setMinimumHeight(120)  # show a few lines; long originals SCROLL, never grow the dialog
     layout.addWidget(original)
     buttons = QtWidgets.QDialogButtonBox()
     save_btn = buttons.addButton(QtWidgets.QDialogButtonBox.StandardButton.Save)
@@ -367,4 +468,18 @@ def _show_review(state: ReviewState) -> bool:  # pragma: no cover - Qt dialog
     save_btn.clicked.connect(dialog.accept)
     discard_btn.clicked.connect(dialog.reject)
     layout.addWidget(buttons)
+    # Cap the dialog to a fraction of the screen and centre it, so a long capture can't make the
+    # window fill (or overflow) the display — labels wrap and the original scrolls within the cap,
+    # keeping the Save / Discard buttons on-screen and clickable.
+    screen = QtWidgets.QApplication.primaryScreen()
+    if screen is not None:
+        area = screen.availableGeometry()
+        cap_w, cap_h = _bounded_size(1 << 24, 1 << 24, area.width(), area.height())
+        dialog.setMaximumSize(cap_w, cap_h)
+        w, h = _bounded_size(
+            560, 520, area.width(), area.height()
+        )  # comfortable default within cap
+        dialog.resize(w, h)
+        x, y = _centered_position(w, h, area.x(), area.y(), area.width(), area.height())
+        dialog.move(x, y)
     return bool(dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted)
