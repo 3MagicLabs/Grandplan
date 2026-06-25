@@ -6,6 +6,8 @@ non-negotiables: **offline-only · lossless · local LLM · 16GB no-GPU**. grand
 be copied only from **MIT/Apache/BSD** sources (with attribution); AGPL/GPL/source-available projects are
 **ideas-only**.
 
+> **2026 refresh:** see [`REFRESH-2026.md`](REFRESH-2026.md) for a 2025–2026 update — notably **Reor archived (Mar 2026)** vacating grandplan's closest niche, plus LightRAG-style local knowledge-graph retrieval and the small-model (Gemma 3 4B / Phi-4-mini) consensus for 16 GB CPU boxes.
+
 This file is the index + decision layer. Full per-area detail (verified star counts, licenses, per-repo
 techniques) lives in the source docs:
 
