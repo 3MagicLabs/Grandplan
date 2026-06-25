@@ -3,6 +3,7 @@ name = "grandplan"
 version = "0.0.0"
 description = "Offline-first personal knowledge organizer — gated core."
 requires-python = ">=3.10"
+classifiers = ["License :: OSI Approved :: Apache Software License"]
 
 [tool.ruff]
 line-length = 100

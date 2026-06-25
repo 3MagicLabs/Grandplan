@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-19. **Scope:** what the successful open-source second-brain / local-AI / PKM / planning
 projects do well, and exactly what grandplan should borrow — every item filtered through the
-non-negotiables: **offline-only · lossless · local LLM · 16GB no-GPU**. grandplan is **MIT**, so code may
+non-negotiables: **offline-only · lossless · local LLM · 16GB no-GPU**. grandplan is **Apache 2.0**, so code may
 be copied only from **MIT/Apache/BSD** sources (with attribution); AGPL/GPL/source-available projects are
 **ideas-only**.
 

@@ -11,6 +11,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   Asks for confirmation (`--yes` skips); `--keep-originals` keeps the lossless captures so
   `regenerate` can rebuild. Guards against deleting a filesystem root or `$HOME`.
 
+### Changed
+- **License changed from MIT to Apache 2.0** — adds an explicit patent grant; copyright holder
+  (3MagicLabs) unchanged.
+
 ### Fixed
 - **`organize` now persists to the queryable index** (not just the Obsidian vault), so
   `doctor`/`report`/`export`/`calendar`/`mcp` work immediately after `organize` — previously they
