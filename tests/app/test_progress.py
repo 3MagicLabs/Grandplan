@@ -51,3 +51,9 @@ def test_every_stage_maps_without_error() -> None:
         view = _view(stage)
         assert isinstance(view.title, str) and view.title
         assert view.percent == -1 or 0 <= view.percent <= 100
+
+
+def test_progress_view_surfaces_queue_depth() -> None:
+    # The popup can show how many captures are still waiting behind the current one (#3).
+    assert progress_for(CaptureStatus(stage=Stage.ANALYZING, detail="x", pending=3)).queued == 3
+    assert progress_for(CaptureStatus(stage=Stage.ANALYZING)).queued == 0  # default: none waiting

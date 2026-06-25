@@ -80,6 +80,7 @@ class CaptureStatus:
 
     stage: Stage
     detail: str = ""
+    pending: int = 0  # captures still queued behind this one (backpressure depth at emit time)
 
 
 ReviewFn = Callable[[ReviewState], bool]
@@ -173,6 +174,7 @@ class CaptureCoordinator:
         self._detector = detector  # PR-B: detect capture-driven status updates (None = off)
         self._edit_detector = edit_detector  # PR-C: detect capture-driven field edits (None = off)
         self._placer = placer  # PR-G: propose structural edges for a new note (None = off)
+        self._max_pending = max_pending
         self._queue: queue.Queue[object] = queue.Queue(maxsize=max_pending)
         self._shutdown = threading.Event()
         self._thread: threading.Thread | None = None
@@ -217,6 +219,14 @@ class CaptureCoordinator:
                 "a capture is already in progress — finish the current review first",
             )
             return False
+
+    def pending_count(self) -> int:
+        """How many captures are queued waiting behind the one in flight (backpressure depth)."""
+        return self._queue.qsize()
+
+    def capacity(self) -> int:
+        """Max captures that may wait before submit() is rejected with REJECTED_BUSY."""
+        return self._max_pending
 
     def process_one(self, timeout: float | None = None) -> Committed | None:
         """Process a single queued capture. Blocks up to `timeout` for one to arrive.
@@ -329,6 +339,6 @@ class CaptureCoordinator:
         if self._on_status is None:
             return
         try:
-            self._on_status(CaptureStatus(stage=stage, detail=detail))
+            self._on_status(CaptureStatus(stage=stage, detail=detail, pending=self._queue.qsize()))
         except Exception:  # noqa: BLE001 - a bad status listener must not break the worker
             logger.exception("on_status listener failed")

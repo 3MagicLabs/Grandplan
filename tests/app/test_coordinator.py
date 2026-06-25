@@ -109,6 +109,37 @@ def test_submit_text_rejects_blank_input(tmp_path: Path) -> None:
     assert coord.submit_text("   ") is False  # nothing to capture
 
 
+def test_pending_count_and_capacity_track_the_queue(tmp_path: Path) -> None:
+    # Backpressure observability (#3): queued captures are visible; capacity is the buffer size.
+    coord, _, _ = _make(
+        tmp_path, capturer=SeqCapturer([None]), review=lambda state: True, max_pending=8
+    )
+    assert coord.capacity() == 8
+    assert coord.pending_count() == 0
+    assert coord.submit_text("one") and coord.submit_text("two") and coord.submit_text("three")
+    assert coord.pending_count() == 3  # three waiting, none processed yet
+    coord.process_one(timeout=0)
+    assert coord.pending_count() == 2  # one drained
+
+
+def test_status_carries_queue_depth_for_the_popup(tmp_path: Path) -> None:
+    # Each emitted status reports how many captures still wait behind the one in flight (#3), so the
+    # progress popup can show "+N waiting".
+    statuses: list[CaptureStatus] = []
+    coord, _, _ = _make(
+        tmp_path,
+        capturer=SeqCapturer([None]),
+        review=lambda state: True,
+        on_status=statuses.append,
+        max_pending=8,
+    )
+    coord.submit_text("first")
+    coord.submit_text("second")  # waits behind the first
+    coord.process_one(timeout=0)  # drains "first" while "second" is still queued
+    analyzing = [s for s in statuses if s.stage is Stage.ANALYZING]
+    assert analyzing and analyzing[0].pending == 1  # exactly "second" was waiting
+
+
 def test_approve_commits_writes_vault_and_reports_full_stage_sequence(tmp_path: Path) -> None:
     statuses: list[CaptureStatus] = []
     committed: list[object] = []
