@@ -23,6 +23,8 @@ requires = [
   "RESEARCH.md",
   "CONTRIBUTING.md",
   "CHANGELOG.md",
+  "SECURITY.md",
+  "CODE_OF_CONDUCT.md",
   "Dockerfile",
   ".github/workflows/ci.yml",
 ]
