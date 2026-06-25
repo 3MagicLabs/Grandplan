@@ -1,7 +1,7 @@
 # grandplan — Roadmap & Vision
 
 > Durable capture of where the platform is going (state lives in the repo, not chat). Authoritative
-> for sequencing; defers to `SPEC.md` for MVP contracts and `FINDINGS.md` for the quality diagnosis.
+> for sequencing; defers to `SPEC.md` for MVP contracts and `docs/notes/FINDINGS.md` for the quality diagnosis.
 > **Date:** 2026-06-18.
 
 ## North star
@@ -94,7 +94,7 @@ rebuilt notes whose ids survive; reports dropped). Remaining: Windows packaging 
 + bundled model); model/quantization benchmark on the user's CPU.
 
 ### J. Agent intake — directives + playbooks (the "send to my agent and act" loop)
-✅ **Offline spine DONE** (`core/directive.py`; `SPEC-AGENT-INTAKE.md`). Send content + an instruction
+✅ **Offline spine DONE** (`core/directive.py`; `docs/specs/SPEC-AGENT-INTAKE.md`). Send content + an instruction
 (ad-hoc or a named **playbook** like `profile-and-connect`) → an append-only `Directive` an agent
 pulls over MCP (`grandplan mcp --directives` → `list_directives`/`complete_directive`) and fulfils
 with the existing write/search tools. `grandplan directive add|list`. This is the in-house analogue of
@@ -110,13 +110,13 @@ dispatches pending directives to a local agent.
 
 1. ✅ **Agent-operable vault read API + local MCP server DONE** (`core/query.py` `VaultQuery` +
    `TOOLS`/`dispatch`; `adapters/mcp_server.py` stdio; `grandplan mcp`). Agents query/search/distill
-   notes, plan, masterplan, graph, doctor — offline. `SPEC-AGENT-VAULT.md`.
+   notes, plan, masterplan, graph, doctor — offline. `docs/specs/SPEC-AGENT-VAULT.md`.
 2. ✅ **Agent write operations over the event log DONE** (`core/write.py` `VaultWrite` +
    `WRITE_TOOLS`/`dispatch_write`; `adapters/mcp_server.py` `tools_for`/`route`; `grandplan mcp
    --write`). Agents enrich/organize/create safely — `set_status`/`record_edit`/`add_resource`/
    `place`/`propose_note`, each an append-only event reusing PR-A…PR-G ops, validated + idempotent,
    read-only by default. The literal "agents improve/modify/distill/extract/add/organize/generate"
-   ask. `SPEC-AGENT-VAULT.md` §"Step 2".
+   ask. `docs/specs/SPEC-AGENT-VAULT.md` §"Step 2".
 3. ✅ **Entity extraction + `involves` edges DONE** (`core/entities.py` `EntityExtractor` port +
    `HeuristicEntityExtractor` + `materialize_entities`; exposed as the `extract_entities` agent-write
    tool). People/org mentions become `entity` nodes joined by `involves` edges, so the graph is a
