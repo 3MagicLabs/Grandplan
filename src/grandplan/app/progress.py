@@ -24,6 +24,7 @@ class ProgressView:
     visible: bool  # should the popup be shown at all (False = idle/ready → hide it)
     terminal: bool  # the capture finished (success or failure) → auto-hide shortly after
     ok: bool  # success vs failure → colour the bar green vs red
+    queued: int = 0  # captures still waiting behind this one → popup can show "+N waiting"
 
 
 # Rough percent per pipeline stage so the bar advances monotonically through a capture.
@@ -85,4 +86,5 @@ def progress_for(status: CaptureStatus) -> ProgressView:
         visible=stage is not Stage.IDLE,
         terminal=terminal,
         ok=stage not in _FAIL_STAGES,
+        queued=status.pending,
     )
