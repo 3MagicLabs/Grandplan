@@ -10,6 +10,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   grandplan's external index (notes/edges/inbox/directives, kept under `~/.grandplan/<hash>/`).
   Asks for confirmation (`--yes` skips); `--keep-originals` keeps the lossless captures so
   `regenerate` can rebuild. Guards against deleting a filesystem root or `$HOME`.
+- **Progress popup is movable + dismissible** — drag it anywhere (it stops snapping back to the
+  corner), hide it with the new "–" button, and toggle it from the tray menu ("Show progress popup").
+  While hidden, status stays in the tray icon (tooltip + notifications).
 
 ### Changed
 - **License changed from MIT to Apache 2.0** — adds an explicit patent grant; copyright holder
@@ -20,6 +23,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `doctor`/`report`/`export`/`calendar`/`mcp` work immediately after `organize` — previously they
   reported "no index found" until a GUI capture or a regenerate. `organize_text` accepts injectable
   `repo`/`originals` (default in-memory); the CLI passes the persistent Jsonl stores. Idempotent.
+- **Review dialog no longer fills the screen** on a long capture — it's capped to a fraction of the
+  display and centred, with the verbatim original SCROLLING (not growing the window) so the
+  Save/Discard buttons stay on-screen and clickable (the Discard wiring itself was already correct).
 - **`JsonlDirectiveStore` is thread-safe** — a lock guards the append + in-memory update, closing a
   latent race when the HTTP intake (and now `up`) write directives from multiple threads.
 

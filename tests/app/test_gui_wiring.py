@@ -57,3 +57,54 @@ def test_clip_bounds_popup_label_length_and_collapses_whitespace() -> None:
     assert (
         _clip("line one\nline two", 90) == "line one line two"
     )  # newlines collapsed (no tall popup)
+
+
+def test_corner_position_places_bottom_right_within_area() -> None:
+    from grandplan.app.gui import _corner_position
+
+    x, y = _corner_position(340, 120, 0, 0, 1920, 1080, margin=24)
+    assert x == 1920 - 340 - 24
+    assert y == 1080 - 120 - 24
+
+
+def test_corner_position_respects_area_offset() -> None:
+    from grandplan.app.gui import _corner_position
+
+    # A non-primary screen whose work-area starts at (100, 200).
+    x, y = _corner_position(100, 50, 100, 200, 800, 600, margin=10)
+    assert x == 100 + 800 - 100 - 10
+    assert y == 200 + 600 - 50 - 10
+
+
+def test_corner_position_clamps_oversized_popup_onto_screen() -> None:
+    from grandplan.app.gui import _corner_position
+
+    # A popup larger than the area must not be pushed off the top-left edge.
+    assert _corner_position(3000, 3000, 0, 0, 1920, 1080) == (0, 0)
+
+
+def test_bounded_size_caps_to_screen_fraction() -> None:
+    from grandplan.app.gui import _bounded_size
+
+    # Content far bigger than the screen → capped to the fraction, never the full display.
+    w, h = _bounded_size(10_000, 10_000, 1920, 1080)
+    assert w == int(1920 * 0.55) and h == int(1080 * 0.75)
+    assert w < 1920 and h < 1080
+
+
+def test_bounded_size_enforces_a_minimum_for_tiny_content() -> None:
+    from grandplan.app.gui import _bounded_size
+
+    assert _bounded_size(120, 90, 1920, 1080) == (360, 240)  # bumped up to the minimums
+
+
+def test_bounded_size_passes_through_mid_range_content() -> None:
+    from grandplan.app.gui import _bounded_size
+
+    assert _bounded_size(560, 480, 1920, 1080) == (560, 480)
+
+
+def test_centered_position_centers_within_area() -> None:
+    from grandplan.app.gui import _centered_position
+
+    assert _centered_position(400, 300, 0, 0, 1920, 1080) == ((1920 - 400) // 2, (1080 - 300) // 2)
