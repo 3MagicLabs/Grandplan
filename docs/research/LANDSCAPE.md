@@ -11,8 +11,8 @@ techniques) lives in the source docs:
 
 | Area | Doc | Repos |
 |---|---|--:|
-| Closest analogs, 4-dimension landscape + first proposals | [`../../PRIOR-ART-ADOPTION.md`](../../PRIOR-ART-ADOPTION.md) | 20 |
-| Karpathy "LLM-Wiki" pattern + correct link modeling | [`../../LLM-WIKI-DEEPREAD.md`](../../LLM-WIKI-DEEPREAD.md) | 13 |
+| Closest analogs, 4-dimension landscape + first proposals | [`PRIOR-ART-ADOPTION.md`](PRIOR-ART-ADOPTION.md) | 20 |
+| Karpathy "LLM-Wiki" pattern + correct link modeling | [`LLM-WIKI-DEEPREAD.md`](LLM-WIKI-DEEPREAD.md) | 13 |
 | A — Offline AI second brains / RAG-over-notes | [`A-offline-ai-second-brains.md`](A-offline-ai-second-brains.md) | 16 |
 | B — Obsidian/Logseq/SiYuan/Foam AI plugins | [`B-obsidian-logseq-ai-plugins.md`](B-obsidian-logseq-ai-plugins.md) | 18 |
 | C — Note-taking & capture apps | [`C-notetaking-capture-apps.md`](C-notetaking-capture-apps.md) | 18 |
