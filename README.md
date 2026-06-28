@@ -5,6 +5,11 @@
 > **verbatim**) → you approve → it's written as a well-linked, de-duplicated Markdown note into your
 > **Obsidian vault**, and projects into an **actionable plan**.
 
+<p align="center">
+  <img src="docs/knowledge-graph.png" width="640" alt="grandplan knowledge graph — captured notes auto-linked into a navigable semantic web">
+</p>
+<p align="center"><em>The vault as a knowledge graph — notes captured from anywhere, auto-linked into a navigable web.</em></p>
+
 **Status:** planning complete → starting Phase 0 (gated core). Nothing leaves your machine.
 
 ## Why
