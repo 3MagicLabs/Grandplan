@@ -10,7 +10,10 @@
 </p>
 <p align="center"><em>The vault as a knowledge graph — notes captured from anywhere, auto-linked into a navigable web.</em></p>
 
-**Status:** planning complete → starting Phase 0 (gated core). Nothing leaves your machine.
+**Status:** working offline core. The platform-agnostic capture → organize → vault → plan
+pipeline is built and gated (870 passing tests, runnable from the CLI); the local-LLM (Ollama)
+organizer and the Windows global-hotkey capture/GUI are implemented as environment-gated
+adapters. Nothing leaves your machine.
 
 ## Why
 
