@@ -1004,6 +1004,46 @@ def test_ask_degrades_to_retrieval_only_without_a_model(
     assert "no local model" in out.lower()  # and the degradation is explicit, never silent
 
 
+def test_chat_answers_shows_notes_and_quits(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `grandplan chat`: multi-turn REPL — a question gets a grounded answer with sources, /show
+    # prints the full note under discussion, /quit leaves. Transport stubbed; wiring + IO real.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    src = tmp_path / "n.txt"
+    src.write_text("we decided to use postgres for the backend", encoding="utf-8")
+    vault = tmp_path / "vault"
+    assert main(["organize", str(src), "-o", str(vault), "--no-llm"]) == 0
+
+    import grandplan.adapters.kb_ask as kb_ask
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.note_store import JsonlNoteRepository
+
+    note_id = JsonlNoteRepository(migrate_legacy_index(vault) / "index.jsonl").notes()[0].id
+    monkeypatch.setattr(
+        kb_ask,
+        "_ollama_chat",
+        lambda model, prompt: '{"answer": "Postgres.", "sources": ["%s"]}' % note_id,
+    )
+    lines = iter(
+        ["what did we decide about the postgres backend?", f"/show {note_id}", "/quit"]
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
+    assert main(["chat", "-o", str(vault)]) == 0
+    out = capsys.readouterr().out
+    assert "Postgres." in out  # the grounded answer
+    assert f"[{note_id}]" in out  # cited source
+    assert "postgres for the backend" in out  # /show printed the full note body
+
+
+def test_chat_without_index_reports_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    assert main(["chat", "-o", str(tmp_path / "empty")]) == 1
+    assert "no index" in capsys.readouterr().err
+
+
 def test_gui_fast_flag_forwards_to_run_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # `gui --fast` selects fast capture (LLM organize only; heuristic links + placement). The flag
     # must reach run_app; the default stays False so existing launches are unchanged.

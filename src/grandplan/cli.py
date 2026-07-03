@@ -1110,6 +1110,79 @@ def _run_ask(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_sources(sources: tuple[tuple[str, str], ...]) -> None:
+    for note_id, title in sources:
+        print(f"  - {title}  [{note_id}]")
+
+
+def _chat_repl(session: object, *, input_fn: Callable[[str], str] | None = None) -> int:
+    """The chat loop, transport-free so it is unit-testable: read → respond/command → print.
+
+    Commands: `/show <id>` prints the full note under discussion; `/quit` (or EOF/blank Ctrl-D)
+    ends the session. Everything else is a question for the KB agent. Read-only throughout.
+    """
+    input_fn = input_fn or input  # resolved at call time (tests patch builtins.input)
+    print("chat with your vault — /show <id> to view a note, /quit to leave.")
+    while True:
+        try:
+            line = input_fn("you> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not line:
+            continue
+        if line in ("/quit", "/exit", "/q"):
+            return 0
+        if line.startswith("/show"):
+            note_id = line.removeprefix("/show").strip()
+            note = session.show(note_id)  # type: ignore[attr-defined]
+            if note is None:
+                print(f"no note with id {note_id!r}")
+            else:
+                print(f"# {note.title}  [{note.id}] ({note.type.value})\n{note.body}")
+            continue
+        answer = session.respond(line)  # type: ignore[attr-defined]
+        if answer.model is None and not answer.sources:
+            print("no matching notes found.")
+            continue
+        if answer.model is None:
+            print("(no local model available — top matching notes instead)")
+            _print_sources(answer.sources)
+            continue
+        print(f"\n{answer.text}\n")
+        if answer.sources:
+            print("sources:")
+            _print_sources(answer.sources)
+
+
+def _run_chat(args: argparse.Namespace) -> int:
+    """`grandplan chat -o <vault> [--kb-model] [--embeddings] [--top-k]`.
+
+    Multi-turn, retrieval-grounded conversation over the vault (SPEC-AGENT-KB P1.5): each turn
+    re-retrieves grounding for the new question and carries the recent dialogue so follow-ups
+    resolve. Read-only — chat can show notes but never writes. Same degradation chain as `ask`.
+    """
+    from grandplan.adapters.kb_chat import ChatSession
+
+    vault_dir = Path(args.vault)
+    index_root = migrate_legacy_index(vault_dir)
+    index_path = index_root / "index.jsonl"
+    if not index_path.exists():
+        print(f"no index found for {vault_dir} (capture some notes first)", file=sys.stderr)
+        return 1
+    repo = JsonlNoteRepository(index_path)
+    # The query embedder must match the one the vault was built with so retrieval ranks correctly.
+    embedder: Embedder = SentenceTransformerEmbedder() if args.embeddings else HashingEmbedder()
+    session = ChatSession(
+        repo=repo,
+        embedder=embedder,
+        model=args.kb_model,
+        fallback_model=args.model,
+        top_k=args.top_k,
+    )
+    return _chat_repl(session)
+
+
 def _run_mcp(args: argparse.Namespace) -> int:
     """`grandplan mcp -o <vault> [--embeddings] [--write] [--directives]`: serve the vault over MCP.
 
@@ -1386,6 +1459,29 @@ def main(argv: list[str] | None = None) -> int:
         "--top-k", type=int, default=6, help="how many notes to ground the answer in (default 6)"
     )
 
+    chat_cmd = subparsers.add_parser(
+        "chat",
+        help="Chat with your vault (multi-turn, grounded in your notes, read-only, local model).",
+    )
+    chat_cmd.add_argument("-o", "--vault", required=True, help="the vault directory")
+    chat_cmd.add_argument(
+        "--kb-model",
+        default=KB_DEFAULT_MODEL,
+        help=f"local model for KB reasoning (default {KB_DEFAULT_MODEL}; falls back to the capture "
+        "model, then to retrieval-only, when unavailable)",
+    )
+    chat_cmd.add_argument(
+        "--model", default=DEFAULT_MODEL, help="fallback capture model (default LLM)"
+    )
+    chat_cmd.add_argument(
+        "--embeddings",
+        action="store_true",
+        help="use sentence-transformer embeddings for retrieval (match how the vault was built)",
+    )
+    chat_cmd.add_argument(
+        "--top-k", type=int, default=6, help="how many notes ground each turn (default 6)"
+    )
+
     directive_cmd = subparsers.add_parser(
         "directive",
         help="Queue / list agent intake directives (content + instruction) — append-only, offline.",
@@ -1546,6 +1642,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_gui(args)
     if args.command == "ask":
         return _run_ask(args)
+    if args.command == "chat":
+        return _run_chat(args)
     if args.command == "attach":
         return _run_attach(args)
     if args.command == "rerender":
