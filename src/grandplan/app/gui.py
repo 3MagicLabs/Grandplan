@@ -334,7 +334,12 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         request.event.set()  # unblock the worker waiting for the decision
 
     def _on_status_changed(status: CaptureStatus) -> None:
-        tray.setToolTip(f"grandplan — {status.detail or status.stage.value}")
+        # Surface the background-enrichment backlog (#38): notes still waiting for their typed
+        # links/placement pass show as a tooltip suffix — visible, never a popup (it's routine).
+        # (Late-bound closure is safe: status events only ever originate from the coordinator.)
+        waiting = coordinator.enrichment_pending()
+        suffix = f"  ·  enriching {waiting} note(s) in background" if waiting else ""
+        tray.setToolTip(f"grandplan — {status.detail or status.stage.value}{suffix}")
         if ui_state["show_popup"]:
             progress_popup.render_view(progress_for(status))  # live progress popup
         else:

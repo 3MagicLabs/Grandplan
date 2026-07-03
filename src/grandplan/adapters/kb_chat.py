@@ -15,7 +15,7 @@ mutates the vault mid-conversation without review.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -275,7 +275,12 @@ class ChatSession:
     def history(self) -> tuple[tuple[str, str], ...]:
         return tuple(self._history)
 
-    def respond(self, question: str) -> AskAnswer:
+    def respond(
+        self, question: str, *, on_answer_delta: Callable[[str], None] | None = None
+    ) -> AskAnswer:
+        """One chat turn. With `on_answer_delta`, the answer streams as it is generated —
+        the callback receives printable answer-text pieces (JSON syntax already filtered out by
+        `AnswerStreamFilter`), and the returned AskAnswer is identical to the non-streaming path."""
         hits = self.repo.most_similar(
             self.embedder.embed(question), limit=self.top_k, threshold=_MIN_SCORE
         )
@@ -285,12 +290,11 @@ class ChatSession:
             history=self.history,
             notes=[(n.id, n.title, n.body) for n, _ in hits],
         )
-        # Resolved through the module at call time: kb_ask._ollama_chat is the ONE transport seam
-        # for both ask and chat (tests and future config patch a single place).
-        transport = self.chat or kb_ask._ollama_chat
         for model in self._models():
             try:
-                text, cited = parse_answer(transport(model, prompt), frozenset(titles))
+                text, cited = parse_answer(
+                    self._call(model, prompt, on_answer_delta), frozenset(titles)
+                )
             except Exception as exc:  # noqa: BLE001 - model not pulled, Ollama down, bad JSON
                 logger.warning("chat turn with %s failed; trying next fallback: %s", model, exc)
                 continue
@@ -300,6 +304,27 @@ class ChatSession:
             )
         # Retrieval-only: surface the ranked matches; the failed turn is NOT recorded as dialogue.
         return AskAnswer(text="", sources=tuple((n.id, n.title) for n, _ in hits), model=None)
+
+    def _call(
+        self, model: str, prompt: str, on_answer_delta: Callable[[str], None] | None
+    ) -> str:
+        """One transport call — streaming when a delta callback is given and no test transport is
+        injected. Resolved through the module at call time: kb_ask._ollama_chat (and the streaming
+        twin below) are the ONE transport seam tests and future config patch."""
+        if self.chat is not None:
+            return self.chat(model, prompt)
+        if on_answer_delta is not None:
+            from grandplan.adapters.answer_stream import AnswerStreamFilter
+
+            stream_filter = AnswerStreamFilter()
+
+            def _raw_delta(chunk: str) -> None:
+                piece = stream_filter.feed(chunk)
+                if piece:
+                    on_answer_delta(piece)
+
+            return kb_ask._ollama_chat_stream(model, prompt, _raw_delta)
+        return kb_ask._ollama_chat(model, prompt)
 
     def show(self, note_id: str) -> Note | None:
         """The full note under discussion (for the caller to display); None when unknown."""

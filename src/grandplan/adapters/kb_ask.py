@@ -19,7 +19,7 @@ integration-tests it on the user's machine.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from grandplan.adapters._ollama import chat_json, loads_lenient
@@ -86,6 +86,16 @@ def parse_answer(raw: str, allowed_ids: frozenset[str]) -> tuple[str, tuple[str,
 
 def _ollama_chat(model: str, prompt: str) -> str:  # pragma: no cover - needs a running Ollama
     return chat_json(model, prompt, timeout=OLLAMA_TIMEOUT_S)
+
+
+def _ollama_chat_stream(  # pragma: no cover - needs a running Ollama
+    model: str, prompt: str, on_delta: Callable[[str], None]
+) -> str:
+    """Streaming twin of `_ollama_chat` — the SAME patchable module seam contract: tests/config
+    that replace the transports patch these two names and nothing else reaches the network."""
+    from grandplan.adapters._ollama import chat_json_stream
+
+    return chat_json_stream(model, prompt, timeout=OLLAMA_TIMEOUT_S, on_delta=on_delta)
 
 
 class KbAsk:

@@ -1021,18 +1021,25 @@ def test_chat_answers_shows_notes_and_quits(
     from grandplan.core.note_store import JsonlNoteRepository
 
     note_id = JsonlNoteRepository(migrate_legacy_index(vault) / "index.jsonl").notes()[0].id
-    monkeypatch.setattr(
-        kb_ask,
-        "_ollama_chat",
-        lambda model, prompt: '{"answer": "Postgres.", "sources": ["%s"]}' % note_id,
-    )
+    reply = '{"answer": "Postgres.", "sources": ["%s"]}' % note_id
+    monkeypatch.setattr(kb_ask, "_ollama_chat", lambda model, prompt: reply)
+
+    # The REPL uses the STREAMING seam for plain questions; the fake streams the same reply in
+    # small chunks so the live-typing path (AnswerStreamFilter → terminal) is exercised end-to-end.
+    def fake_stream(model: str, prompt: str, on_delta: Callable[[str], None]) -> str:
+        for i in range(0, len(reply), 5):
+            on_delta(reply[i : i + 5])
+        return reply
+
+    monkeypatch.setattr(kb_ask, "_ollama_chat_stream", fake_stream)
     lines = iter(
         ["what did we decide about the postgres backend?", f"/show {note_id}", "/quit"]
     )
     monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
     assert main(["chat", "-o", str(vault)]) == 0
     out = capsys.readouterr().out
-    assert "Postgres." in out  # the grounded answer
+    assert "Postgres." in out  # the grounded answer, printed via the streamed deltas
+    assert '{"answer"' not in out  # JSON syntax never reaches the terminal
     assert f"[{note_id}]" in out  # cited source
     assert "postgres for the backend" in out  # /show printed the full note body
 
@@ -1156,15 +1163,19 @@ def test_chat_without_index_reports_error(
     assert "no index" in capsys.readouterr().err
 
 
-def test_gui_fast_flag_forwards_to_run_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # `gui --fast` selects fast capture (LLM organize only; heuristic links + placement). The flag
-    # must reach run_app; the default stays False so existing launches are unchanged.
+def test_gui_fast_is_default_and_thorough_opts_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Fast capture is the DEFAULT (background enrichment #38 restores what it defers); --thorough
+    # opts back into 3-calls-inline; --fast stays accepted for compatibility.
     seen: list[dict[str, object]] = []
     monkeypatch.setattr("grandplan.app.gui.run_app", lambda **kw: seen.append(kw) or 0)
-    assert main(["gui", "-o", str(tmp_path / "v"), "--fast"]) == 0
     assert main(["gui", "-o", str(tmp_path / "v")]) == 0
-    assert seen[0]["fast"] is True
-    assert seen[1]["fast"] is False
+    assert main(["gui", "-o", str(tmp_path / "v"), "--fast"]) == 0
+    assert main(["gui", "-o", str(tmp_path / "v"), "--thorough"]) == 0
+    assert seen[0]["fast"] is True  # default
+    assert seen[1]["fast"] is True  # compat flag
+    assert seen[2]["fast"] is False  # explicit opt-out
 
 
 def test_main_gui_embeddings_without_dep_fails_fast(

@@ -1242,7 +1242,19 @@ def _chat_repl(
             else:
                 print("discarded — nothing written.")
             continue
-        answer = session.respond(line)  # type: ignore[attr-defined]
+        # Stream the answer as the model generates it (perceived latency: watching it type beats
+        # 20-60 s of silence). The filter has already stripped the JSON syntax; a test-injected
+        # transport never streams, so `streamed` stays False and the classic print runs instead.
+        streamed = False
+
+        def _delta(piece: str) -> None:
+            nonlocal streamed
+            if not streamed:
+                print()  # open the answer block (mirrors the non-streamed formatting)
+                streamed = True
+            print(piece, end="", flush=True)
+
+        answer = session.respond(line, on_answer_delta=_delta)  # type: ignore[attr-defined]
         if answer.model is None and not answer.sources:
             print("no matching notes found.")
             continue
@@ -1250,7 +1262,10 @@ def _chat_repl(
             print("(no local model available — top matching notes instead)")
             _print_sources(answer.sources)
             continue
-        print(f"\n{answer.text}\n")
+        if streamed:
+            print("\n")  # close the streamed block
+        else:
+            print(f"\n{answer.text}\n")
         if answer.sources:
             print("sources:")
             _print_sources(answer.sources)
@@ -1412,7 +1427,9 @@ def _run_gui(args: argparse.Namespace) -> int:
             vault_dir=vault_dir,
             use_llm=not args.no_llm,  # PR-F: the local model is the default; --no-llm opts out
             use_embeddings=args.embeddings,
-            fast=getattr(args, "fast", False),  # LLM organize only; heuristic links + placement
+            # Fast capture is the DEFAULT since the background enrichment pass (#38) restores the
+            # typed links/placement it defers — --thorough opts back into the 3-calls-inline mode.
+            fast=not getattr(args, "thorough", False),
             model=args.model,
             hotkey=args.hotkey_combo,
         )
@@ -1761,9 +1778,15 @@ def main(argv: list[str] | None = None) -> int:
     gui.add_argument(
         "--fast",
         action="store_true",
-        help="fast capture: the model still organizes each note, but related-note links and "
-        "placement use the instant deterministic baselines instead of two extra model calls "
-        "(~3x faster per capture on CPU; links are cosine-similarity, placement is heuristic)",
+        help="(default; kept for compatibility) fast capture: one model call per capture — LLM "
+        "organize inline, typed links + placement restored by the background enrichment pass",
+    )
+    gui.add_argument(
+        "--thorough",
+        action="store_true",
+        help="run the LLM reconcile + placement calls INLINE per capture instead of in the "
+        "background (~3x slower per capture; same end quality — use only if you want the typed "
+        "links present the instant the review dialog opens)",
     )
     gui.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model name (default LLM)")
     gui.add_argument(

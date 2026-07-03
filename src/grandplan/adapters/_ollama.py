@@ -88,6 +88,42 @@ def chat_json(
     return str(response["message"]["content"])
 
 
+def chat_json_stream(
+    model: str,
+    prompt: str,
+    *,
+    timeout: float,
+    on_delta: Any,
+    num_ctx: int | None = None,
+) -> str:  # pragma: no cover - needs a running Ollama
+    """Like `chat_json`, but streams: `on_delta(chunk)` per raw content piece; returns the full text.
+
+    Same options/knobs as `chat_json` (format=json, temperature 0, keep_alive, num_ctx). Callers
+    filter the raw JSON deltas into printable text (`answer_stream.AnswerStreamFilter`) — the
+    perceived-latency win: the user watches the answer type instead of staring at a silent prompt.
+    """
+    try:
+        import ollama
+    except ImportError as exc:
+        raise RuntimeError(
+            f"ollama client unavailable ({exc}); `pip install grandplan[llm]`"
+        ) from exc
+    pieces: list[str] = []
+    for part in ollama.Client(timeout=timeout).chat(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        format="json",
+        options={"temperature": 0, "num_ctx": num_ctx if num_ctx is not None else default_num_ctx()},
+        keep_alive="30m",
+        stream=True,
+    ):
+        chunk = str(part["message"]["content"])
+        if chunk:
+            pieces.append(chunk)
+            on_delta(chunk)
+    return "".join(pieces)
+
+
 def loads_lenient(raw: str) -> Any:
     """Parse a JSON value from a model reply, tolerating fences, surrounding prose, and truncation.
 
