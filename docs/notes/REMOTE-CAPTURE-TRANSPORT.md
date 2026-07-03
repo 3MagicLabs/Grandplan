@@ -83,3 +83,32 @@ curl -H "Authorization: Bearer $GRANDPLAN_TOKEN" \
 - The vault is never served to any network, tailnet included.
 - Everything above is user infrastructure; no app code couples to Headscale, Tailscale, or
   WireGuard specifically.
+
+## LAN-first quickstart (shipped: POST /capture)
+
+Validate on home wifi BEFORE setting up the tunnel — same endpoint, zero code change later.
+
+```powershell
+# On the laptop (vault machine): find your LAN IP (ipconfig), then
+$env:GRANDPLAN_TOKEN = "<long-random-secret>"
+python -m grandplan.cli up -o <vault> --host <lan-ip> --token $env:GRANDPLAN_TOKEN
+```
+
+From the phone (any HTTP-shortcut app / iOS Shortcuts / HTTP client) on the same wifi:
+
+```
+POST http://<lan-ip>:8765/capture
+Authorization: Bearer <long-random-secret>
+{"content": "thought + any link", "attachments": [{"name": "memo.ogg", "data": "<base64>"}]}
+```
+
+- Text/link → organized note (links land in `## Resources`).
+- Voice note (.ogg/.opus/.m4a/.mp3/.wav) → transcribed OFFLINE (local Whisper, `grandplan[voice]`),
+  transcript becomes the note, audio kept verbatim under `<vault>/attachments/`.
+- Image (+ thoughts) → note with the image attached.
+
+Security properties (all pinned by tests + verified live): token checked and size caps enforced
+BEFORE the body is read (401/413), attachment names traversal-sanitized, extension allow-list,
+per-file 16 MiB / request 25 MiB caps, server errors always answered (500) and logged. The
+`--host` + `--token` pairing is enforced by the CLI — a routable bind without a token refuses to
+start. Nothing is ever fetched outbound.

@@ -70,3 +70,23 @@ class _WhisperTranscriber:  # pragma: no cover - needs a mic + grandplan[voice]
 def default_voice_capturer() -> VoiceCapturer:  # pragma: no cover - needs the optional backend
     """A VoiceCapturer wired to the local Whisper backend (lazy optional dep)."""
     return VoiceCapturer(_WhisperTranscriber())
+
+
+def transcribe_file(
+    path: str, *, model: str = "base.en"
+) -> str | None:  # pragma: no cover - needs grandplan[voice]
+    """Transcribe an audio FILE offline with the local Whisper model (#37 remote voice notes).
+
+    Same engine as the mic path (`faster-whisper`, on-device, no audio leaves the machine); the
+    caller keeps the audio file as a lossless attachment regardless of what this returns. None on
+    silence/failure — the capture then simply carries the audio without a transcript.
+    """
+    try:
+        from faster_whisper import WhisperModel
+
+        segments, _info = WhisperModel(model, device="cpu", compute_type="int8").transcribe(path)
+        text = " ".join(segment.text.strip() for segment in segments).strip()
+        return text or None
+    except Exception as exc:  # noqa: BLE001 - model not installed, bad audio, decode error
+        logger.warning("voice-file transcription failed for %s: %s", path, exc)
+        return None

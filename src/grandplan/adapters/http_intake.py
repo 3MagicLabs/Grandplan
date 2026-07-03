@@ -115,13 +115,39 @@ def precheck_request(
     return None
 
 
+def precheck_routes(
+    path: str,
+    content_length: int,
+    authorization: str,
+    token: str,
+    routes: dict[str, int],
+) -> IntakeResult | None:
+    """Multi-route twin of `precheck_request`: `routes` maps path → max body bytes (#37).
+
+    Same pre-body-read guarantees per route: unknown path 404, bad/oversized Content-Length
+    400/413 (each route with its OWN cap — /capture carries media, /directive stays small), and
+    auth 401 — all before a byte of body is read off the socket.
+    """
+    max_body = routes.get(path.rstrip("/"))
+    if max_body is None:
+        return IntakeResult(404, {"error": "not found"})
+    return precheck_request("/directive", content_length, authorization, token, max_body=max_body)
+
+
 def serve_intake(
-    store: DirectiveStore, *, host: str = "127.0.0.1", port: int = 8765, token: str = ""
+    store: DirectiveStore,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    token: str = "",
+    capture: object = None,
 ) -> None:  # pragma: no cover - binds a socket; the request logic is tested via handle_intake
-    """Run the HTTP intake server until interrupted. POST /directive with a JSON body.
+    """Run the HTTP intake server until interrupted. POST /directive (and /capture when wired).
 
     Binds 127.0.0.1 by default (safe). Pass a routable host to reach it from another device — only do
-    that together with a `token`, since the endpoint then accepts directives from the network.
+    that together with a `token`, since the endpoint then accepts requests from the network.
+    `capture` (#37): a `Callable[[dict], IntakeResult]` handling POST /capture (text + attachments
+    → an organized note); None keeps the server directive-only.
     """
     from datetime import datetime, timezone
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -144,8 +170,13 @@ def serve_intake(
             except ValueError:
                 length = -1  # unparseable Content-Length → precheck rejects with 400
             authorization = self.headers.get("Authorization", "")
+            routes = {"/directive": MAX_BODY_BYTES}
+            if capture is not None:
+                from grandplan.adapters.capture_intake import MAX_CAPTURE_BODY_BYTES
+
+                routes["/capture"] = MAX_CAPTURE_BODY_BYTES
             # bad path / oversized body / unauthorized → reply without reading the body off the socket
-            early = precheck_request(self.path, length, authorization, token)
+            early = precheck_routes(self.path, length, authorization, token, routes)
             if early is not None:
                 self._reply(early)
                 return
@@ -153,6 +184,9 @@ def serve_intake(
                 payload = parse_payload(self.rfile.read(length))
             except ValueError as exc:
                 self._reply(IntakeResult(400, {"error": str(exc)}))
+                return
+            if capture is not None and self.path.rstrip("/") == "/capture":
+                self._reply(capture(payload))  # type: ignore[operator]
                 return
             result = handle_intake(
                 store,

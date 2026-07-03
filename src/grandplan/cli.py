@@ -1021,7 +1021,68 @@ def _serve_all(  # pragma: no cover - long-running threads (HTTP serve + folder 
             kwargs={"hotkey": hotkey, "use_llm": use_llm, "model": model},
             daemon=True,
         ).start()
-    serve_intake(store, host=host, port=port, token=token)
+    capture = _make_capture_handler(
+        vault_dir=vault_dir, index_root=index_root, use_llm=use_llm, model=model
+    )
+    serve_intake(store, host=host, port=port, token=token, capture=capture)
+
+
+def _make_capture_handler(
+    *, vault_dir: Path, index_root: Path, use_llm: bool, model: str
+) -> Callable[[dict[str, object]], object]:
+    """The POST /capture handler for `up` (#37): text + attachments from a phone → organized note.
+
+    Attachments land verbatim under `<vault>/attachments/` (name-sanitized, deduped); voice notes
+    transcribe OFFLINE via local Whisper when `grandplan[voice]` is installed (skipped, never
+    failed, otherwise); the composed text runs the normal organize pipeline (LLM with graceful
+    fallback, like the hotkey path). A lock serializes organizes — the intake server is threaded,
+    but the repo has ONE writer (ADR-0006).
+    """
+    import importlib.util as _ilu
+    import threading
+
+    from grandplan.adapters.capture_intake import handle_capture
+
+    lock = threading.Lock()
+    organizer = OllamaOrganizer(model=model, require=False) if use_llm else None
+    attachments_dir = vault_dir / "attachments"
+
+    def save(name: str, data: bytes) -> str:
+        attachments_dir.mkdir(parents=True, exist_ok=True)
+        target = attachments_dir / name
+        stem, dot, ext = name.partition(".")
+        counter = 1
+        while target.exists():  # never overwrite an earlier capture's file (lossless)
+            target = attachments_dir / f"{stem}-{counter}{dot}{ext}"
+            counter += 1
+        target.write_bytes(data)
+        return str(target)
+
+    transcribe: Callable[[str], str | None] | None = None
+    if _ilu.find_spec("faster_whisper") is not None:
+        from grandplan.adapters.voice import transcribe_file
+
+        transcribe = transcribe_file
+
+    def organize(text: str) -> str | None:
+        with lock:  # one writer: concurrent phone sends organize one after another
+            summary = organize_text(
+                text,
+                source=Source(app="phone", title="capture"),
+                created=datetime.now(timezone.utc).isoformat(),
+                vault_dir=vault_dir,
+                organizer=organizer,
+                repo=_open_repo(index_root),
+                originals=JsonlOriginalStore(index_root / "inbox.jsonl"),
+            )
+            if summary.notes == 0:
+                return None  # duplicate of an earlier capture — nothing new committed
+            return f"{summary.notes} note(s) organized"
+
+    def handler(payload: dict[str, object]) -> object:
+        return handle_capture(payload, save=save, organize=organize, transcribe=transcribe)
+
+    return handler
 
 
 def _run_watch(args: argparse.Namespace) -> int:
