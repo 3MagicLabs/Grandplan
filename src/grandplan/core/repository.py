@@ -23,6 +23,11 @@ class InMemoryNoteRepository:
         # Global append-order log of status/edit events (ADR-0008). Current state is *derived* by
         # replaying it; the stored notes are never mutated. Absent events => creation state.
         self._events: list[NoteEvent] = []
+        # Derived tombstone set, maintained alongside the log (ADR-0009 cheap win): `_is_deleted`
+        # used to re-scan the WHOLE event log, and `most_similar` calls it once per note — an
+        # O(N·E) inner loop on every similarity query. The set is pure derivation (delete events
+        # only ever enter through `delete_note`), so replay/rebuild semantics are unchanged.
+        self._tombstones: set[str] = set()
 
     def add_note(self, note: Note, embedding: tuple[float, ...]) -> None:
         if note.id in self._notes:
@@ -31,12 +36,13 @@ class InMemoryNoteRepository:
         self._embeddings[note.id] = embedding
 
     def _is_deleted(self, note_id: str) -> bool:
-        return any(e.note_id == note_id and e.kind == "deleted" for e in self._events)
+        return note_id in self._tombstones
 
     def delete_note(self, note_id: str, *, at: str | None = None) -> None:
         if note_id not in self._notes or self._is_deleted(note_id):
             return  # unknown or already tombstoned → idempotent + orphan-guarded
         self._events.append(NoteEvent(note_id=note_id, kind="deleted", at=at))
+        self._tombstones.add(note_id)
 
     def get_note(self, note_id: str) -> Note | None:
         if self._is_deleted(note_id):
