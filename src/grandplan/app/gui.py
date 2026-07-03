@@ -211,6 +211,7 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     class _Bridge(QtCore.QObject):
         review_requested = QtCore.Signal(object)  # _ReviewRequest
         status_changed = QtCore.Signal(object)  # CaptureStatus
+        hotkey_dead = QtCore.Signal(str)  # reason the global hotkey stopped working (#7)
 
     bridge = _Bridge()
 
@@ -467,10 +468,24 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     tray.setContextMenu(menu)
     tray.show()
 
+    # Dead hotkey-listener surfacing (#7): every way the listener can end (crash OR quiet stop)
+    # reports a reason; the tray shows it so a dead hotkey is never silent. "Capture now" and the
+    # rest of the app keep working — only the global hotkey is down.
+    def _on_hotkey_dead(reason: str) -> None:
+        tray.setToolTip(f"grandplan — {reason}")
+        tray.showMessage(
+            "grandplan — capture hotkey inactive",
+            f"{reason}\nUse the tray's 'Capture now', or restart the app to re-register.",
+            QtWidgets.QSystemTrayIcon.MessageIcon.Warning,
+        )
+
+    bridge.hotkey_dead.connect(_on_hotkey_dead)
+
     coordinator.start()
     threading.Thread(
         target=run_hotkey_listener,
         args=(hotkey, lambda: coordinator.submit()),
+        kwargs={"on_dead": bridge.hotkey_dead.emit},
         daemon=True,
     ).start()
 

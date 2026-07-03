@@ -133,3 +133,73 @@ def test_debouncer_drops_repeat_fires_within_the_window() -> None:
     assert deb.allow() is False  # still within 0.7s of the LAST accepted fire
     clock["t"] += 1.0
     assert deb.allow() is True  # enough time elapsed — a deliberate later capture passes
+
+
+# -- dead hotkey-listener detection (#7) -----------------------------------------------------------
+# A listener that crashes OR quietly returns used to die silently — the user just saw a hotkey
+# that never worked again. Every exit path must now report a reason via on_dead.
+
+
+class _FakeListener:
+    def __init__(self, mapping: dict, *, crash: Exception | None = None) -> None:
+        self._crash = crash
+
+    def __enter__(self) -> "_FakeListener":
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        return False
+
+    def join(self) -> None:
+        if self._crash is not None:
+            raise self._crash
+
+
+def _fake_pynput(monkeypatch: pytest.MonkeyPatch, *, crash: Exception | None = None) -> None:
+    import sys
+    import types
+
+    keyboard = types.SimpleNamespace(
+        GlobalHotKeys=lambda mapping: _FakeListener(mapping, crash=crash)
+    )
+    monkeypatch.setitem(sys.modules, "pynput", types.SimpleNamespace(keyboard=keyboard))
+    monkeypatch.setitem(sys.modules, "pynput.keyboard", keyboard)
+
+
+def test_listener_crash_reports_reason_via_on_dead(monkeypatch: pytest.MonkeyPatch) -> None:
+    from grandplan.adapters.capture import run_hotkey_listener
+
+    _fake_pynput(monkeypatch, crash=RuntimeError("OS hook refused"))
+    reasons: list[str] = []
+    run_hotkey_listener("ctrl+shift+g", lambda: None, on_dead=reasons.append)
+    assert len(reasons) == 1
+    assert "crashed" in reasons[0] and "OS hook refused" in reasons[0]
+
+
+def test_listener_quiet_stop_also_reports_via_on_dead(monkeypatch: pytest.MonkeyPatch) -> None:
+    # pynput returning normally is AS dead as a crash — must not be treated as success.
+    from grandplan.adapters.capture import run_hotkey_listener
+
+    _fake_pynput(monkeypatch)
+    reasons: list[str] = []
+    run_hotkey_listener("ctrl+shift+g", lambda: None, on_dead=reasons.append)
+    assert len(reasons) == 1
+    assert "stopped" in reasons[0]
+
+
+def test_listener_death_without_on_dead_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    from grandplan.adapters.capture import run_hotkey_listener
+
+    _fake_pynput(monkeypatch, crash=RuntimeError("boom"))
+    run_hotkey_listener("ctrl+shift+g", lambda: None)  # must not propagate
+
+
+def test_failing_on_dead_callback_is_contained(monkeypatch: pytest.MonkeyPatch) -> None:
+    from grandplan.adapters.capture import run_hotkey_listener
+
+    _fake_pynput(monkeypatch)
+
+    def bad_callback(reason: str) -> None:
+        raise RuntimeError("notifier exploded")
+
+    run_hotkey_listener("ctrl+shift+g", lambda: None, on_dead=bad_callback)  # must not propagate

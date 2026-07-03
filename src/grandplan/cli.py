@@ -884,7 +884,10 @@ def _run_hotkey(  # pragma: no cover - global hotkey listener + Windows selectio
         else:
             print("  (nothing was selected)")
 
-    run_hotkey_listener(hotkey, _on_trigger)
+    def _on_dead(reason: str) -> None:  # #7: a dead listener must never be silent
+        print(f"warning: {reason}", file=sys.stderr)
+
+    run_hotkey_listener(hotkey, _on_trigger, on_dead=_on_dead)
 
 
 def _resolve_token(arg_token: str) -> str:
