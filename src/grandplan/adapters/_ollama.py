@@ -21,26 +21,56 @@ pure and exhaustively unit-tested (`tests/test_ollama_json.py`).
 from __future__ import annotations
 
 import json
+import logging
+import os
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Context window for one local-LLM call. The capture prompt (instruction + the captured note) plus
 # the JSON reply must fit, or generation stops mid-object and the JSON is truncated. 8192 leaves
 # ample room for a typical capture + organized body while staying memory-safe on the project's
-# "16 GB RAM, no GPU" target (a larger window grows Ollama's KV cache). `loads_lenient` is the safety
-# net for the rare reply that still overruns it.
+# "16 GB RAM, no GPU" target. `loads_lenient` is the safety net for a reply that still overruns it.
+#
+# Memory trade-off (#2): the window sizes Ollama's KV cache — roughly linear in num_ctx, on the
+# order of hundreds of MB extra at 8192 for the ~4B capture models. Set GRANDPLAN_NUM_CTX to tune:
+# lower (e.g. 2048) frees RAM on tight machines at the cost of truncating very long captures;
+# higher (e.g. 16384) fits huge captures if RAM allows. One knob for every adapter.
 DEFAULT_NUM_CTX = 8192
+_ENV_NUM_CTX = "GRANDPLAN_NUM_CTX"
+
+
+def default_num_ctx() -> int:
+    """The context window to use: `GRANDPLAN_NUM_CTX` when set to a positive int, else 8192.
+
+    Read per call (not at import), so the env var works however the process is launched; a
+    malformed value is logged and ignored, never a crash at capture time.
+    """
+    raw = os.environ.get(_ENV_NUM_CTX, "")
+    if not raw:
+        return DEFAULT_NUM_CTX
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        logger.warning("%s=%r is not a positive integer; using %d", _ENV_NUM_CTX, raw, DEFAULT_NUM_CTX)
+        return DEFAULT_NUM_CTX
+    return value
 
 _OPENERS = {"{": "}", "[": "]"}
 _CLOSERS = frozenset({"}", "]"})
 
 
 def chat_json(
-    model: str, prompt: str, *, timeout: float, num_ctx: int = DEFAULT_NUM_CTX
+    model: str, prompt: str, *, timeout: float, num_ctx: int | None = None
 ) -> str:  # pragma: no cover - needs a running Ollama
     """One JSON-mode chat turn against a local Ollama model; returns the raw reply content.
 
     Centralises the call so `format`, `temperature`, `keep_alive`, and especially `num_ctx` are set
     once for every adapter (previously each adapter inlined this and none set `num_ctx`).
+    `num_ctx=None` (the normal case) resolves via `default_num_ctx()` — one env knob
+    (GRANDPLAN_NUM_CTX) tunes the memory/window trade-off for every adapter at once.
     """
     try:
         import ollama
@@ -52,7 +82,7 @@ def chat_json(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         format="json",
-        options={"temperature": 0, "num_ctx": num_ctx},
+        options={"temperature": 0, "num_ctx": num_ctx if num_ctx is not None else default_num_ctx()},
         keep_alive="30m",
     )
     return str(response["message"]["content"])
