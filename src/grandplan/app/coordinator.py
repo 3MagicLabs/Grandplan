@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -56,6 +57,7 @@ logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 0.2  # seconds the worker waits on the queue before re-checking the stop flag
 _JOIN_TIMEOUT = 5.0  # seconds stop() waits for the worker to finish its current capture
+_ENRICH_BACKLOG_CAP = 256  # queued-enrichment bound; beyond it, notes just keep baseline links (#38)
 
 
 class Stage(str, Enum):
@@ -155,6 +157,7 @@ class CaptureCoordinator:
         detector: UpdateDetector | None = None,
         edit_detector: EditDetector | None = None,
         placer: Placer | None = None,
+        enrich: Callable[[str], object] | None = None,
         max_pending: int = 16,
     ) -> None:
         if max_pending < 1:
@@ -178,6 +181,12 @@ class CaptureCoordinator:
         self._queue: queue.Queue[object] = queue.Queue(maxsize=max_pending)
         self._shutdown = threading.Event()
         self._thread: threading.Thread | None = None
+        # Background enrichment (#38): note ids waiting for the post-commit LLM links/placement
+        # pass. Drained by the SAME worker thread, and only when the capture queue is idle — the
+        # single-writer invariant (ADR-0006) holds and a queued capture always runs first.
+        self._enrich = enrich  # None = enrichment off (non-fast runs derive links inline)
+        self._enrich_backlog: deque[str] = deque()
+        self._enrich_lock = threading.Lock()
 
     # -- public API -----------------------------------------------------------------------------
 
@@ -223,6 +232,44 @@ class CaptureCoordinator:
     def pending_count(self) -> int:
         """How many captures are queued waiting behind the one in flight (backpressure depth)."""
         return self._queue.qsize()
+
+    def submit_enrichment(self, note_id: str) -> bool:
+        """Queue a committed note for the background links/placement pass (#38). Best-effort:
+        returns False (and drops silently) when enrichment is off, the note is already queued, or
+        the backlog is full — an unenriched note simply keeps its baseline links."""
+        if self._enrich is None:
+            return False
+        with self._enrich_lock:
+            if note_id in self._enrich_backlog or len(self._enrich_backlog) >= _ENRICH_BACKLOG_CAP:
+                return False
+            self._enrich_backlog.append(note_id)
+            return True
+
+    def enrichment_pending(self) -> int:
+        """Notes still waiting for the background enrichment pass (for progress surfacing)."""
+        with self._enrich_lock:
+            return len(self._enrich_backlog)
+
+    def run_one_enrichment(self) -> object | None:
+        """Run the oldest queued enrichment job (worker-thread / test entry; same guard as
+        `process_one`). Returns the job's outcome, or None when there was nothing to do. A failing
+        job is logged and dropped — enrichment must never wedge the capture worker."""
+        worker = self._thread
+        if worker is not None and worker.is_alive() and threading.current_thread() is not worker:
+            raise RuntimeError(
+                "run_one_enrichment() is driven by the worker once start() is called"
+            )
+        if self._enrich is None:
+            return None
+        with self._enrich_lock:
+            if not self._enrich_backlog:
+                return None
+            note_id = self._enrich_backlog.popleft()
+        try:
+            return self._enrich(note_id)
+        except Exception:  # noqa: BLE001 - one bad enrichment must not kill the worker
+            logger.exception("enrichment of %s failed", note_id)
+            return None
 
     def capacity(self) -> int:
         """Max captures that may wait before submit() is rejected with REJECTED_BUSY."""
@@ -278,6 +325,10 @@ class CaptureCoordinator:
     def _worker(self) -> None:
         while not self._shutdown.is_set():
             self.process_one(timeout=_POLL_INTERVAL)
+            # Idle-priority enrichment: only when no capture is queued (a capture submitted during
+            # an enrichment's LLM call waits at most that one call — never a whole backlog).
+            if self._queue.empty() and not self._shutdown.is_set():
+                self.run_one_enrichment()
 
     def _process(self, request: object = _REQUEST) -> Committed | None:
         try:

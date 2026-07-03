@@ -46,6 +46,7 @@ from grandplan.core.index_location import migrate_legacy_index
 from grandplan.core.models import Source
 from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
+from grandplan.core.pipeline import CaptureResult
 from grandplan.core.placement import HeuristicPlacer, Placer
 from grandplan.core.ports import Embedder, Organizer
 from grandplan.core.project import write_projections
@@ -370,6 +371,32 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
             repo, vault_dir, originals=originals, reconcile_deletions=True, protect_ids=protect
         )
 
+    # Background enrichment (#38): under --fast the LLM links/placement calls are skipped inline;
+    # this re-derives them AFTER commit, on the coordinator's own worker at idle priority (single
+    # writer, ADR-0006). Uses the FULL LLM reconciler/placer regardless of the fast wiring — the
+    # whole point is restoring the quality fast mode traded away. Off when not fast (links were
+    # derived inline) or not LLM (nothing richer to derive).
+    enrich_fn = None
+    if use_llm and fast:
+        from grandplan.app.enrich import enrich_note
+
+        enrich_reconciler = LlmContextualReconciler(model=model)
+        enrich_placer: Placer = LlmPlacer(model=model)
+
+        def enrich_fn(note_id: str) -> object:
+            outcome = enrich_note(
+                note_id, repo=repo, reconciler=enrich_reconciler, placer=enrich_placer
+            )
+            if getattr(outcome, "edges_added", 0):
+                # New edges → refresh the plan/graph so the richer links show up in Obsidian.
+                write_projections(repo, vault_dir, originals=originals)
+            return outcome
+
+    def after_commit(result: Committed) -> None:
+        reproject(result)
+        if isinstance(result, CaptureResult):  # only NEW notes need the links/placement pass
+            coordinator.submit_enrichment(result.note.id)
+
     coordinator = CaptureCoordinator(
         capturer=make_windows_capturer(),
         organizer=organizer,
@@ -381,10 +408,11 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         review=review,
         source=Source(app="grandplan", title="capture"),
         on_status=bridge.status_changed.emit,
-        after_commit=reproject,
+        after_commit=after_commit,
         detector=detector,
         edit_detector=edit_detector,
         placer=placer,
+        enrich=enrich_fn,
     )
 
     def quit_app() -> None:
