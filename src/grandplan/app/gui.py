@@ -424,8 +424,39 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
             request.event.set()
         app.quit()
 
+    # Chat panel (#39 stage 3): converse with the vault + draft review-gated plans, from the tray.
+    # The session reuses the app's live repo (so a just-captured note is immediately chattable) and
+    # the KB agent's own heavier default model with the capture model as fallback (SPEC-AGENT-KB).
+    chat_windows: list[object] = []  # keep refs so Qt doesn't GC an open window
+
+    def open_chat() -> None:
+        from datetime import datetime, timezone
+
+        from grandplan.adapters.kb_ask import KB_DEFAULT_MODEL
+        from grandplan.adapters.kb_chat import ChatSession, PlanDraft, apply_plan_draft
+        from grandplan.app.chat_window import open_chat_window
+
+        session = ChatSession(
+            repo=repo, embedder=embedder, model=KB_DEFAULT_MODEL, fallback_model=model
+        )
+
+        def apply_plan(draft: PlanDraft) -> str:
+            return apply_plan_draft(
+                draft,
+                repo=repo,
+                originals=originals,
+                embedder=embedder,
+                vault_dir=vault_dir,
+                created=datetime.now(timezone.utc).isoformat(),
+            )
+
+        window = open_chat_window(session=session, apply_plan=apply_plan)
+        chat_windows.append(window)
+        window.show()  # type: ignore[attr-defined]
+
     menu = QtWidgets.QMenu()
     menu.addAction("Capture now", lambda: coordinator.submit())
+    menu.addAction("Chat with vault…", open_chat)
     show_action = menu.addAction("Show progress popup")
     show_action.setCheckable(True)
     show_action.setChecked(True)

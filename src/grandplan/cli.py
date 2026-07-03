@@ -38,7 +38,7 @@ from grandplan.core.attach import attach
 from grandplan.core.calendar import is_scheduled, to_ics
 from grandplan.core.embed import HashingEmbedder
 from grandplan.core.index_location import index_dir, migrate_legacy_index
-from grandplan.core.models import EdgeKind, NoteEvent, NoteStatus, NoteType, Source
+from grandplan.core.models import NoteEvent, NoteStatus, Source
 from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.adapters.llm_entity_extractor import LlmEntityExtractor
@@ -1224,31 +1224,19 @@ def _apply_plan(
     vault_dir: Path,
     created: str,
 ) -> str:
-    """Apply an APPROVED plan draft: a new project note + `builds_on` edges to its source notes.
-
-    Runs only after the review gate's explicit yes (#39). Everything goes through the same
-    append-only write path agents use (`VaultWrite`): the plan text is captured as a verbatim
-    original (lossless), the note id is content-addressed (idempotent re-apply), source notes are
-    never modified — they just gain incoming edges. Projections re-render so the plan is visible
-    in Obsidian immediately.
-    """
-    from grandplan.adapters.kb_chat import PlanDraft, render_plan_markdown
-    from grandplan.core.write import VaultWrite
+    """Apply an APPROVED plan draft — delegates to the ONE shared write path (`apply_plan_draft`
+    in kb_chat) used by both this REPL and the GUI chat panel (#39). Review-gated by the caller."""
+    from grandplan.adapters.kb_chat import PlanDraft, apply_plan_draft
 
     assert isinstance(draft, PlanDraft)
-    write = VaultWrite(repo=repo, originals=originals, embedder=embedder)
-    body = render_plan_markdown(draft)
-    result = write.propose_note(
-        text=body, title=draft.title, type=NoteType.PROJECT.value, created=created, body=body
+    return apply_plan_draft(
+        draft,
+        repo=repo,
+        originals=originals,
+        embedder=embedder,
+        vault_dir=vault_dir,
+        created=created,
     )
-    note_id = str(result["note_id"])
-    for source_id, _title in draft.sources:
-        if source_id != note_id and repo.get_note(source_id) is not None:
-            write.place(note_id, source_id, EdgeKind.BUILDS_ON.value)
-    write_projections(
-        repo, vault_dir, originals=originals, today=datetime.now(timezone.utc).date()
-    )
-    return note_id
 
 
 def _run_chat(args: argparse.Namespace) -> int:

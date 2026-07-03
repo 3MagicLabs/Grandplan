@@ -6,9 +6,10 @@ and **fresh grounding per turn** (each new question re-retrieves from the vault,
 can wander across topics without stale context). Reuses `kb_ask`'s primitives — the same JSON
 answer contract, citation containment, and KB-model → capture-model → retrieval-only degradation.
 
-Still strictly read-only: the session can *show* a note but never writes. Write actions from chat
-(propose/edit/status through the review gate) are the next slice, on the directive spine — an agent
-must never mutate the vault mid-conversation without review (lossless, ADR-0008 append-only).
+The session itself is strictly read-only: it can *show* a note and *draft* a plan, but never
+writes. The ONE write path is `apply_plan_draft` (#39) — called by the REPL/GUI only after the
+human review gate's explicit yes, and append-only end to end (lossless, ADR-0008): an agent never
+mutates the vault mid-conversation without review.
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path
 
 import grandplan.adapters.kb_ask as kb_ask
 from grandplan.adapters._ollama import loads_lenient
@@ -133,6 +136,40 @@ def render_plan_markdown(draft: PlanDraft) -> str:
     checklist = "\n".join(f"- [ ] {step}" for step in draft.steps)
     summary = draft.summary or draft.title
     return f"{summary}\n\n## Next steps\n{checklist}"
+
+
+def apply_plan_draft(
+    draft: PlanDraft,
+    *,
+    repo: NoteRepository,
+    originals: object,
+    embedder: Embedder,
+    vault_dir: Path,
+    created: str,
+) -> str:
+    """Apply an APPROVED plan draft: a new project note + `builds_on` edges to its source notes.
+
+    The ONE write path for both the chat REPL and the GUI panel — runs only after the review
+    gate's explicit yes (#39). Everything goes through the same append-only path agents use
+    (`VaultWrite`): the plan text is captured as a verbatim original (lossless), the note id is
+    content-addressed (idempotent re-apply), source notes are never modified — they just gain
+    incoming edges. Projections re-render so the plan is visible in Obsidian immediately.
+    """
+    from grandplan.core.models import EdgeKind, NoteType
+    from grandplan.core.project import write_projections
+    from grandplan.core.write import VaultWrite
+
+    write = VaultWrite(repo=repo, originals=originals, embedder=embedder)  # type: ignore[arg-type]
+    body = render_plan_markdown(draft)
+    result = write.propose_note(
+        text=body, title=draft.title, type=NoteType.PROJECT.value, created=created, body=body
+    )
+    note_id = str(result["note_id"])
+    for source_id, _title in draft.sources:
+        if source_id != note_id and repo.get_note(source_id) is not None:
+            write.place(note_id, source_id, EdgeKind.BUILDS_ON.value)
+    write_projections(repo, vault_dir, originals=originals, today=date.fromisoformat(created[:10]))  # type: ignore[arg-type]
+    return note_id
 
 
 @dataclass
