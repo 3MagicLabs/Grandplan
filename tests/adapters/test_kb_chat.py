@@ -95,3 +95,63 @@ def test_chat_session_show_returns_note_body_or_none() -> None:
     note = session.show("a")
     assert note is not None and "postgres" in note.body
     assert session.show("nope") is None
+
+
+# -- plan drafting (#39 stage 2) -------------------------------------------------------------------
+
+_PLAN_RAW = (
+    '{"title": "Migrate to Postgres", "summary": "Move the backend to postgres.", '
+    '"steps": ["set up postgres locally", "write the migration", "cut over"], '
+    '"sources": ["a", "invented"]}'
+)
+
+
+def test_parse_plan_validates_and_filters_citations() -> None:
+    from grandplan.adapters.kb_chat import parse_plan
+
+    draft = parse_plan(_PLAN_RAW, frozenset({"a"}))
+    assert draft["title"] == "Migrate to Postgres"
+    assert draft["steps"] == ("set up postgres locally", "write the migration", "cut over")
+    assert draft["sources"] == ("a",)  # invented id dropped (containment)
+
+
+def test_parse_plan_rejects_missing_title_or_steps() -> None:
+    import pytest
+
+    from grandplan.adapters.kb_chat import parse_plan
+
+    with pytest.raises(ValueError):
+        parse_plan('{"steps": ["x"]}', frozenset())
+    with pytest.raises(ValueError):
+        parse_plan('{"title": "t", "steps": []}', frozenset())
+
+
+def test_draft_plan_returns_grounded_draft() -> None:
+    session = ChatSession(repo=_repo(), embedder=_Embedder(), chat=lambda m, p: _PLAN_RAW)
+    draft = session.draft_plan("postgres migration")
+    assert draft is not None
+    assert draft.title == "Migrate to Postgres"
+    assert draft.steps[0] == "set up postgres locally"
+    assert draft.sources == (("a", "Use Postgres"),)  # (id, title), invented id filtered
+
+
+def test_draft_plan_returns_none_when_no_model_or_no_notes() -> None:
+    def down(model: str, prompt: str) -> str:
+        raise RuntimeError("ollama down")
+
+    assert ChatSession(repo=_repo(), embedder=_Embedder(), chat=down).draft_plan("x") is None
+    empty = InMemoryNoteRepository()
+    session = ChatSession(repo=empty, embedder=_Embedder(), chat=lambda m, p: _PLAN_RAW)
+    assert session.draft_plan("postgres") is None  # nothing to ground a plan in
+
+
+def test_render_plan_markdown_is_a_checklist() -> None:
+    from grandplan.adapters.kb_chat import PlanDraft, render_plan_markdown
+
+    draft = PlanDraft(
+        title="T", summary="S.", steps=("one", "two"), sources=(("a", "Use Postgres"),), model="m"
+    )
+    body = render_plan_markdown(draft)
+    assert body.startswith("S.")
+    assert "## Next steps" in body
+    assert "- [ ] one" in body and "- [ ] two" in body

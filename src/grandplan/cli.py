@@ -38,7 +38,7 @@ from grandplan.core.attach import attach
 from grandplan.core.calendar import is_scheduled, to_ics
 from grandplan.core.embed import HashingEmbedder
 from grandplan.core.index_location import index_dir, migrate_legacy_index
-from grandplan.core.models import NoteEvent, NoteStatus, Source
+from grandplan.core.models import EdgeKind, NoteEvent, NoteStatus, NoteType, Source
 from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.adapters.llm_entity_extractor import LlmEntityExtractor
@@ -1140,14 +1140,21 @@ def _print_sources(sources: tuple[tuple[str, str], ...]) -> None:
         print(f"  - {title}  [{note_id}]")
 
 
-def _chat_repl(session: object, *, input_fn: Callable[[str], str] | None = None) -> int:
+def _chat_repl(
+    session: object,
+    *,
+    apply_plan: Callable[[object], str] | None = None,
+    input_fn: Callable[[str], str] | None = None,
+) -> int:
     """The chat loop, transport-free so it is unit-testable: read → respond/command → print.
 
-    Commands: `/show <id>` prints the full note under discussion; `/quit` (or EOF/blank Ctrl-D)
-    ends the session. Everything else is a question for the KB agent. Read-only throughout.
+    Commands: `/show <id>` prints the full note under discussion; `/plan <topic>` drafts an
+    actionable plan from the matching notes and — ONLY after an explicit yes — applies it through
+    the append-only write path (`apply_plan`, #39); `/quit` (or EOF/Ctrl-D) ends the session.
+    Everything else is a question for the KB agent. Nothing is ever written without the yes.
     """
     input_fn = input_fn or input  # resolved at call time (tests patch builtins.input)
-    print("chat with your vault — /show <id> to view a note, /quit to leave.")
+    print("chat with your vault — /plan <topic> to draft a plan, /show <id> to view a note, /quit.")
     while True:
         try:
             line = input_fn("you> ").strip()
@@ -1166,6 +1173,34 @@ def _chat_repl(session: object, *, input_fn: Callable[[str], str] | None = None)
             else:
                 print(f"# {note.title}  [{note.id}] ({note.type.value})\n{note.body}")
             continue
+        if line.startswith("/plan"):
+            topic = line.removeprefix("/plan").strip()
+            if not topic:
+                print("usage: /plan <topic>")
+                continue
+            draft = session.draft_plan(topic)  # type: ignore[attr-defined]
+            if draft is None:
+                print("(could not draft a plan — no matching notes, or no local model available)")
+                continue
+            print(f"\nPLAN: {draft.title}\n{draft.summary}")
+            for step in draft.steps:
+                print(f"  - [ ] {step}")
+            if draft.sources:
+                print("grounded in:")
+                _print_sources(draft.sources)
+            if apply_plan is None:
+                continue  # no write path wired — preview only
+            try:
+                confirm = input_fn("apply this plan to the vault? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\ndiscarded — nothing written.")
+                continue
+            if confirm in ("y", "yes"):
+                note_id = apply_plan(draft)
+                print(f"✓ plan saved to the vault  [{note_id}]")
+            else:
+                print("discarded — nothing written.")
+            continue
         answer = session.respond(line)  # type: ignore[attr-defined]
         if answer.model is None and not answer.sources:
             print("no matching notes found.")
@@ -1180,12 +1215,49 @@ def _chat_repl(session: object, *, input_fn: Callable[[str], str] | None = None)
             _print_sources(answer.sources)
 
 
+def _apply_plan(
+    draft: object,
+    *,
+    repo: NoteRepository,
+    originals: JsonlOriginalStore,
+    embedder: Embedder,
+    vault_dir: Path,
+    created: str,
+) -> str:
+    """Apply an APPROVED plan draft: a new project note + `builds_on` edges to its source notes.
+
+    Runs only after the review gate's explicit yes (#39). Everything goes through the same
+    append-only write path agents use (`VaultWrite`): the plan text is captured as a verbatim
+    original (lossless), the note id is content-addressed (idempotent re-apply), source notes are
+    never modified — they just gain incoming edges. Projections re-render so the plan is visible
+    in Obsidian immediately.
+    """
+    from grandplan.adapters.kb_chat import PlanDraft, render_plan_markdown
+    from grandplan.core.write import VaultWrite
+
+    assert isinstance(draft, PlanDraft)
+    write = VaultWrite(repo=repo, originals=originals, embedder=embedder)
+    body = render_plan_markdown(draft)
+    result = write.propose_note(
+        text=body, title=draft.title, type=NoteType.PROJECT.value, created=created, body=body
+    )
+    note_id = str(result["note_id"])
+    for source_id, _title in draft.sources:
+        if source_id != note_id and repo.get_note(source_id) is not None:
+            write.place(note_id, source_id, EdgeKind.BUILDS_ON.value)
+    write_projections(
+        repo, vault_dir, originals=originals, today=datetime.now(timezone.utc).date()
+    )
+    return note_id
+
+
 def _run_chat(args: argparse.Namespace) -> int:
     """`grandplan chat -o <vault> [--kb-model] [--embeddings] [--top-k]`.
 
     Multi-turn, retrieval-grounded conversation over the vault (SPEC-AGENT-KB P1.5): each turn
     re-retrieves grounding for the new question and carries the recent dialogue so follow-ups
-    resolve. Read-only — chat can show notes but never writes. Same degradation chain as `ask`.
+    resolve. Reading never writes; the one write path — `/plan` — is review-gated (explicit yes)
+    and append-only (#39). Same degradation chain as `ask`.
     """
     from grandplan.adapters.kb_chat import ChatSession
 
@@ -1196,6 +1268,7 @@ def _run_chat(args: argparse.Namespace) -> int:
         print(f"no index found for {vault_dir} (capture some notes first)", file=sys.stderr)
         return 1
     repo = _open_repo(index_root)
+    originals = JsonlOriginalStore(index_root / "inbox.jsonl")
     # The query embedder must match the one the vault was built with so retrieval ranks correctly.
     embedder: Embedder = SentenceTransformerEmbedder() if args.embeddings else HashingEmbedder()
     session = ChatSession(
@@ -1205,7 +1278,18 @@ def _run_chat(args: argparse.Namespace) -> int:
         fallback_model=args.model,
         top_k=args.top_k,
     )
-    return _chat_repl(session)
+
+    def apply_plan(draft: object) -> str:
+        return _apply_plan(
+            draft,
+            repo=repo,
+            originals=originals,
+            embedder=embedder,
+            vault_dir=vault_dir,
+            created=datetime.now(timezone.utc).isoformat(),
+        )
+
+    return _chat_repl(session, apply_plan=apply_plan)
 
 
 def _run_mcp(args: argparse.Namespace) -> int:

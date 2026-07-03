@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -1034,6 +1035,81 @@ def test_chat_answers_shows_notes_and_quits(
     assert "Postgres." in out  # the grounded answer
     assert f"[{note_id}]" in out  # cited source
     assert "postgres for the backend" in out  # /show printed the full note body
+
+
+def _plan_json(model: str, prompt: str) -> str:
+    # Echo back the first retrieved note id as a source, like a well-behaved model would — so the
+    # approved-plan test can assert the builds_on edge (containment keeps only retrieved ids).
+    ids = re.findall(r"id=(\w+)", prompt)
+    sources = f'["{ids[0]}"]' if ids else "[]"
+    return (
+        '{"title": "Postgres migration plan", "summary": "Move the backend to postgres.", '
+        f'"steps": ["set up postgres", "migrate data"], "sources": {sources}}}'
+    )
+
+
+def _chat_plan_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, confirm: str
+) -> tuple[Path, str]:
+    """Drive `chat` through `/plan` + a confirmation answer; return (vault, captured stdout)."""
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    src = tmp_path / "n.txt"
+    src.write_text("we decided to use postgres for the backend", encoding="utf-8")
+    vault = tmp_path / "vault"
+    assert main(["organize", str(src), "-o", str(vault), "--no-llm"]) == 0
+
+    import grandplan.adapters.kb_ask as kb_ask
+
+    monkeypatch.setattr(kb_ask, "_ollama_chat", _plan_json)
+    lines = iter(["/plan postgres backend", confirm, "/quit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
+    assert main(["chat", "-o", str(vault)]) == 0
+    return vault, ""
+
+
+def _index_notes(vault: Path) -> tuple:
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.note_store import JsonlNoteRepository
+
+    return JsonlNoteRepository(migrate_legacy_index(vault) / "index.jsonl").notes()
+
+
+def test_chat_plan_approved_writes_a_project_note_with_checklist(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #39 stage 2: /plan drafts from the vault, an explicit "y" applies it append-only — the plan
+    # lands as a PROJECT note with the organizer's own `- [ ]` checklist convention, and the
+    # vault markdown re-renders so it is immediately visible in Obsidian.
+    vault, _ = _chat_plan_run(tmp_path, monkeypatch, confirm="y")
+    out = capsys.readouterr().out
+    assert "PLAN: Postgres migration plan" in out  # previewed before the gate
+    assert "plan saved to the vault" in out
+    notes = _index_notes(vault)
+    plan = next(n for n in notes if n.title == "Postgres migration plan")
+    source = next(n for n in notes if n.id != plan.id)
+    assert plan.type.value == "project"
+    assert "- [ ] set up postgres" in plan.body
+    rendered = list(vault.rglob("*.md"))
+    assert any("Postgres migration plan" in p.read_text(encoding="utf-8") for p in rendered)
+    # The plan is wired into the graph: builds_on edge to the source note it drew from.
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.note_store import JsonlNoteRepository
+
+    edges = JsonlNoteRepository(migrate_legacy_index(vault) / "index.jsonl").edges()
+    assert any(
+        e.source_id == plan.id and e.target_id == source.id and e.kind.value == "builds_on"
+        for e in edges
+    )
+
+
+def test_chat_plan_rejected_writes_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The review gate is the contract (#39): anything except an explicit yes leaves ZERO trace.
+    vault, _ = _chat_plan_run(tmp_path, monkeypatch, confirm="n")
+    out = capsys.readouterr().out
+    assert "discarded — nothing written." in out
+    assert len(_index_notes(vault)) == 1  # only the captured note; no plan, no original, no edge
 
 
 def test_chat_without_index_reports_error(
