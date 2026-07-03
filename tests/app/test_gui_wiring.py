@@ -108,3 +108,50 @@ def test_centered_position_centers_within_area() -> None:
     from grandplan.app.gui import _centered_position
 
     assert _centered_position(400, 300, 0, 0, 1920, 1080) == ((1920 - 400) // 2, (1080 - 300) // 2)
+
+
+# -- capture-component wiring (fast capture) ------------------------------------------------------
+# Measured on the 16 GB no-GPU target: one capture under --llm makes 3 sequential model calls
+# (organize + contextual reconcile + placement) at ~8-15 s each — ~25-45 s before the review dialog
+# appears. Fast mode keeps the ONE call that produces the note (LLM organize) and swaps the two
+# enrichment calls for their instant deterministic baselines (~3× faster per capture).
+
+
+def test_capture_components_default_llm_wires_all_three_llm_adapters() -> None:
+    from grandplan.adapters.llm_contextual_reconciler import LlmContextualReconciler
+    from grandplan.adapters.llm_placer import LlmPlacer
+    from grandplan.adapters.ollama_organizer import OllamaOrganizer
+    from grandplan.app.gui import _capture_components
+
+    organizer, reconciler, placer = _capture_components(use_llm=True, fast=False, model="m")
+    assert isinstance(organizer, OllamaOrganizer)
+    assert isinstance(reconciler, LlmContextualReconciler)
+    assert isinstance(placer, LlmPlacer)
+
+
+def test_capture_components_fast_keeps_llm_organize_but_heuristic_links_and_placement() -> None:
+    # --fast: the model still organizes the note (that's the product); links + placement fall back
+    # to the deterministic baselines so they cost ~0 on the capture's critical path.
+    from grandplan.adapters.ollama_organizer import OllamaOrganizer
+    from grandplan.app.gui import _capture_components
+    from grandplan.core.placement import HeuristicPlacer
+    from grandplan.core.reconcile import SimilarityReconciler
+
+    organizer, reconciler, placer = _capture_components(use_llm=True, fast=True, model="m")
+    assert isinstance(organizer, OllamaOrganizer)
+    assert isinstance(reconciler, SimilarityReconciler)
+    assert isinstance(placer, HeuristicPlacer)
+
+
+def test_capture_components_no_llm_is_fully_deterministic_regardless_of_fast() -> None:
+    # --no-llm already makes zero model calls; --fast must not change (or break) that baseline.
+    from grandplan.app.gui import _capture_components
+    from grandplan.core.organize import HeuristicOrganizer
+    from grandplan.core.placement import HeuristicPlacer
+    from grandplan.core.reconcile import SimilarityReconciler
+
+    for fast in (False, True):
+        organizer, reconciler, placer = _capture_components(use_llm=False, fast=fast, model="m")
+        assert isinstance(organizer, HeuristicOrganizer)
+        assert isinstance(reconciler, SimilarityReconciler)
+        assert isinstance(placer, HeuristicPlacer)

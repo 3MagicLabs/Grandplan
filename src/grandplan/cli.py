@@ -1142,6 +1142,7 @@ def _run_gui(args: argparse.Namespace) -> int:
             vault_dir=vault_dir,
             use_llm=not args.no_llm,  # PR-F: the local model is the default; --no-llm opts out
             use_embeddings=args.embeddings,
+            fast=getattr(args, "fast", False),  # LLM organize only; heuristic links + placement
             model=args.model,
             hotkey=args.hotkey_combo,
         )
@@ -1439,6 +1440,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     gui.add_argument(
         "--embeddings", action="store_true", help="use local sentence-transformer embeddings"
+    )
+    gui.add_argument(
+        "--fast",
+        action="store_true",
+        help="fast capture: the model still organizes each note, but related-note links and "
+        "placement use the instant deterministic baselines instead of two extra model calls "
+        "(~3x faster per capture on CPU; links are cosine-similarity, placement is heuristic)",
     )
     gui.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model name (default LLM)")
     gui.add_argument(

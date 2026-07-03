@@ -951,6 +951,17 @@ def test_gui_init_and_open_scaffold_and_launch(
     assert opened == [vault]  # --open launched the Obsidian opener
 
 
+def test_gui_fast_flag_forwards_to_run_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # `gui --fast` selects fast capture (LLM organize only; heuristic links + placement). The flag
+    # must reach run_app; the default stays False so existing launches are unchanged.
+    seen: list[dict[str, object]] = []
+    monkeypatch.setattr("grandplan.app.gui.run_app", lambda **kw: seen.append(kw) or 0)
+    assert main(["gui", "-o", str(tmp_path / "v"), "--fast"]) == 0
+    assert main(["gui", "-o", str(tmp_path / "v")]) == 0
+    assert seen[0]["fast"] is True
+    assert seen[1]["fast"] is False
+
+
 def test_main_gui_embeddings_without_dep_fails_fast(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

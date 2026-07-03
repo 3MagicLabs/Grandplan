@@ -127,30 +127,53 @@ class _ReviewRequest:
     approved: bool = False
 
 
+def _capture_components(
+    *, use_llm: bool, fast: bool, model: str
+) -> tuple[Organizer, Reconciler, Placer]:
+    """Select the (organizer, reconciler, placer) for the run — the capture path's model-call budget.
+
+    Measured on the 16 GB no-GPU target, EACH local-LLM call costs ~8-15 s (≈10-17 tok/s on CPU), and
+    the default --llm capture makes three of them back to back — organize, contextual reconcile,
+    placement — so a note takes ~25-45 s to reach the review dialog. `fast` keeps the one call that
+    produces the note (LLM organize, PR-F: still required, loud on failure) and swaps the two
+    enrichment calls for their instant deterministic baselines: cosine similarity links instead of
+    LLM-typed links, and the heuristic part_of placer. ~3× faster per capture; a later background
+    pass can re-derive the richer links/placement off the critical path.
+
+    Pure selection (no Qt, no IO) so the wiring is hermetically testable — the same gap-in-coverage
+    lesson as `_ReviewRequest` (tests/app/test_gui_wiring.py).
+    """
+    if not use_llm:
+        # --no-llm: the deterministic offline baseline already makes zero model calls; `fast` is moot.
+        return HeuristicOrganizer(), SimilarityReconciler(), HeuristicPlacer()
+    # PR-F (RC1): the local model is the default and is REQUIRED when selected — a missing/unreachable
+    # model raises `OrganizerUnavailable`, which the coordinator surfaces as a FAILED status while the
+    # verbatim capture stays in the inbox (organize runs after the original is persisted). No silent
+    # keyword garbage. `--no-llm` selects the deterministic baseline deliberately.
+    organizer: Organizer = OllamaOrganizer(model=model, require=True)
+    if fast:
+        return organizer, SimilarityReconciler(), HeuristicPlacer()
+    # Under --llm, the LLM reconciles a new capture against the WHOLE most-similar neighborhood in
+    # one call (sees each related note's content + status) → richer typed links
+    # (builds_on/refines/supersedes/contradicts/duplicate); without it, the cosine baseline.
+    # PR-G: place each new note into the graph's structure (part_of parent + depends_on prereqs) so
+    # the plan/masterplan get real hierarchy and sequence — not just similarity links.
+    return organizer, LlmContextualReconciler(model=model), LlmPlacer(model=model)
+
+
 def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui]
     *,
     vault_dir: Path,
     hotkey: str = _DEFAULT_HOTKEY,
     use_llm: bool = True,
     use_embeddings: bool = False,
+    fast: bool = False,
     model: str = DEFAULT_MODEL,
 ) -> int:
     from PySide6 import QtCore, QtGui, QtWidgets
 
-    # PR-F (RC1): the local model is the default and is REQUIRED when selected — a missing/unreachable
-    # model raises `OrganizerUnavailable`, which the coordinator surfaces as a FAILED status while the
-    # verbatim capture stays in the inbox (organize runs after the original is persisted). No silent
-    # keyword garbage. `--no-llm` selects the deterministic baseline deliberately.
-    organizer: Organizer = (
-        OllamaOrganizer(model=model, require=True) if use_llm else HeuristicOrganizer()
-    )
+    organizer, reconciler, placer = _capture_components(use_llm=use_llm, fast=fast, model=model)
     embedder: Embedder = SentenceTransformerEmbedder() if use_embeddings else HashingEmbedder()
-    # Under --llm, the LLM reconciles a new capture against the WHOLE most-similar neighborhood in
-    # one call (sees each related note's content + status) → richer typed links
-    # (builds_on/refines/supersedes/contradicts/duplicate); without it, the cosine baseline.
-    reconciler: Reconciler = (
-        LlmContextualReconciler(model=model) if use_llm else SimilarityReconciler()
-    )
     # Update/edit intent detection is ALWAYS the deterministic, cue-based heuristic — never the LLM,
     # even under --llm. The LLM detector hallucinated update-intent on genuinely-new ideas (e.g. a new
     # AI note read as a "next" status update to a related one), so a distinct idea got silently
@@ -160,10 +183,6 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     # The LLM is still used for the valuable work — organize, placement, relationship classification.
     detector: UpdateDetector = HeuristicUpdateDetector()
     edit_detector: EditDetector = HeuristicEditDetector()
-    # PR-G: place each new note into the graph's structure (part_of parent + depends_on prereqs) so
-    # the plan/masterplan get real hierarchy and sequence — not just similarity links. LLM proposes
-    # parent + dependencies under --llm (heuristic fallback); the heuristic baseline does part_of.
-    placer: Placer = LlmPlacer(model=model) if use_llm else HeuristicPlacer()
     # Persistent index: rehydrates prior notes/embeddings/edges so a new capture links against
     # the whole vault history, not just this session (SPEC US-5). Kept OUTSIDE the vault so a
     # cloud sync (OneDrive/Dropbox) can't churn/conflict the internal index; migrates any legacy
