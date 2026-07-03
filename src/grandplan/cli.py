@@ -1340,11 +1340,19 @@ def _run_gui(args: argparse.Namespace) -> int:
     if missing:
         print(missing, file=sys.stderr)
         return 1
-    if getattr(args, "debug", False):
-        logging.basicConfig(
-            level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-        )
     vault_dir = Path(args.vault)
+    # Diagnosability (#5): every GUI run gets a rotating file log + sys/threading excepthooks, so
+    # a crash (or a dying hotkey thread) leaves a traceback even with no console. --debug ALSO
+    # streams to the console at DEBUG for live troubleshooting.
+    from grandplan.app.diagnostics import install_diagnostics
+
+    debug = bool(getattr(args, "debug", False))
+    log_path = install_diagnostics(migrate_legacy_index(vault_dir), debug=debug)
+    if debug:
+        logging.basicConfig(
+            level=logging.DEBUG, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+        )
+    print(f"log: {log_path}")
     if getattr(args, "init", False):
         _init_vault(vault_dir, migrate_legacy_index(vault_dir))
         print(f"initialized vault at {vault_dir}")
@@ -1729,8 +1737,10 @@ def main(argv: list[str] | None = None) -> int:
     gui.add_argument(
         "--debug",
         action="store_true",
-        help="stream INFO logs to the console (shows hotkey registration, each hotkey fire, and every "
-        "capture stage) — use this to diagnose a hotkey or capture that isn't responding",
+        help="stream DEBUG logs to the console (hotkey registration, each hotkey fire, every "
+        "capture stage) — use this to diagnose a hotkey or capture that isn't responding. A "
+        "rotating file log (<index>/logs/grandplan.log, incl. crash tracebacks from any thread) "
+        "is always written, with or without --debug",
     )
 
     args = parser.parse_args(argv)
