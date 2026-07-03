@@ -188,7 +188,11 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     # cloud sync (OneDrive/Dropbox) can't churn/conflict the internal index; migrates any legacy
     # in-vault `.grandplan/` out, once.
     index_root = migrate_legacy_index(vault_dir)
-    repo = JsonlNoteRepository(index_root / "index.jsonl")
+    # Similarity-indexed when the optional [index] extra is installed (#35, ADR-0009); the vec.db
+    # beside the JSONL truth is a rebuildable cache — the JSONL event log stays the only store.
+    from grandplan.adapters.vec_index import maybe_indexed
+
+    repo = maybe_indexed(JsonlNoteRepository(index_root / "index.jsonl"), index_root / "vec.db")
     originals = JsonlOriginalStore(index_root / "inbox.jsonl")
     vault = MarkdownVaultWriter(vault_dir)
 

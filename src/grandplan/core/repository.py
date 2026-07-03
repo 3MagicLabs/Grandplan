@@ -49,6 +49,11 @@ class InMemoryNoteRepository:
             return None  # tombstoned → gone from every derived view
         return self._notes.get(note_id)
 
+    def embedding_of(self, note_id: str) -> tuple[float, ...] | None:
+        """The stored embedding (creation-time, immutable) — lets an external similarity index
+        (ADR-0009: sqlite-vec adapter) backfill/rebuild without re-embedding. None when unknown."""
+        return self._embeddings.get(note_id)
+
     def notes(self) -> tuple[Note, ...]:
         return tuple(self._notes.values())
 

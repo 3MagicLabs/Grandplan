@@ -209,7 +209,7 @@ def _run_organize(args: argparse.Namespace) -> int:
             reconciler=(
                 LlmContextualReconciler(model=args.model) if use_llm else None
             ),  # neighborhood-aware relationship classification
-            repo=JsonlNoteRepository(index_root / "index.jsonl"),
+            repo=_open_repo(index_root),
             originals=JsonlOriginalStore(index_root / "inbox.jsonl"),
         )
     except OrganizerUnavailable as exc:
@@ -234,7 +234,7 @@ def _organizer_label(use_llm: bool, model: str) -> str:
 def _organize_originals(
     originals: JsonlOriginalStore,
     *,
-    repo: JsonlNoteRepository,
+    repo: NoteRepository,
     organizer: Organizer,
     embedder: Embedder,
     vault: MarkdownVaultWriter,
@@ -373,7 +373,14 @@ def _run_regenerate(args: argparse.Namespace) -> int:
 
     temp_path = index_root / "index.regen.jsonl"
     temp_path.unlink(missing_ok=True)  # start clean (e.g. after an earlier interrupted run)
-    repo = JsonlNoteRepository(temp_path)
+    # ADR-0009: regenerate reconciles once per original against the growing rebuild index — the
+    # O(N²) cliff. The sqlite-vec wrapper (when installed) keeps each of those queries ~flat, so
+    # the whole rebuild is ~linear; without the extra it falls back to brute force, identically.
+    from grandplan.adapters.vec_index import maybe_indexed
+
+    temp_vec = index_root / "vec.regen.db"
+    temp_vec.unlink(missing_ok=True)
+    repo = maybe_indexed(JsonlNoteRepository(temp_path), temp_vec)
     vault = MarkdownVaultWriter(vault_dir)
     try:
         committed, skipped = _organize_originals(
@@ -387,12 +394,17 @@ def _run_regenerate(args: argparse.Namespace) -> int:
         )
     except OrganizerUnavailable as exc:
         temp_path.unlink(missing_ok=True)  # leave the existing index untouched
+        temp_vec.unlink(missing_ok=True)
         print(
             f"error: {exc}\nregenerate aborted; your existing vault is unchanged.", file=sys.stderr
         )
         return 1
 
-    # Success: back up the old index, then atomically swap the rebuilt one in.
+    # Success: back up the old index, then atomically swap the rebuilt one in. The vec index
+    # files are derived caches keyed to note ids: the regen one is spent, and the main one is now
+    # stale — remove both; the next open rebuilds from the fresh JSONL truth (never data loss).
+    temp_vec.unlink(missing_ok=True)
+    (index_root / "vec.db").unlink(missing_ok=True)
     if index_path.exists():
         index_path.replace(index_path.with_suffix(".jsonl.bak"))
     temp_path.replace(index_path)
@@ -789,6 +801,19 @@ def up_banner(
     return "\n".join(lines)
 
 
+def _open_repo(index_root: Path) -> NoteRepository:
+    """The vault's persistent note repository, similarity-indexed when available (#35, ADR-0009).
+
+    `maybe_indexed` wraps the JSONL store with the sqlite-vec index (`vec.db` beside the JSONL
+    truth) when the optional `[index]` extra is installed; otherwise the brute-force baseline —
+    identical answers either way. Used on every similarity-hot path (capture, regenerate, ask,
+    chat, MCP search); the read-only report/export commands don't need it.
+    """
+    from grandplan.adapters.vec_index import maybe_indexed
+
+    return maybe_indexed(JsonlNoteRepository(index_root / "index.jsonl"), index_root / "vec.db")
+
+
 def _capture_to_vault(
     capturer: object,
     *,
@@ -819,7 +844,7 @@ def _capture_to_vault(
         placer=placer or HeuristicPlacer(),  # nest the capture under a related goal/project
         reconciler=reconciler,
         entity_extractor=entity_extractor,
-        repo=JsonlNoteRepository(index_root / "index.jsonl"),
+        repo=_open_repo(index_root),
         originals=JsonlOriginalStore(index_root / "inbox.jsonl"),
     )
     return text
@@ -1081,7 +1106,7 @@ def _run_ask(args: argparse.Namespace) -> int:
     if not index_path.exists():
         print(f"no index found for {vault_dir} (capture some notes first)", file=sys.stderr)
         return 1
-    repo = JsonlNoteRepository(index_path)
+    repo = _open_repo(index_root)
     # The query embedder must match the one the vault was built with so retrieval ranks correctly.
     embedder: Embedder = SentenceTransformerEmbedder() if args.embeddings else HashingEmbedder()
     answer = KbAsk(
@@ -1170,7 +1195,7 @@ def _run_chat(args: argparse.Namespace) -> int:
     if not index_path.exists():
         print(f"no index found for {vault_dir} (capture some notes first)", file=sys.stderr)
         return 1
-    repo = JsonlNoteRepository(index_path)
+    repo = _open_repo(index_root)
     # The query embedder must match the one the vault was built with so retrieval ranks correctly.
     embedder: Embedder = SentenceTransformerEmbedder() if args.embeddings else HashingEmbedder()
     session = ChatSession(
@@ -1195,7 +1220,7 @@ def _run_mcp(args: argparse.Namespace) -> int:
     if not index_path.exists():
         print(f"no index found for {vault_dir} (nothing to serve)", file=sys.stderr)
         return 1
-    repo = JsonlNoteRepository(index_path)
+    repo = _open_repo(index_root)
     originals = JsonlOriginalStore(index_root / "inbox.jsonl")
     # The query embedder must match the one the vault was built with so search ranks correctly.
     embedder: Embedder = SentenceTransformerEmbedder() if args.embeddings else HashingEmbedder()

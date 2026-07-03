@@ -76,3 +76,26 @@ Instead:
   recording the chosen index and its recall/latency trade-offs — no core or contract change.
 - Two cheap, port-preserving optimizations (tombstone set, warm-index rebuild) are identified for when
   they're worth it, independent of the bigger ANN decision.
+
+## Update 2026-07-03 — swap executed (#35)
+
+The planned work landed, ahead of the QAS triggers (the vault is still small) because the
+"converse with the vault" features (ask/chat, #36/#39) put retrieval on an interactive path:
+
+- **Tombstone set** (`InMemoryNoteRepository._tombstones`): `_is_deleted` is O(1); the O(N·E)
+  inner scan in `most_similar` is gone. Measured: p50 @10k notes 245 ms → ~100 ms (2.4×).
+- **`VecIndexedRepository`** (`adapters/vec_index.py`, optional `[index]` extra = sqlite-vec):
+  wraps any `NoteRepository`, keeps ALL storage/events in the inner JSONL truth, answers
+  `most_similar` from a `vec0` cosine table (score = 1 − distance on unit vectors, brute-force
+  tie-break re-applied). The .db is a rebuildable cache: resynced from the store on open,
+  deletable at any time. Degradations (extra missing, loadable-extension unsupported, mixed
+  embedding dims after an embedder switch) fall back to the inner brute force — identical
+  answers, never wrong ones. Wired via `maybe_indexed` on every similarity-hot path: capture
+  (GUI + hotkey + organize), regenerate (its own temp index → rebuild ~linear instead of O(N²)),
+  ask, chat, MCP search.
+- **Measured** (256-dim unit vectors, this hardware): p50 per query — 1k notes: 8.5 ms brute vs
+  0.39 ms vec; 10k notes: 98 ms brute vs **4.7 ms** vec (~21×). Comfortably under the
+  QAS-SCALE-1 150 ms budget through ~100k notes; contract parity pinned by
+  `tests/adapters/test_vec_index.py` (same ranking/threshold/tombstone semantics as brute force).
+
+The zero-dependency baseline remains the default install; the extra only changes speed.

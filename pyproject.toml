@@ -29,6 +29,7 @@ where = ["src"]
 
 [project.optional-dependencies]
 llm = ["ollama>=0.3"]
+index = ["sqlite-vec>=0.1"]
 embeddings = ["sentence-transformers>=2.2"]
 windows = ["pynput>=1.7", "pyperclip>=1.8", "uiautomation>=2.0"]
 gui = ["PySide6>=6.5"]
@@ -51,6 +52,7 @@ module = [
   "mcp.*",
   "sounddevice",
   "faster_whisper",
+  "sqlite_vec",
 ]
 ignore_missing_imports = true
 

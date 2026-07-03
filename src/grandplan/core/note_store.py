@@ -179,6 +179,9 @@ class JsonlNoteRepository:
     def get_note(self, note_id: str) -> Note | None:
         return self._mem.get_note(note_id)
 
+    def embedding_of(self, note_id: str) -> tuple[float, ...] | None:
+        return self._mem.embedding_of(note_id)
+
     def notes(self) -> tuple[Note, ...]:
         return self._mem.notes()
 
