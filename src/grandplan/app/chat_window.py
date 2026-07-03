@@ -25,7 +25,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 
 from grandplan.adapters.kb_ask import AskAnswer
-from grandplan.adapters.kb_chat import ChatSession, PlanDraft
+from grandplan.adapters.kb_chat import ChatSession, ImproveDraft, PlanDraft
 from grandplan.core.models import Note
 
 logger = logging.getLogger(__name__)
@@ -79,10 +79,31 @@ def proposal_html(draft: PlanDraft) -> str:
     )
 
 
+def improvement_html(draft: ImproveDraft) -> str:
+    """The pending-improvement card: rationale + before/after per changed field, escaped (pure)."""
+    parts = [
+        f"<p><b>IMPROVE [{html.escape(draft.note_id)}]</b><br/>{html.escape(draft.rationale)}</p>"
+    ]
+    if draft.new_title is not None:
+        parts.append(
+            f"<p>title: <s>{html.escape(draft.current_title)}</s> → "
+            f"<b>{html.escape(draft.new_title)}</b></p>"
+        )
+    if draft.new_tags is not None:
+        parts.append(f"<p>tags → {html.escape(', '.join(draft.new_tags))}</p>")
+    if draft.new_body is not None:
+        parts.append(f"<p>new body:</p><p><small>{html.escape(draft.new_body)}</small></p>")
+    parts.append(
+        "<p><i>applies as ONE replayable edit; your verbatim original is preserved either way.</i></p>"
+    )
+    return "\n".join(parts)
+
+
 def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[gui]
     *,
     session: ChatSession,
     apply_plan: Callable[[PlanDraft], str],
+    apply_improve: Callable[[ImproveDraft], None],
     parent: object = None,
 ) -> object:
     """Build (and return) the chat window; the caller shows it and keeps a reference.
@@ -106,7 +127,7 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     transcript = QtWidgets.QTextBrowser()
     transcript.setOpenExternalLinks(False)
     entry = QtWidgets.QLineEdit()
-    entry.setPlaceholderText("ask about your notes — or /plan <topic> to draft a plan")
+    entry.setPlaceholderText("ask about your notes — /plan <topic> drafts a plan, /improve <id> improves a note")
     send = QtWidgets.QPushButton("Send")
 
     grounding = QtWidgets.QTextBrowser()
@@ -135,7 +156,7 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     layout.addLayout(left, 3)
     layout.addLayout(right, 2)
 
-    pending: dict[str, PlanDraft | None] = {"draft": None}
+    pending: dict[str, PlanDraft | ImproveDraft | None] = {"draft": None}
 
     def _busy(on: bool) -> None:
         entry.setEnabled(not on)
@@ -147,12 +168,14 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
         scrollbar = transcript.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
-    def _show_proposal(draft: PlanDraft | None) -> None:
+    def _show_proposal(draft: PlanDraft | ImproveDraft | None) -> None:
         pending["draft"] = draft
         for widget in (proposal, approve, discard):
             widget.setVisible(draft is not None)
-        if draft is not None:
+        if isinstance(draft, PlanDraft):
             proposal.setHtml(proposal_html(draft))
+        elif isinstance(draft, ImproveDraft):
+            proposal.setHtml(improvement_html(draft))
 
     def _submit() -> None:
         text = entry.text().strip()
@@ -160,6 +183,18 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
             return
         entry.clear()
         _busy(True)
+        if text.startswith("/improve"):
+            target = text.removeprefix("/improve").strip()
+
+            def _improve() -> None:
+                try:
+                    bridge.drafted.emit(session.draft_improvement(target))
+                except Exception as exc:  # noqa: BLE001 - never crash the UI thread's worker
+                    logger.exception("chat improve-draft failed")  # traceback to the #5 file log
+                    bridge.failed.emit(str(exc))
+
+            threading.Thread(target=_improve, name="grandplan-chat", daemon=True).start()
+            return
         if text.startswith("/plan"):
             topic = text.removeprefix("/plan").strip()
 
@@ -192,12 +227,12 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
         }
         grounding.setHtml(grounding_html(answer, notes=shown))
 
-    def _on_drafted(draft: PlanDraft | None) -> None:
+    def _on_drafted(draft: PlanDraft | ImproveDraft | None) -> None:
         _busy(False)
         if draft is None:
             grounding.setHtml(
-                "<p><i>could not draft a plan — no matching notes, "
-                "or no local model available.</i></p>"
+                "<p><i>nothing to propose — no matching notes / unknown note id, no local "
+                "model available, or no changes suggested.</i></p>"
             )
             return
         _show_proposal(draft)
@@ -211,16 +246,20 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
 
         def _apply() -> None:
             try:
-                bridge.applied.emit(apply_plan(draft))
+                if isinstance(draft, ImproveDraft):
+                    apply_improve(draft)
+                    bridge.applied.emit(draft.note_id)
+                else:
+                    bridge.applied.emit(apply_plan(draft))
             except Exception as exc:  # noqa: BLE001
-                logger.exception("plan apply failed")  # traceback to the #5 file log
+                logger.exception("proposal apply failed")  # traceback to the #5 file log
                 bridge.failed.emit(str(exc))
 
         threading.Thread(target=_apply, name="grandplan-chat", daemon=True).start()
 
     def _on_applied(note_id: str) -> None:
         _busy(False)
-        grounding.setHtml(f"<p>✓ plan saved to the vault <code>[{html.escape(note_id)}]</code></p>")
+        grounding.setHtml(f"<p>✓ applied to the vault <code>[{html.escape(note_id)}]</code></p>")
 
     def _on_failed(message: str) -> None:
         _busy(False)

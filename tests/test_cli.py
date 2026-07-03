@@ -1112,6 +1112,42 @@ def test_chat_plan_rejected_writes_nothing(
     assert len(_index_notes(vault)) == 1  # only the captured note; no plan, no original, no edge
 
 
+def test_chat_improve_approved_applies_edit_rejected_leaves_no_trace(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #36 (user-directed ONLY): /improve <id> drafts an improvement to the ONE named note; "y"
+    # applies it as an append-only edit event (history preserved), anything else writes nothing.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    src = tmp_path / "n.txt"
+    src.write_text("we decided to use postgres for the backend", encoding="utf-8")
+    vault = tmp_path / "vault"
+    assert main(["organize", str(src), "-o", str(vault), "--no-llm"]) == 0
+
+    import grandplan.adapters.kb_ask as kb_ask
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.note_store import JsonlNoteRepository
+
+    index = migrate_legacy_index(vault) / "index.jsonl"
+    note_id = JsonlNoteRepository(index).notes()[0].id
+    monkeypatch.setattr(
+        kb_ask,
+        "_ollama_chat",
+        lambda model, prompt: '{"title": "Postgres backend decision", "body": "Cleaned body.", '
+        '"tags": ["database"], "rationale": "tightened"}',
+    )
+    lines = iter([f"/improve {note_id}", "n", f"/improve {note_id}", "y", "/quit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
+    assert main(["chat", "-o", str(vault)]) == 0
+    out = capsys.readouterr().out
+    assert "IMPROVE" in out and "discarded — nothing written." in out and "note improved" in out
+    reopened = JsonlNoteRepository(index)
+    current = reopened.current_note(note_id)
+    assert current is not None and current.title == "Postgres backend decision"
+    stored = reopened.get_note(note_id)
+    assert stored is not None and stored.title != current.title  # append-only: creation intact
+    assert sum(1 for e in reopened.history_of(note_id) if e.kind == "edit") == 1  # ONE edit (the y)
+
+
 def test_chat_without_index_reports_error(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

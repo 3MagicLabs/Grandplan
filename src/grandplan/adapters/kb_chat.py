@@ -48,6 +48,16 @@ _INSTRUCTION = (
 )
 
 _MAX_STEPS = 12  # a plan longer than this isn't actionable; the model is asked for fewer anyway
+
+_IMPROVE_INSTRUCTION = (
+    "You improve ONE of the user's notes: clarify the wording, structure the body as clean "
+    "Markdown (a one-line summary, then bullets; keep any '- [ ]' checklist items), sharpen the "
+    "title, and suggest 1-5 short lowercase topical tags. DO NOT invent facts, names, numbers, "
+    "links, or commitments the note does not contain — the user's verbatim original is preserved "
+    "separately no matter what. "
+    'Return ONLY a JSON object with keys: "title" (improved, concise), "body" (improved Markdown), '
+    '"tags" (array), and "rationale" (one sentence on what you changed and why).'
+)
 _PLAN_INSTRUCTION = (
     "You turn the user's notes into ONE actionable plan. Use ONLY the notes below — do not invent "
     "facts, resources, or commitments they don't imply. "
@@ -138,6 +148,77 @@ def render_plan_markdown(draft: PlanDraft) -> str:
     return f"{summary}\n\n## Next steps\n{checklist}"
 
 
+@dataclass(frozen=True)
+class ImproveDraft:
+    """A model-drafted improvement to ONE user-named note (#36) — not yet applied.
+
+    Only the CHANGED fields are set (None = keep as-is), so applying maps 1:1 onto an append-only
+    `NoteEdit` event. Never produced autonomously: the user names the note (`/improve <id>`), the
+    review gate decides. `current_title`/`current_body` ride along for the before/after preview.
+    """
+
+    note_id: str
+    new_title: str | None
+    new_body: str | None
+    new_tags: tuple[str, ...] | None
+    rationale: str
+    model: str
+    current_title: str
+    current_body: str
+
+
+def build_improve_prompt(title: str, body: str, tags: Sequence[str]) -> str:
+    """Assemble the single-note improvement prompt (pure)."""
+    tag_line = ", ".join(tags) if tags else "(none)"
+    return f"{_IMPROVE_INSTRUCTION}\n\nNOTE TITLE: {title}\nNOTE TAGS: {tag_line}\nNOTE BODY:\n{body}"
+
+
+def parse_improvement(raw: str) -> dict[str, object]:
+    """Extract a validated improvement from a model reply (title/body/tags/rationale)."""
+    data = loads_lenient(raw)
+    if not isinstance(data, dict):
+        raise ValueError("expected a JSON object")
+    body = str(data.get("body") or "").strip()
+    if not body:
+        raise ValueError("improvement has no body")
+    raw_tags = data.get("tags", [])
+    tags = (
+        tuple(str(t).strip().lower() for t in raw_tags if str(t).strip())
+        if isinstance(raw_tags, list)
+        else ()
+    )
+    return {
+        "title": str(data.get("title") or "").strip(),
+        "body": body,
+        "tags": tags,
+        "rationale": str(data.get("rationale") or "").strip(),
+    }
+
+
+def apply_improvement_draft(
+    draft: ImproveDraft,
+    *,
+    repo: NoteRepository,
+    vault_dir: Path,
+    originals: object = None,
+) -> None:
+    """Apply an APPROVED improvement as ONE append-only edit event (#36).
+
+    Lossless by construction: the stored note and its verbatim Original are never mutated — the
+    change is a replayable `NoteEdit` in the event log (exactly like a manual edit), so the full
+    history stays inspectable and `regenerate` semantics are unaffected. Projections re-render so
+    the improved note shows in Obsidian immediately.
+    """
+    from grandplan.core.models import NoteEdit
+    from grandplan.core.project import write_projections
+
+    repo.record_edit(
+        draft.note_id,
+        NoteEdit(title=draft.new_title, body=draft.new_body, tags=draft.new_tags),
+    )
+    write_projections(repo, vault_dir, originals=originals, protect_ids=frozenset({draft.note_id}))  # type: ignore[arg-type]
+
+
 def apply_plan_draft(
     draft: PlanDraft,
     *,
@@ -223,6 +304,43 @@ class ChatSession:
     def show(self, note_id: str) -> Note | None:
         """The full note under discussion (for the caller to display); None when unknown."""
         return self.repo.get_note(note_id)
+
+    def draft_improvement(self, note_id: str) -> ImproveDraft | None:
+        """Draft (never apply) an improvement to ONE user-named note (#36 — never autonomous).
+
+        Returns None when the note is unknown, no local model can draft, or the model suggests no
+        actual change (identical title+body+tags) — there is nothing to review in any of those
+        cases. Only CHANGED fields are carried, mapping 1:1 onto the append-only edit event.
+        """
+        note = self.repo.current_note(note_id) or self.repo.get_note(note_id)
+        if note is None:
+            return None
+        prompt = build_improve_prompt(note.title, note.body, note.tags)
+        transport = self.chat or kb_ask._ollama_chat
+        for model in self._models():
+            try:
+                improved = parse_improvement(transport(model, prompt))
+            except Exception as exc:  # noqa: BLE001 - model not pulled, Ollama down, bad JSON
+                logger.warning("improve draft with %s failed; trying next fallback: %s", model, exc)
+                continue
+            new_title = str(improved["title"]) or note.title
+            new_body = str(improved["body"])
+            new_tags = improved["tags"]
+            assert isinstance(new_tags, tuple)
+            draft = ImproveDraft(
+                note_id=note.id,
+                new_title=new_title if new_title != note.title else None,
+                new_body=new_body if new_body != note.body else None,
+                new_tags=new_tags if new_tags and new_tags != note.tags else None,
+                rationale=str(improved["rationale"]),
+                model=model,
+                current_title=note.title,
+                current_body=note.body,
+            )
+            if draft.new_title is None and draft.new_body is None and draft.new_tags is None:
+                return None  # the model changed nothing — no edit to review
+            return draft
+        return None
 
     def draft_plan(self, topic: str) -> PlanDraft | None:
         """Draft (never apply) an actionable plan grounded in the notes most similar to `topic`.

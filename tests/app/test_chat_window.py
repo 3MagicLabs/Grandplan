@@ -57,3 +57,25 @@ def test_proposal_html_lists_steps_and_sources() -> None:
     assert "Migrate" in html and "Do the move." in html
     assert "one &lt;bad&gt;" in html and "two" in html  # steps rendered, escaped
     assert "Src &amp; note" in html
+
+
+def test_improvement_html_shows_before_after_and_escapes() -> None:
+    from grandplan.adapters.kb_chat import ImproveDraft
+    from grandplan.app.chat_window import improvement_html
+
+    draft = ImproveDraft(
+        note_id="n1",
+        new_title="Better <title>",
+        new_body="clean & clear",
+        new_tags=("a", "b"),
+        rationale="tightened wording",
+        model="m",
+        current_title="old <title>",
+        current_body="messy",
+    )
+    out = improvement_html(draft)
+    assert "IMPROVE [n1]" in out and "tightened wording" in out
+    assert "Better &lt;title&gt;" in out and "old &lt;title&gt;" in out  # both sides escaped
+    assert "clean &amp; clear" in out
+    assert "a, b" in out
+    assert "verbatim original is preserved" in out  # the lossless promise is stated on the card

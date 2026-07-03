@@ -1147,17 +1147,22 @@ def _chat_repl(
     session: object,
     *,
     apply_plan: Callable[[object], str] | None = None,
+    apply_improve: Callable[[object], None] | None = None,
     input_fn: Callable[[str], str] | None = None,
 ) -> int:
     """The chat loop, transport-free so it is unit-testable: read → respond/command → print.
 
     Commands: `/show <id>` prints the full note under discussion; `/plan <topic>` drafts an
-    actionable plan from the matching notes and — ONLY after an explicit yes — applies it through
-    the append-only write path (`apply_plan`, #39); `/quit` (or EOF/Ctrl-D) ends the session.
-    Everything else is a question for the KB agent. Nothing is ever written without the yes.
+    actionable plan from the matching notes; `/improve <id>` drafts an improvement to the ONE
+    note the user names (#36 — never a vault sweep); both apply ONLY after an explicit yes,
+    through the append-only write paths; `/quit` (or EOF/Ctrl-D) ends the session. Everything
+    else is a question for the KB agent. Nothing is ever written without the yes.
     """
     input_fn = input_fn or input  # resolved at call time (tests patch builtins.input)
-    print("chat with your vault — /plan <topic> to draft a plan, /show <id> to view a note, /quit.")
+    print(
+        "chat with your vault — /plan <topic> to draft a plan, /improve <id> to improve a note, "
+        "/show <id> to view one, /quit."
+    )
     while True:
         try:
             line = input_fn("you> ").strip()
@@ -1175,6 +1180,39 @@ def _chat_repl(
                 print(f"no note with id {note_id!r}")
             else:
                 print(f"# {note.title}  [{note.id}] ({note.type.value})\n{note.body}")
+            continue
+        if line.startswith("/improve"):
+            target = line.removeprefix("/improve").strip()
+            if not target:
+                print("usage: /improve <note-id>")
+                continue
+            draft = session.draft_improvement(target)  # type: ignore[attr-defined]
+            if draft is None:
+                print(
+                    "(nothing to improve — unknown note id, no local model, "
+                    "or the model suggests no changes)"
+                )
+                continue
+            print(f"\nIMPROVE [{draft.note_id}] — {draft.rationale}")
+            if draft.new_title is not None:
+                print(f"title: {draft.current_title!r} → {draft.new_title!r}")
+            if draft.new_tags is not None:
+                print(f"tags:  → {', '.join(draft.new_tags)}")
+            if draft.new_body is not None:
+                print(f"--- current body ---\n{draft.current_body}\n--- improved body ---\n{draft.new_body}")
+            print("(your verbatim original is preserved either way; this is a replayable edit)")
+            if apply_improve is None:
+                continue  # no write path wired — preview only
+            try:
+                confirm = input_fn("apply this improvement? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\ndiscarded — nothing written.")
+                continue
+            if confirm in ("y", "yes"):
+                apply_improve(draft)
+                print(f"✓ note improved  [{draft.note_id}]")
+            else:
+                print("discarded — nothing written.")
             continue
         if line.startswith("/plan"):
             topic = line.removeprefix("/plan").strip()
@@ -1280,7 +1318,13 @@ def _run_chat(args: argparse.Namespace) -> int:
             created=datetime.now(timezone.utc).isoformat(),
         )
 
-    return _chat_repl(session, apply_plan=apply_plan)
+    def apply_improve(draft: object) -> None:
+        from grandplan.adapters.kb_chat import ImproveDraft, apply_improvement_draft
+
+        assert isinstance(draft, ImproveDraft)
+        apply_improvement_draft(draft, repo=repo, vault_dir=vault_dir, originals=originals)
+
+    return _chat_repl(session, apply_plan=apply_plan, apply_improve=apply_improve)
 
 
 def _run_mcp(args: argparse.Namespace) -> int:

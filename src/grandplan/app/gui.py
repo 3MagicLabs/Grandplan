@@ -434,7 +434,13 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         from datetime import datetime, timezone
 
         from grandplan.adapters.kb_ask import KB_DEFAULT_MODEL
-        from grandplan.adapters.kb_chat import ChatSession, PlanDraft, apply_plan_draft
+        from grandplan.adapters.kb_chat import (
+            ChatSession,
+            ImproveDraft,
+            PlanDraft,
+            apply_improvement_draft,
+            apply_plan_draft,
+        )
         from grandplan.app.chat_window import open_chat_window
 
         session = ChatSession(
@@ -451,7 +457,12 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
                 created=datetime.now(timezone.utc).isoformat(),
             )
 
-        window = open_chat_window(session=session, apply_plan=apply_plan)
+        def apply_improve(draft: ImproveDraft) -> None:
+            apply_improvement_draft(draft, repo=repo, vault_dir=vault_dir, originals=originals)
+
+        window = open_chat_window(
+            session=session, apply_plan=apply_plan, apply_improve=apply_improve
+        )
         chat_windows.append(window)
         window.show()  # type: ignore[attr-defined]
 

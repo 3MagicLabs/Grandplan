@@ -21,7 +21,7 @@ import pytest
 
 from grandplan.adapters._ollama import loads_lenient
 from grandplan.adapters.kb_ask import parse_answer
-from grandplan.adapters.kb_chat import parse_plan
+from grandplan.adapters.kb_chat import parse_improvement, parse_plan
 from grandplan.adapters.llm_contextual_reconciler import parse_relationships
 from grandplan.adapters.llm_edit_detector import parse_edit
 from grandplan.adapters.llm_entity_extractor import parse_entities
@@ -93,6 +93,12 @@ _ADAPTERS = [
         {"title": "P", "summary": "S.", "steps": ["one", "two", "three"], "sources": ["a"]},
         lambda raw: parse_plan(raw, frozenset({"a"})),
         lambda p: _assert(p["title"] == "P" and len(p["steps"]) == 3),  # type: ignore[index, arg-type]
+    ),
+    (
+        "kb-improve",
+        {"title": "Better title", "body": "Improved body.", "tags": ["a"], "rationale": "r"},
+        parse_improvement,
+        lambda p: _assert(p["body"] == "Improved body." and p["title"] == "Better title"),  # type: ignore[index]
     ),
 ]
 

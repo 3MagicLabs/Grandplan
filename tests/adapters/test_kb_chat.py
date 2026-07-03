@@ -145,6 +145,65 @@ def test_draft_plan_returns_none_when_no_model_or_no_notes() -> None:
     assert session.draft_plan("postgres") is None  # nothing to ground a plan in
 
 
+# -- user-directed note improvement (#36: NEVER autonomous — only the note the user names) --------
+
+_IMPROVE_RAW = (
+    '{"title": "Use Postgres for the backend", '
+    '"body": "We chose postgres.\\n\\n- driver support\\n- sqlite-vec option", '
+    '"tags": ["database", "decision"], "rationale": "structured the raw sentence"}'
+)
+
+
+def test_draft_improvement_returns_only_changed_fields() -> None:
+    session = ChatSession(repo=_repo(), embedder=_Embedder(), chat=lambda m, p: _IMPROVE_RAW)
+    draft = session.draft_improvement("a")
+    assert draft is not None
+    assert draft.note_id == "a"
+    assert draft.new_title == "Use Postgres for the backend"  # differs from "Use Postgres"
+    assert draft.new_body is not None and "driver support" in draft.new_body
+    assert draft.new_tags == ("database", "decision")
+    assert draft.rationale == "structured the raw sentence"
+
+
+def test_draft_improvement_with_no_changes_returns_none() -> None:
+    def echo(model: str, prompt: str) -> str:
+        # Model returns the note exactly as it is → nothing to improve, no draft to review.
+        return (
+            '{"title": "Use Postgres", "body": "we decided to use postgres for the backend", '
+            '"tags": [], "rationale": "already clean"}'
+        )
+
+    session = ChatSession(repo=_repo(), embedder=_Embedder(), chat=echo)
+    assert session.draft_improvement("a") is None
+
+
+def test_draft_improvement_unknown_note_or_no_model_returns_none() -> None:
+    session = ChatSession(repo=_repo(), embedder=_Embedder(), chat=lambda m, p: _IMPROVE_RAW)
+    assert session.draft_improvement("nope") is None
+
+    def down(model: str, prompt: str) -> str:
+        raise RuntimeError("ollama down")
+
+    assert ChatSession(repo=_repo(), embedder=_Embedder(), chat=down).draft_improvement("a") is None
+
+
+def test_apply_improvement_is_an_append_only_edit_history_preserved(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from grandplan.adapters.kb_chat import apply_improvement_draft
+
+    repo = _repo()
+    session = ChatSession(repo=repo, embedder=_Embedder(), chat=lambda m, p: _IMPROVE_RAW)
+    draft = session.draft_improvement("a")
+    assert draft is not None
+    apply_improvement_draft(draft, repo=repo, vault_dir=tmp_path / "vault", originals=None)
+    current = repo.current_note("a")
+    assert current is not None and current.title == "Use Postgres for the backend"
+    assert "driver support" in current.body
+    # Lossless/append-only: the STORED note is untouched; the change is a replayable edit event.
+    stored = repo.get_note("a")
+    assert stored is not None and stored.title == "Use Postgres"  # original creation state intact
+    assert any(e.kind == "edit" for e in repo.history_of("a"))
+
+
 def test_render_plan_markdown_is_a_checklist() -> None:
     from grandplan.adapters.kb_chat import PlanDraft, render_plan_markdown
 
