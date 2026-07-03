@@ -951,6 +951,59 @@ def test_gui_init_and_open_scaffold_and_launch(
     assert opened == [vault]  # --open launched the Obsidian opener
 
 
+def test_ask_answers_from_the_vault_with_sources(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `grandplan ask` (SPEC-AGENT-KB P1): retrieval-grounded, read-only Q&A. The model transport is
+    # stubbed so the test is hermetic; retrieval + wiring + output formatting are real.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    src = tmp_path / "n.txt"
+    src.write_text("we decided to use postgres for the backend", encoding="utf-8")
+    vault = tmp_path / "vault"
+    assert main(["organize", str(src), "-o", str(vault), "--no-llm"]) == 0
+
+    import grandplan.adapters.kb_ask as kb_ask
+
+    monkeypatch.setattr(
+        kb_ask,
+        "_ollama_chat",
+        lambda model, prompt: '{"answer": "Postgres.", "sources": []}',
+    )
+    assert main(["ask", "which database did I pick?", "-o", str(vault)]) == 0
+    out = capsys.readouterr().out
+    assert "Postgres." in out
+
+
+def test_ask_without_index_reports_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    assert main(["ask", "anything?", "-o", str(tmp_path / "empty")]) == 1
+    assert "no index" in capsys.readouterr().err
+
+
+def test_ask_degrades_to_retrieval_only_without_a_model(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Ollama down / no model pulled: still useful — print the top matching notes, clearly labeled.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    src = tmp_path / "n.txt"
+    src.write_text("we decided to use postgres for the backend", encoding="utf-8")
+    vault = tmp_path / "vault"
+    assert main(["organize", str(src), "-o", str(vault), "--no-llm"]) == 0
+
+    import grandplan.adapters.kb_ask as kb_ask
+
+    def _down(model: str, prompt: str) -> str:
+        raise RuntimeError("ollama not running")
+
+    monkeypatch.setattr(kb_ask, "_ollama_chat", _down)
+    assert main(["ask", "what did we decide about the postgres backend?", "-o", str(vault)]) == 0
+    out = capsys.readouterr().out
+    assert "postgres" in out.lower()  # the matching note is surfaced
+    assert "no local model" in out.lower()  # and the degradation is explicit, never silent
+
+
 def test_gui_fast_flag_forwards_to_run_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # `gui --fast` selects fast capture (LLM organize only; heuristic links + placement). The flag
     # must reach run_app; the default stays False so existing launches are unchanged.

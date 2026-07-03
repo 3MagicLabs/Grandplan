@@ -30,6 +30,7 @@ from grandplan.adapters.ollama_organizer import (
     OllamaOrganizer,
     OrganizerUnavailable,
 )
+from grandplan.adapters.kb_ask import KB_DEFAULT_MODEL
 from grandplan.adapters.llm_contextual_reconciler import LlmContextualReconciler
 from grandplan.adapters.llm_placer import LlmPlacer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
@@ -1065,6 +1066,50 @@ def _run_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_ask(args: argparse.Namespace) -> int:
+    """`grandplan ask "<question>" -o <vault> [--kb-model] [--embeddings] [--top-k]`.
+
+    KB agent Ask mode (SPEC-AGENT-KB P1): retrieval-grounded, read-only Q&A over the vault with a
+    local model — answers cite the note ids they came from. Degrades gracefully: KB model →
+    capture model → retrieval-only (top matching notes, clearly labeled). Offline; never writes.
+    """
+    from grandplan.adapters.kb_ask import KbAsk
+
+    vault_dir = Path(args.vault)
+    index_root = migrate_legacy_index(vault_dir)
+    index_path = index_root / "index.jsonl"
+    if not index_path.exists():
+        print(f"no index found for {vault_dir} (capture some notes first)", file=sys.stderr)
+        return 1
+    repo = JsonlNoteRepository(index_path)
+    # The query embedder must match the one the vault was built with so retrieval ranks correctly.
+    embedder: Embedder = SentenceTransformerEmbedder() if args.embeddings else HashingEmbedder()
+    answer = KbAsk(
+        repo=repo,
+        embedder=embedder,
+        model=args.kb_model,
+        fallback_model=args.model,
+        top_k=args.top_k,
+    ).ask(args.question)
+    if answer.model is None and not answer.sources:
+        print("no matching notes found.")
+        return 0
+    if answer.model is None:
+        print(
+            "(no local model available — showing the top matching notes instead; "
+            "is Ollama running and the model pulled?)"
+        )
+        for note_id, title in answer.sources:
+            print(f"  - {title}  [{note_id}]")
+        return 0
+    print(answer.text)
+    if answer.sources:
+        print("\nSources:")
+        for note_id, title in answer.sources:
+            print(f"  - {title}  [{note_id}]")
+    return 0
+
+
 def _run_mcp(args: argparse.Namespace) -> int:
     """`grandplan mcp -o <vault> [--embeddings] [--write] [--directives]`: serve the vault over MCP.
 
@@ -1317,6 +1362,30 @@ def main(argv: list[str] | None = None) -> int:
         help="expose directive intake tools (list_directives/complete_directive)",
     )
 
+    ask_cmd = subparsers.add_parser(
+        "ask",
+        help="Ask a question about your vault (read-only, grounded in your notes, local model).",
+    )
+    ask_cmd.add_argument("question", help="the question, in quotes")
+    ask_cmd.add_argument("-o", "--vault", required=True, help="the vault directory")
+    ask_cmd.add_argument(
+        "--kb-model",
+        default=KB_DEFAULT_MODEL,
+        help=f"local model for KB reasoning (default {KB_DEFAULT_MODEL}; falls back to the capture "
+        "model, then to retrieval-only, when unavailable)",
+    )
+    ask_cmd.add_argument(
+        "--model", default=DEFAULT_MODEL, help="fallback capture model (default LLM)"
+    )
+    ask_cmd.add_argument(
+        "--embeddings",
+        action="store_true",
+        help="use sentence-transformer embeddings for retrieval (match how the vault was built)",
+    )
+    ask_cmd.add_argument(
+        "--top-k", type=int, default=6, help="how many notes to ground the answer in (default 6)"
+    )
+
     directive_cmd = subparsers.add_parser(
         "directive",
         help="Queue / list agent intake directives (content + instruction) — append-only, offline.",
@@ -1475,6 +1544,8 @@ def main(argv: list[str] | None = None) -> int:
     _expand_user_paths(args)
     if args.command == "gui":
         return _run_gui(args)
+    if args.command == "ask":
+        return _run_ask(args)
     if args.command == "attach":
         return _run_attach(args)
     if args.command == "rerender":
