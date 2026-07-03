@@ -201,8 +201,10 @@ class CaptureCoordinator:
         """
         try:
             text = self._capturer.capture()
-        except Exception:  # noqa: BLE001 - a flaky capture backend must never crash the submitter
-            self._emit(Stage.FAILED, "capture failed")
+        except Exception as exc:  # noqa: BLE001 - a flaky capture backend must never crash the submitter
+            # #6 audit: this used to swallow the backend error entirely — FAILED with no clue why.
+            logger.exception("capture backend failed at submit")
+            self._emit(Stage.FAILED, f"capture failed: {exc}")
             return False
         if not text or not text.strip():
             self._emit(Stage.EMPTY, "no text was selected")

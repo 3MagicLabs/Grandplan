@@ -297,6 +297,10 @@ def test_failure_is_isolated_reported_and_coordinator_survives(tmp_path: Path) -
     assert Stage.FAILED in _stages(statuses)
     assert repo.notes() == ()
     assert coord.submit() is False  # still usable (no crash) — the capturer is still failing
+    # #6 audit: the failure is ACTIONABLE, not a bare "capture failed" — the backend's actual
+    # error reaches the user-facing status (and the traceback goes to the log; never swallowed).
+    failed = next(s for s in statuses if s.stage is Stage.FAILED)
+    assert "capture backend exploded" in failed.detail
 
 
 def test_several_captures_each_keep_their_own_text(tmp_path: Path) -> None:

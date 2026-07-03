@@ -167,6 +167,7 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
                 try:
                     bridge.drafted.emit(session.draft_plan(topic))
                 except Exception as exc:  # noqa: BLE001 - never crash the UI thread's worker
+                    logger.exception("chat plan-draft failed")  # traceback to the #5 file log
                     bridge.failed.emit(str(exc))
 
             threading.Thread(target=_draft, name="grandplan-chat", daemon=True).start()
@@ -176,6 +177,7 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
             try:
                 bridge.answered.emit(session.respond(text))
             except Exception as exc:  # noqa: BLE001
+                logger.exception("chat turn failed")  # traceback to the #5 file log
                 bridge.failed.emit(str(exc))
 
         threading.Thread(target=_respond, name="grandplan-chat", daemon=True).start()
@@ -211,6 +213,7 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
             try:
                 bridge.applied.emit(apply_plan(draft))
             except Exception as exc:  # noqa: BLE001
+                logger.exception("plan apply failed")  # traceback to the #5 file log
                 bridge.failed.emit(str(exc))
 
         threading.Thread(target=_apply, name="grandplan-chat", daemon=True).start()
