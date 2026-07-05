@@ -36,8 +36,21 @@ logger = logging.getLogger(__name__)
 MAX_CAPTURE_BODY_BYTES = 25 * 1024 * 1024  # whole request (base64 inflates ~4/3)
 MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024  # one decoded file
 _ALLOWED_EXT = frozenset(
-    {".ogg", ".opus", ".m4a", ".mp3", ".wav", ".jpg", ".jpeg", ".png", ".gif", ".webp",
-     ".pdf", ".txt", ".md"}
+    {
+        ".ogg",
+        ".opus",
+        ".m4a",
+        ".mp3",
+        ".wav",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".webp",
+        ".pdf",
+        ".txt",
+        ".md",
+    }
 )
 AUDIO_EXT = frozenset({".ogg", ".opus", ".m4a", ".mp3", ".wav"})
 _SAFE_CHARS = re.compile(r"[^A-Za-z0-9._ -]")

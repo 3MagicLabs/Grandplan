@@ -122,7 +122,11 @@ def _encodings(payload: str) -> dict[str, str]:
     }
 
 
-@pytest.mark.parametrize(("name", "essentials", "parse", "check"), _ADAPTERS, ids=lambda v: v if isinstance(v, str) else "")
+@pytest.mark.parametrize(
+    ("name", "essentials", "parse", "check"),
+    _ADAPTERS,
+    ids=lambda v: v if isinstance(v, str) else "",
+)
 @pytest.mark.parametrize("encoding", ["plain", "fenced", "prose-wrapped", "truncated"])
 def test_every_adapter_recovers_a_usable_object_from_every_encoding(
     name: str,

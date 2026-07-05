@@ -26,7 +26,9 @@ def test_transcript_html_renders_turns_and_escapes_markup() -> None:
         )
     )
     assert "you" in html and "vault" in html  # both speakers labelled
-    assert "&lt;script&gt;" in html and "<script>" not in html  # note/user text never becomes markup
+    assert (
+        "&lt;script&gt;" in html and "<script>" not in html
+    )  # note/user text never becomes markup
     assert "nothing &amp; everything" in html
 
 

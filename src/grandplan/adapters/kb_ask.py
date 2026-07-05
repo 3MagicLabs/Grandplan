@@ -137,9 +137,7 @@ class KbAsk:
                 text=text, sources=tuple((cid, titles[cid]) for cid in cited), model=model
             )
         # Retrieval-only: no local model produced an answer — the ranked matches are still useful.
-        return AskAnswer(
-            text="", sources=tuple((n.id, n.title) for n, _ in hits), model=None
-        )
+        return AskAnswer(text="", sources=tuple((n.id, n.title) for n, _ in hits), model=None)
 
     def _models(self) -> tuple[str, ...]:
         """KB model first, capture model as fallback — deduped when they're the same."""

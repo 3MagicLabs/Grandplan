@@ -54,9 +54,12 @@ def default_num_ctx() -> int:
     except ValueError:
         value = 0
     if value <= 0:
-        logger.warning("%s=%r is not a positive integer; using %d", _ENV_NUM_CTX, raw, DEFAULT_NUM_CTX)
+        logger.warning(
+            "%s=%r is not a positive integer; using %d", _ENV_NUM_CTX, raw, DEFAULT_NUM_CTX
+        )
         return DEFAULT_NUM_CTX
     return value
+
 
 _OPENERS = {"{": "}", "[": "]"}
 _CLOSERS = frozenset({"}", "]"})
@@ -82,7 +85,10 @@ def chat_json(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         format="json",
-        options={"temperature": 0, "num_ctx": num_ctx if num_ctx is not None else default_num_ctx()},
+        options={
+            "temperature": 0,
+            "num_ctx": num_ctx if num_ctx is not None else default_num_ctx(),
+        },
         keep_alive="30m",
     )
     return str(response["message"]["content"])
@@ -113,7 +119,10 @@ def chat_json_stream(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         format="json",
-        options={"temperature": 0, "num_ctx": num_ctx if num_ctx is not None else default_num_ctx()},
+        options={
+            "temperature": 0,
+            "num_ctx": num_ctx if num_ctx is not None else default_num_ctx(),
+        },
         keep_alive="30m",
         stream=True,
     ):

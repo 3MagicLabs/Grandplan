@@ -170,7 +170,9 @@ class ImproveDraft:
 def build_improve_prompt(title: str, body: str, tags: Sequence[str]) -> str:
     """Assemble the single-note improvement prompt (pure)."""
     tag_line = ", ".join(tags) if tags else "(none)"
-    return f"{_IMPROVE_INSTRUCTION}\n\nNOTE TITLE: {title}\nNOTE TAGS: {tag_line}\nNOTE BODY:\n{body}"
+    return (
+        f"{_IMPROVE_INSTRUCTION}\n\nNOTE TITLE: {title}\nNOTE TAGS: {tag_line}\nNOTE BODY:\n{body}"
+    )
 
 
 def parse_improvement(raw: str) -> dict[str, object]:
@@ -305,9 +307,7 @@ class ChatSession:
         # Retrieval-only: surface the ranked matches; the failed turn is NOT recorded as dialogue.
         return AskAnswer(text="", sources=tuple((n.id, n.title) for n, _ in hits), model=None)
 
-    def _call(
-        self, model: str, prompt: str, on_answer_delta: Callable[[str], None] | None
-    ) -> str:
+    def _call(self, model: str, prompt: str, on_answer_delta: Callable[[str], None] | None) -> str:
         """One transport call — streaming when a delta callback is given and no test transport is
         injected. Resolved through the module at call time: kb_ask._ollama_chat (and the streaming
         twin below) are the ONE transport seam tests and future config patch."""
@@ -351,7 +351,10 @@ class ChatSession:
             new_title = str(improved["title"]) or note.title
             new_body = str(improved["body"])
             new_tags = improved["tags"]
-            assert isinstance(new_tags, tuple)
+            if not isinstance(new_tags, tuple):  # parse_improvement contract; survives python -O
+                raise TypeError(
+                    f"improve draft tags: expected tuple, got {type(new_tags).__name__}"
+                )
             draft = ImproveDraft(
                 note_id=note.id,
                 new_title=new_title if new_title != note.title else None,
@@ -389,7 +392,10 @@ class ChatSession:
                 logger.warning("plan draft with %s failed; trying next fallback: %s", model, exc)
                 continue
             source_ids = plan["sources"]
-            assert isinstance(source_ids, tuple)
+            if not isinstance(source_ids, tuple):  # parse_plan contract; survives python -O
+                raise TypeError(
+                    f"plan draft sources: expected tuple, got {type(source_ids).__name__}"
+                )
             return PlanDraft(
                 title=str(plan["title"]),
                 summary=str(plan["summary"]),

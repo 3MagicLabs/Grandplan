@@ -30,7 +30,9 @@ from grandplan.core.models import Note
 
 logger = logging.getLogger(__name__)
 
-_SNIPPET = 400  # chars of a grounding note's body shown in the pane (full note stays one click away)
+_SNIPPET = (
+    400  # chars of a grounding note's body shown in the pane (full note stays one click away)
+)
 
 
 def transcript_html(turns: Sequence[tuple[str, str]]) -> str:
@@ -39,9 +41,7 @@ def transcript_html(turns: Sequence[tuple[str, str]]) -> str:
     for role, text in turns:
         speaker = "you" if role == "user" else "vault"
         colour = "#5b8def" if role == "user" else "#3fa34d"
-        blocks.append(
-            f'<p><b style="color:{colour}">{speaker}&gt;</b> {html.escape(text)}</p>'
-        )
+        blocks.append(f'<p><b style="color:{colour}">{speaker}&gt;</b> {html.escape(text)}</p>')
     return "\n".join(blocks)
 
 
@@ -127,7 +127,9 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     transcript = QtWidgets.QTextBrowser()
     transcript.setOpenExternalLinks(False)
     entry = QtWidgets.QLineEdit()
-    entry.setPlaceholderText("ask about your notes — /plan <topic> drafts a plan, /improve <id> improves a note")
+    entry.setPlaceholderText(
+        "ask about your notes — /plan <topic> drafts a plan, /improve <id> improves a note"
+    )
     send = QtWidgets.QPushButton("Send")
 
     grounding = QtWidgets.QTextBrowser()
