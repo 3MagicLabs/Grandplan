@@ -171,6 +171,7 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     fast: bool = False,
     model: str = DEFAULT_MODEL,
     enrich: bool = False,
+    kb_model: str | None = None,
 ) -> int:
     from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -452,8 +453,10 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         )
         from grandplan.app.chat_window import open_chat_window
 
+        # --kb-model lets the user point chat at the model they actually pulled (e.g. qwen2.5:7b
+        # next to a resident capture model); the hardcoded default made every turn 404 first.
         session = ChatSession(
-            repo=repo, embedder=embedder, model=KB_DEFAULT_MODEL, fallback_model=model
+            repo=repo, embedder=embedder, model=kb_model or KB_DEFAULT_MODEL, fallback_model=model
         )
 
         def apply_plan(draft: PlanDraft) -> str:

@@ -1499,6 +1499,7 @@ def _run_gui(args: argparse.Namespace) -> int:
             model=args.model,
             hotkey=args.hotkey_combo,
             enrich=getattr(args, "enrich", False),
+            kb_model=getattr(args, "kb_model", "") or None,
         )
     except ImportError as exc:
         print(
@@ -1861,6 +1862,13 @@ def main(argv: list[str] | None = None) -> int:
         help="opt in to the background pass that adds LLM typed links + placement AFTER each save "
         "(keeps the CPU busy until the backlog drains; live count in the tray tooltip). Off by "
         "default: capture organizes inline, then the app goes idle",
+    )
+    gui.add_argument(
+        "--kb-model",
+        default="",
+        help=f"local model for the tray chat window (default {KB_DEFAULT_MODEL}, falling back to "
+        "the capture model when unavailable). Running two big models side by side eats RAM — on "
+        "a RAM-tight machine use a smaller one, e.g. qwen2.5:7b, or the capture model itself",
     )
     gui.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model name (default LLM)")
     gui.add_argument(

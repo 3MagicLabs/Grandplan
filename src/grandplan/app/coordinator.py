@@ -135,6 +135,21 @@ def _saved_detail(result: Committed) -> str:
     raise AssertionError(f"unhandled Committed variant: {type(result).__name__}")
 
 
+_SNIPPET_CHARS = 72  # one tooltip/popup line; the review dialog shows the full text right after
+
+
+def snippet_of(text: str, limit: int = _SNIPPET_CHARS) -> str:
+    """One status-line preview of the text being processed (US-7 transparency, pure).
+
+    The ANALYZING stage is the longest and was fully opaque — the user could not tell WHICH text
+    the model was chewing on. Whitespace (incl. newlines) collapses to single spaces so the
+    tooltip stays one line; over `limit` it is cut with an ellipsis."""
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1].rstrip() + "…"
+
+
 # A single token meaning "process one capture"; identity is all that matters.
 _REQUEST = object()
 
@@ -353,7 +368,9 @@ class CaptureCoordinator:
             if not text:
                 self._emit(Stage.EMPTY, "no text was selected")
                 return None
-            self._emit(Stage.ANALYZING, "organizing with local AI")
+            # Show WHAT is being analyzed, not just that analysis is happening — this stage is
+            # the longest (a full local-LLM call) and used to be a black box (US-7).
+            self._emit(Stage.ANALYZING, f"organizing with local AI: “{snippet_of(text)}”")
             pending = start_review(
                 text,
                 created=self._clock(),

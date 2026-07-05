@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+- **Live capture transparency** — the progress popup / tray tooltip now shows *what* is being
+  analyzed during the longest stage: `organizing with local AI: “<first line of your capture…>”`
+  instead of an opaque spinner. (The review dialog then shows the full resulting note before
+  anything is saved, as before.)
+- **`gui --kb-model <name>`** — choose the local model the tray chat window uses (default stays
+  `qwen2.5:14b` with fallback to the capture model). Previously hardcoded: a user who pulled a
+  smaller KB model (e.g. `qwen2.5:7b` — the sensible pick next to a resident capture model)
+  could not make the GUI use it, so every chat turn burned a 404 and fell back.
+
 ### Fixed
 - **GUI chat behaves like chat** — your message now appears in the transcript the instant you hit
   Send (it used to surface only once the model finished answering — a minute+ on CPU), and every

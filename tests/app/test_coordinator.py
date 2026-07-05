@@ -140,6 +140,31 @@ def test_status_carries_queue_depth_for_the_popup(tmp_path: Path) -> None:
     assert analyzing and analyzing[0].pending == 1  # exactly "second" was waiting
 
 
+def test_analyzing_status_shows_what_text_is_being_processed(tmp_path: Path) -> None:
+    # Transparency (US-7): while the local model works — the longest, most opaque stage — the
+    # popup/tooltip must show WHAT is being analyzed, not just "organizing with local AI".
+    statuses: list[CaptureStatus] = []
+    coord, _, _ = _make(
+        tmp_path,
+        capturer=SeqCapturer([None]),
+        review=lambda state: True,
+        on_status=statuses.append,
+    )
+    coord.submit_text("plan the family trip to Lisbon\nand book the flights")
+    coord.process_one(timeout=0)
+    analyzing = [s for s in statuses if s.stage is Stage.ANALYZING]
+    assert analyzing and "plan the family trip to Lisbon" in analyzing[0].detail
+    assert "\n" not in analyzing[0].detail  # one status line — newlines collapsed
+
+
+def test_snippet_of_collapses_whitespace_and_caps_length() -> None:
+    from grandplan.app.coordinator import snippet_of
+
+    assert snippet_of("  a \n b\t c  ") == "a b c"
+    long = snippet_of("word " * 60)
+    assert len(long) <= 73 and long.endswith("…")  # capped for a one-line tooltip
+
+
 def test_approve_commits_writes_vault_and_reports_full_stage_sequence(tmp_path: Path) -> None:
     statuses: list[CaptureStatus] = []
     committed: list[object] = []

@@ -1184,6 +1184,18 @@ def test_gui_fast_is_default_and_thorough_opts_out(
     assert seen[3]["enrich"] is True  # --enrich opts in, and only then
 
 
+def test_gui_kb_model_is_configurable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The tray chat used to hardcode the KB default (qwen2.5:14b): a user who pulled a smaller
+    # KB model (e.g. qwen2.5:7b — the sane choice next to a resident capture model) could not
+    # make the GUI use it, so every chat turn burned a 404 and fell back to the capture model.
+    seen: list[dict[str, object]] = []
+    monkeypatch.setattr("grandplan.app.gui.run_app", lambda **kw: seen.append(kw) or 0)
+    assert main(["gui", "-o", str(tmp_path / "v")]) == 0
+    assert main(["gui", "-o", str(tmp_path / "v"), "--kb-model", "qwen2.5:7b"]) == 0
+    assert seen[0]["kb_model"] is None  # default: the KB agent's own default (with fallback)
+    assert seen[1]["kb_model"] == "qwen2.5:7b"
+
+
 def test_main_gui_embeddings_without_dep_fails_fast(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
