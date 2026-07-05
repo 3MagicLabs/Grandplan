@@ -82,9 +82,10 @@ def test_enrich_is_idempotent_on_existing_edges() -> None:
 def test_enrich_skips_deleted_and_user_edited_notes() -> None:
     repo = _repo()
     repo.delete_note("fresh")
-    assert enrich_note(
-        "fresh", repo=repo, reconciler=_TypedReconciler(), placer=_GoalPlacer()
-    ).outcome == "skipped-deleted"
+    assert (
+        enrich_note("fresh", repo=repo, reconciler=_TypedReconciler(), placer=_GoalPlacer()).outcome
+        == "skipped-deleted"
+    )
 
     repo2 = _repo()
     repo2.record_edit("fresh", NoteEdit(title="user renamed me"))
@@ -104,7 +105,7 @@ def test_enrich_failure_leaves_baseline_untouched() -> None:
 # -- coordinator integration: the SAME worker drains enrichment at idle priority -------------------
 
 
-def _coordinator(tmp_path: Path, enrich=None):  # type: ignore[no-untyped-def]
+def _coordinator(tmp_path: Path, enrich=None, on_status=None):  # type: ignore[no-untyped-def]
     from grandplan.app.coordinator import CaptureCoordinator
     from grandplan.core.models import Source
     from grandplan.core.organize import HeuristicOrganizer
@@ -127,6 +128,7 @@ def _coordinator(tmp_path: Path, enrich=None):  # type: ignore[no-untyped-def]
         review=lambda state: True,
         source=Source(app="test"),
         enrich=enrich,
+        on_status=on_status,
     )
 
 
@@ -155,3 +157,26 @@ def test_coordinator_enrichment_off_and_failure_isolation(tmp_path: Path) -> Non
     fragile.submit_enrichment("n1")
     assert fragile.run_one_enrichment() is None  # logged and dropped — worker never wedges
     assert fragile.enrichment_pending() == 0
+
+
+def test_each_enrichment_emits_a_status_so_progress_is_live(tmp_path: Path) -> None:
+    # The "enriching 18 note(s)" tray tooltip used to freeze at the last CAPTURE event: finishing
+    # an enrichment job emitted nothing, so the backlog count never visibly moved (observed as
+    # "enriching forever"). Every completed job — success OR failure — must emit a status.
+    from grandplan.app.coordinator import CaptureStatus, Stage
+
+    statuses: list[CaptureStatus] = []
+
+    def boom(note_id: str) -> object:
+        if note_id == "bad":
+            raise RuntimeError("ollama hiccup")
+        return note_id
+
+    coord = _coordinator(tmp_path, enrich=boom, on_status=statuses.append)
+    coord.submit_enrichment("n1")
+    coord.submit_enrichment("bad")
+    coord.run_one_enrichment()
+    coord.run_one_enrichment()  # the failing job must ALSO tick the counter down visibly
+    enriched = [s for s in statuses if s.stage is Stage.ENRICHED]
+    assert len(enriched) == 2
+    assert coord.enrichment_pending() == 0

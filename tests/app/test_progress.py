@@ -39,6 +39,13 @@ def test_idle_hides_the_popup() -> None:
     assert _view(Stage.IDLE).visible is False
 
 
+def test_enriched_is_tray_only_and_never_terminal() -> None:
+    # Background enrichment is routine housekeeping: it must update the tray tooltip (the live
+    # backlog count) without ever raising the popup or reading as a finished capture.
+    view = _view(Stage.ENRICHED)
+    assert view.visible is False and not view.terminal and not view.busy and view.ok
+
+
 def test_empty_selection_is_a_terminal_message() -> None:
     view = _view(Stage.EMPTY)
     assert view.terminal and view.ok and view.visible

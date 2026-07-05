@@ -1,8 +1,12 @@
-"""Background enrichment (#38): restore LLM typed links + placement after a --fast capture.
+"""Background enrichment (#38, OPT-IN via --enrich): LLM typed links + placement after a --fast
+capture.
 
 `--fast` keeps only the organize call on the capture's critical path; the two enrichment calls
 (contextual reconcile → typed links, placement → part_of/depends_on) are skipped inline. This
 module re-derives them AFTER commit, off the critical path, so fast mode loses nothing long-term.
+It runs ONLY when the user passed --enrich: post-save LLM work on the vault is autonomous
+curation, and curation is user-directed only (user decision 2026-07-04) — by default a capture
+organizes inline, keeps its baseline links, and the app goes idle.
 
 Execution model (single-writer, ADR-0006 / SPEC-AGENT-KB §3): `enrich_note` is a pure synchronous
 function; the `CaptureCoordinator` runs it on its ONE worker thread, and only when the capture

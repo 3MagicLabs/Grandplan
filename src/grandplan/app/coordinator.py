@@ -57,7 +57,9 @@ logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 0.2  # seconds the worker waits on the queue before re-checking the stop flag
 _JOIN_TIMEOUT = 5.0  # seconds stop() waits for the worker to finish its current capture
-_ENRICH_BACKLOG_CAP = 256  # queued-enrichment bound; beyond it, notes just keep baseline links (#38)
+_ENRICH_BACKLOG_CAP = (
+    256  # queued-enrichment bound; beyond it, notes just keep baseline links (#38)
+)
 
 
 class Stage(str, Enum):
@@ -74,6 +76,7 @@ class Stage(str, Enum):
     PROJECTION_FAILED = "projection_failed"  # the note WAS saved, but refreshing the plan failed
     REJECTED_BUSY = "rejected_busy"  # a submit was refused because a capture is already in progress
     IDLE = "idle"  # back to ready; always the last stage of a processed capture
+    ENRICHED = "enriched"  # one background-enrichment job finished (tray count ticks down)
 
 
 @dataclass(frozen=True)
@@ -268,10 +271,15 @@ class CaptureCoordinator:
                 return None
             note_id = self._enrich_backlog.popleft()
         try:
-            return self._enrich(note_id)
+            outcome: object | None = self._enrich(note_id)
+            logger.info("background enrichment of %s: %s", note_id, outcome)
         except Exception:  # noqa: BLE001 - one bad enrichment must not kill the worker
             logger.exception("enrichment of %s failed", note_id)
-            return None
+            outcome = None
+        # Success OR failure, the job is done — emit so the tray's backlog count ticks down live
+        # (it used to refresh only on capture events, so "enriching 18 note(s)" froze forever).
+        self._emit(Stage.ENRICHED, "ready")
+        return outcome
 
     def capacity(self) -> int:
         """Max captures that may wait before submit() is rejected with REJECTED_BUSY."""

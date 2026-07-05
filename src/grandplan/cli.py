@@ -1260,7 +1260,9 @@ def _chat_repl(
             if draft.new_tags is not None:
                 print(f"tags:  → {', '.join(draft.new_tags)}")
             if draft.new_body is not None:
-                print(f"--- current body ---\n{draft.current_body}\n--- improved body ---\n{draft.new_body}")
+                print(
+                    f"--- current body ---\n{draft.current_body}\n--- improved body ---\n{draft.new_body}"
+                )
             print("(your verbatim original is preserved either way; this is a replayable edit)")
             if apply_improve is None:
                 continue  # no write path wired — preview only
@@ -1345,7 +1347,8 @@ def _apply_plan(
     in kb_chat) used by both this REPL and the GUI chat panel (#39). Review-gated by the caller."""
     from grandplan.adapters.kb_chat import PlanDraft, apply_plan_draft
 
-    assert isinstance(draft, PlanDraft)
+    if not isinstance(draft, PlanDraft):  # _chat_repl contract; survives python -O
+        raise TypeError(f"apply_plan expected a PlanDraft, got {type(draft).__name__}")
     return apply_plan_draft(
         draft,
         repo=repo,
@@ -1397,7 +1400,8 @@ def _run_chat(args: argparse.Namespace) -> int:
     def apply_improve(draft: object) -> None:
         from grandplan.adapters.kb_chat import ImproveDraft, apply_improvement_draft
 
-        assert isinstance(draft, ImproveDraft)
+        if not isinstance(draft, ImproveDraft):  # _chat_repl contract; survives python -O
+            raise TypeError(f"apply_improve expected an ImproveDraft, got {type(draft).__name__}")
         apply_improvement_draft(draft, repo=repo, vault_dir=vault_dir, originals=originals)
 
     return _chat_repl(session, apply_plan=apply_plan, apply_improve=apply_improve)
@@ -1488,11 +1492,13 @@ def _run_gui(args: argparse.Namespace) -> int:
             vault_dir=vault_dir,
             use_llm=not args.no_llm,  # PR-F: the local model is the default; --no-llm opts out
             use_embeddings=args.embeddings,
-            # Fast capture is the DEFAULT since the background enrichment pass (#38) restores the
-            # typed links/placement it defers — --thorough opts back into the 3-calls-inline mode.
+            # Fast capture is the DEFAULT — one inline model call, then done. --thorough opts back
+            # into the 3-calls-inline mode; --enrich opts into the post-save background pass (#38),
+            # which is never on by itself (curation is user-directed only).
             fast=not getattr(args, "thorough", False),
             model=args.model,
             hotkey=args.hotkey_combo,
+            enrich=getattr(args, "enrich", False),
         )
     except ImportError as exc:
         print(
@@ -1839,15 +1845,22 @@ def main(argv: list[str] | None = None) -> int:
     gui.add_argument(
         "--fast",
         action="store_true",
-        help="(default; kept for compatibility) fast capture: one model call per capture — LLM "
-        "organize inline, typed links + placement restored by the background enrichment pass",
+        help="(default; kept for compatibility) fast capture: ONE model call per capture — LLM "
+        "organize inline with instant baseline links, then nothing else runs (add --enrich or "
+        "--thorough for LLM typed links + placement)",
     )
     gui.add_argument(
         "--thorough",
         action="store_true",
-        help="run the LLM reconcile + placement calls INLINE per capture instead of in the "
-        "background (~3x slower per capture; same end quality — use only if you want the typed "
-        "links present the instant the review dialog opens)",
+        help="run the LLM reconcile + placement calls INLINE per capture (~3x slower per capture; "
+        "full typed links present the instant the review dialog opens; nothing runs afterwards)",
+    )
+    gui.add_argument(
+        "--enrich",
+        action="store_true",
+        help="opt in to the background pass that adds LLM typed links + placement AFTER each save "
+        "(keeps the CPU busy until the backlog drains; live count in the tray tooltip). Off by "
+        "default: capture organizes inline, then the app goes idle",
     )
     gui.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model name (default LLM)")
     gui.add_argument(

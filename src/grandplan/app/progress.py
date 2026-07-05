@@ -49,9 +49,12 @@ _TITLE: dict[Stage, str] = {
     Stage.PROJECTION_FAILED: "Saved (plan refresh failed)",
     Stage.REJECTED_BUSY: "Busy — finish the current review first",
     Stage.IDLE: "Ready",
+    Stage.ENRICHED: "Ready",
 }
 
 _BUSY_STAGES = frozenset({Stage.CAPTURING, Stage.ANALYZING, Stage.COMMITTING})
+# Routine housekeeping stays tray-only (tooltip refresh) — these must never raise the popup.
+_HIDDEN_STAGES = frozenset({Stage.IDLE, Stage.ENRICHED})
 _TERMINAL_STAGES = frozenset(
     {
         Stage.SAVED,
@@ -83,7 +86,7 @@ def progress_for(status: CaptureStatus) -> ProgressView:
         detail=status.detail,
         percent=percent,
         busy=busy,
-        visible=stage is not Stage.IDLE,
+        visible=stage not in _HIDDEN_STAGES,
         terminal=terminal,
         ok=stage not in _FAIL_STAGES,
         queued=status.pending,

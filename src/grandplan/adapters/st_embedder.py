@@ -12,11 +12,21 @@ load needs the optional dependency and is integration-tested on the user's machi
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Callable, Sequence
 from typing import Any
 
 _DEFAULT_MODEL = "all-MiniLM-L6-v2"
 EncodeFn = Callable[[str], Sequence[float]]
+
+
+def _quiet_hf_console() -> None:
+    """Silence the HF/transformers console noise (a tqdm 'Batches' bar per embed call + the
+    unauthenticated-Hub warning) that buried grandplan's own output. setdefault: an explicit
+    user setting always wins. The model itself is unaffected — this is presentation only."""
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("HF_HUB_VERBOSITY", "error")
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 
 def _lazy_encode(model_name: str) -> EncodeFn:  # pragma: no cover - needs the model + dependency
@@ -25,6 +35,7 @@ def _lazy_encode(model_name: str) -> EncodeFn:  # pragma: no cover - needs the m
     def encode(text: str) -> Sequence[float]:
         nonlocal model
         if model is None:
+            _quiet_hf_console()  # must precede the import — both libs read the env at import time
             try:
                 from sentence_transformers import SentenceTransformer
             except ImportError as exc:
@@ -32,7 +43,7 @@ def _lazy_encode(model_name: str) -> EncodeFn:  # pragma: no cover - needs the m
                     f"sentence-transformers unavailable ({exc}); `pip install grandplan[embeddings]`"
                 ) from exc
             model = SentenceTransformer(model_name)
-        return [float(value) for value in model.encode(text)]
+        return [float(value) for value in model.encode(text, show_progress_bar=False)]
 
     return encode
 

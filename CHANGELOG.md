@@ -5,6 +5,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Changed
+- **Background enrichment is now opt-in (`gui --enrich`)** — the post-save LLM pass (#38: typed
+  links + placement) no longer runs by default: a capture organizes inline, then the app goes
+  idle. Curation is user-directed only; sustained CPU load after captures surprised in practice.
+  `--thorough` (all calls inline) and `regenerate` remain the other explicit quality paths.
+- **Enrichment progress is live** — each finished background-enrichment job (success or failure)
+  now emits a status event, so the tray tooltip's "enriching N note(s)" count ticks down instead
+  of freezing at the last capture; completions are also logged.
+- **Quiet console** — the sentence-transformers `Batches` tqdm bar (one per embed call) and the
+  Hugging Face Hub unauthenticated-request warning no longer spam the terminal; explicit
+  `HF_*`/`TRANSFORMERS_*` env settings still win.
+
 ### Added
 - **`grandplan reset -o <vault>`** — wipe a vault back to empty: deletes the Obsidian folder **and**
   grandplan's external index (notes/edges/inbox/directives, kept under `~/.grandplan/<hash>/`).

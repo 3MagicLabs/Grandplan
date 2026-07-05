@@ -1032,9 +1032,7 @@ def test_chat_answers_shows_notes_and_quits(
         return reply
 
     monkeypatch.setattr(kb_ask, "_ollama_chat_stream", fake_stream)
-    lines = iter(
-        ["what did we decide about the postgres backend?", f"/show {note_id}", "/quit"]
-    )
+    lines = iter(["what did we decide about the postgres backend?", f"/show {note_id}", "/quit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
     assert main(["chat", "-o", str(vault)]) == 0
     out = capsys.readouterr().out
@@ -1139,8 +1137,10 @@ def test_chat_improve_approved_applies_edit_rejected_leaves_no_trace(
     monkeypatch.setattr(
         kb_ask,
         "_ollama_chat",
-        lambda model, prompt: '{"title": "Postgres backend decision", "body": "Cleaned body.", '
-        '"tags": ["database"], "rationale": "tightened"}',
+        lambda model, prompt: (
+            '{"title": "Postgres backend decision", "body": "Cleaned body.", '
+            '"tags": ["database"], "rationale": "tightened"}'
+        ),
     )
     lines = iter([f"/improve {note_id}", "n", f"/improve {note_id}", "y", "/quit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
@@ -1166,16 +1166,22 @@ def test_chat_without_index_reports_error(
 def test_gui_fast_is_default_and_thorough_opts_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Fast capture is the DEFAULT (background enrichment #38 restores what it defers); --thorough
-    # opts back into 3-calls-inline; --fast stays accepted for compatibility.
+    # Fast capture is the DEFAULT; --thorough opts back into 3-calls-inline; --fast stays accepted
+    # for compatibility. Background enrichment (#38) is OPT-IN via --enrich: by default a capture
+    # organizes inline and then NOTHING else runs (user decision 2026-07-04 — no autonomous
+    # post-save LLM passes).
     seen: list[dict[str, object]] = []
     monkeypatch.setattr("grandplan.app.gui.run_app", lambda **kw: seen.append(kw) or 0)
     assert main(["gui", "-o", str(tmp_path / "v")]) == 0
     assert main(["gui", "-o", str(tmp_path / "v"), "--fast"]) == 0
     assert main(["gui", "-o", str(tmp_path / "v"), "--thorough"]) == 0
+    assert main(["gui", "-o", str(tmp_path / "v"), "--enrich"]) == 0
     assert seen[0]["fast"] is True  # default
     assert seen[1]["fast"] is True  # compat flag
     assert seen[2]["fast"] is False  # explicit opt-out
+    assert seen[0]["enrich"] is False  # default: no background LLM work after a save
+    assert seen[1]["enrich"] is False
+    assert seen[3]["enrich"] is True  # --enrich opts in, and only then
 
 
 def test_main_gui_embeddings_without_dep_fails_fast(

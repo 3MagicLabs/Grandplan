@@ -170,6 +170,7 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     use_embeddings: bool = False,
     fast: bool = False,
     model: str = DEFAULT_MODEL,
+    enrich: bool = False,
 ) -> int:
     from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -377,13 +378,16 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
             repo, vault_dir, originals=originals, reconcile_deletions=True, protect_ids=protect
         )
 
-    # Background enrichment (#38): under --fast the LLM links/placement calls are skipped inline;
-    # this re-derives them AFTER commit, on the coordinator's own worker at idle priority (single
-    # writer, ADR-0006). Uses the FULL LLM reconciler/placer regardless of the fast wiring — the
-    # whole point is restoring the quality fast mode traded away. Off when not fast (links were
-    # derived inline) or not LLM (nothing richer to derive).
+    # Background enrichment (#38) is OPT-IN (--enrich): the app must not keep making LLM calls
+    # after a note is saved unless the user explicitly asked for it — capture organizes inline,
+    # then stops (user decision 2026-07-04; extends the "curation is user-directed only" rule).
+    # When opted in, it re-derives typed links/placement AFTER commit on the coordinator's own
+    # worker at idle priority (single writer, ADR-0006), with the FULL LLM reconciler/placer —
+    # restoring the quality fast mode traded away. Moot when not fast (links were derived inline)
+    # or not LLM (nothing richer to derive). Off by default: notes keep their baseline cosine
+    # links until `--thorough`, `--enrich`, or an explicit `regenerate` derives more.
     enrich_fn = None
-    if use_llm and fast:
+    if use_llm and fast and enrich:
         from grandplan.app.enrich import enrich_note
 
         enrich_reconciler = LlmContextualReconciler(model=model)
