@@ -35,6 +35,41 @@ _SNIPPET = (
 )
 
 
+class TranscriptLog:
+    """Display-only conversation log (pure): the window renders EVERY exchange from here.
+
+    `ChatSession.history` is the MODEL-facing memory and deliberately forgets failed turns (so a
+    transient Ollama outage can't poison later prompts) — which meant the user's message only
+    appeared once the model answered, and vanished entirely on a degraded turn. Traditional-chat
+    behavior needs the opposite: echo the user's message the instant it is sent and keep every
+    reply (answers, degradations, failures) visible, in order.
+    """
+
+    def __init__(self) -> None:
+        self._turns: list[tuple[str, str]] = []
+
+    def user(self, text: str) -> None:
+        self._turns.append(("user", text))
+
+    def vault(self, text: str) -> None:
+        self._turns.append(("vault", text))
+
+    @property
+    def turns(self) -> tuple[tuple[str, str], ...]:
+        return tuple(self._turns)
+
+
+def reply_text(answer: AskAnswer) -> str:
+    """What the transcript shows for one AskAnswer — degradations become visible replies (pure)."""
+    if answer.model is None:
+        return (
+            "no local model responded — showing the top matching notes on the right. "
+            "Is Ollama running? (`ollama list` should show your models; the exact failure "
+            "is in the grandplan log file)"
+        )
+    return answer.text or "(the model returned an empty answer — sources on the right)"
+
+
 def transcript_html(turns: Sequence[tuple[str, str]]) -> str:
     """The conversation as simple HTML — speakers labelled, ALL text escaped (pure)."""
     blocks: list[str] = []
@@ -55,7 +90,10 @@ def grounding_html(answer: AskAnswer, *, notes: Mapping[str, Note]) -> str:
         return "<p><i>no matching notes for this turn.</i></p>"
     header = ""
     if answer.model is None:
-        header = "<p><i>no local model available — top matching notes instead:</i></p>"
+        header = (
+            "<p><i>no local model available (is Ollama running? `ollama list` shows what's "
+            "installed) — top matching notes instead:</i></p>"
+        )
     blocks: list[str] = [header] if header else []
     for note_id, title in answer.sources:
         note = notes.get(note_id)
@@ -159,6 +197,9 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     layout.addLayout(right, 2)
 
     pending: dict[str, PlanDraft | ImproveDraft | None] = {"draft": None}
+    # The DISPLAY log: the user's message appears the instant it is sent, and degraded/failed
+    # turns stay visible — session.history (the model-facing memory) drops them by design.
+    log = TranscriptLog()
 
     def _busy(on: bool) -> None:
         entry.setEnabled(not on)
@@ -166,7 +207,7 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
         send.setText("thinking…" if on else "Send")
 
     def _refresh_transcript() -> None:
-        transcript.setHtml(transcript_html(session.history))
+        transcript.setHtml(transcript_html(log.turns))
         scrollbar = transcript.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
@@ -184,6 +225,8 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
         if not text:
             return
         entry.clear()
+        log.user(text)  # echo immediately — the message must never sit invisible while "thinking…"
+        _refresh_transcript()
         _busy(True)
         if text.startswith("/improve"):
             target = text.removeprefix("/improve").strip()
@@ -221,6 +264,7 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
 
     def _on_answered(answer: AskAnswer) -> None:
         _busy(False)
+        log.vault(reply_text(answer))
         _refresh_transcript()
         shown = {
             note_id: note
@@ -232,11 +276,18 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     def _on_drafted(draft: PlanDraft | ImproveDraft | None) -> None:
         _busy(False)
         if draft is None:
+            log.vault(
+                "nothing to propose — no matching notes / unknown note id, no local model "
+                "available, or no changes suggested."
+            )
+            _refresh_transcript()
             grounding.setHtml(
                 "<p><i>nothing to propose — no matching notes / unknown note id, no local "
                 "model available, or no changes suggested.</i></p>"
             )
             return
+        log.vault("drafted — review the proposal on the right (Approve / Discard).")
+        _refresh_transcript()
         _show_proposal(draft)
 
     def _on_approve() -> None:
@@ -261,11 +312,15 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
 
     def _on_applied(note_id: str) -> None:
         _busy(False)
+        log.vault(f"✓ applied to the vault [{note_id}]")
+        _refresh_transcript()
         grounding.setHtml(f"<p>✓ applied to the vault <code>[{html.escape(note_id)}]</code></p>")
 
     def _on_failed(message: str) -> None:
         _busy(False)
         logger.warning("chat window action failed: %s", message)
+        log.vault(f"action failed: {message}")  # the turn must not silently vanish
+        _refresh_transcript()
         grounding.setHtml(f"<p><i>action failed: {html.escape(message)}</i></p>")
 
     bridge.answered.connect(_on_answered)

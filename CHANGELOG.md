@@ -5,6 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+- **GUI chat behaves like chat** — your message now appears in the transcript the instant you hit
+  Send (it used to surface only once the model finished answering — a minute+ on CPU), and every
+  reply stays visible in order: answers, plan/improve outcomes, apply confirmations, failures, and
+  the "no local model responded" degradation (which previously made the whole turn vanish, since
+  the session's model-facing memory deliberately drops failed turns). The degradation message now
+  says how to check what's wrong (Ollama running? `ollama list`).
+
 ### Changed
 - **Background enrichment is now opt-in (`gui --enrich`)** — the post-save LLM pass (#38: typed
   links + placement) no longer runs by default: a capture organizes inline, then the app goes

@@ -81,3 +81,37 @@ def test_improvement_html_shows_before_after_and_escapes() -> None:
     assert "clean &amp; clear" in out
     assert "a, b" in out
     assert "verbatim original is preserved" in out  # the lossless promise is stated on the card
+
+
+def test_transcript_log_shows_every_exchange_in_order() -> None:
+    # The window renders from THIS display log, not ChatSession.history: the user's message must
+    # appear the moment it is sent (traditional chat), and a degraded/failed turn must stay
+    # visible even though the session deliberately forgets it (kb_chat: a failed turn is not
+    # recorded so it can't poison later prompts).
+    from grandplan.app.chat_window import TranscriptLog
+
+    log = TranscriptLog()
+    log.user("first question")
+    log.vault("an answer")
+    log.user("/plan trip")
+    log.vault("action failed: boom")
+    assert log.turns == (
+        ("user", "first question"),
+        ("vault", "an answer"),
+        ("user", "/plan trip"),
+        ("vault", "action failed: boom"),
+    )
+    html = transcript_html(log.turns)
+    assert "first question" in html and "action failed: boom" in html
+
+
+def test_reply_text_maps_answers_and_degradations_to_visible_turns() -> None:
+    # A retrieval-only turn (both local models failed) must produce a visible, actionable reply —
+    # never a silently missing message.
+    from grandplan.app.chat_window import reply_text
+
+    assert reply_text(AskAnswer(text="grounded answer", sources=(), model="m")) == "grounded answer"
+    degraded = reply_text(AskAnswer(text="", sources=(("a", "T"),), model=None))
+    assert "no local model" in degraded and "Ollama" in degraded
+    empty = reply_text(AskAnswer(text="", sources=(), model="m"))
+    assert empty  # a blank model reply still renders as SOMETHING visible
