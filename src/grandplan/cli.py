@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import logging
 import os
 import re
 import shutil
@@ -1036,11 +1037,17 @@ def _make_capture_handler(
     failed, otherwise); the composed text runs the normal organize pipeline (LLM with graceful
     fallback, like the hotkey path). A lock serializes organizes — the intake server is threaded,
     but the repo has ONE writer (ADR-0006).
+
+    The request is validated synchronously (fast 400 on a bad body) but the slow save/transcribe/
+    organize runs on a BACKGROUND thread so the phone gets an immediate 202 — a synchronous reply
+    made the phone's HTTP client wait through the 10-30s local-LLM organize and drop the connection
+    mid-response (WinError 10053).
     """
     import importlib.util as _ilu
     import threading
 
-    from grandplan.adapters.capture_intake import handle_capture_request
+    from grandplan.adapters.capture_intake import parse_capture_request, process_capture
+    from grandplan.adapters.http_intake import IntakeResult
 
     lock = threading.Lock()
     organizer = OllamaOrganizer(model=model, require=False) if use_llm else None
@@ -1079,9 +1086,23 @@ def _make_capture_handler(
             return f"{summary.notes} note(s) organized"
 
     def handler(raw: bytes, content_type: str) -> object:
-        return handle_capture_request(
-            raw, content_type, save=save, organize=organize, transcribe=transcribe
-        )
+        # Validate now (fast reply on a bad body); do the slow save + organize off the request
+        # thread so the phone isn't held through the LLM call.
+        try:
+            content, attachments = parse_capture_request(raw, content_type)
+        except ValueError as exc:
+            return IntakeResult(400, {"error": str(exc)})
+
+        def work() -> None:
+            try:
+                process_capture(
+                    content, attachments, save=save, organize=organize, transcribe=transcribe
+                )
+            except Exception:  # noqa: BLE001 - a failed background capture must not kill the thread
+                logging.getLogger(__name__).exception("background capture failed")
+
+        threading.Thread(target=work, name="grandplan-capture", daemon=True).start()
+        return IntakeResult(202, {"status": "captured — organizing in the background"})
 
     return handler
 

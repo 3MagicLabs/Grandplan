@@ -159,11 +159,17 @@ def serve_intake(
             # access log stays off (log_message below), so this is the sole, intentional trail.
             logger.info("intake %s from %s -> %d", self.path, self.client_address[0], result.status)
             encoded = json.dumps(result.body).encode("utf-8")
-            self.send_response(result.status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
+            try:
+                self.send_response(result.status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+            except OSError as exc:
+                # The client hung up before we replied (e.g. a phone whose HTTP client timed out).
+                # There's nothing to send to — log quietly instead of letting socketserver dump a
+                # scary per-request traceback (WinError 10053 / broken pipe).
+                logger.debug("client disconnected before reply: %s", exc)
 
         def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
             try:

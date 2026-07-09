@@ -157,6 +157,21 @@ def test_parse_urlencoded_capture_rejects_empty() -> None:
         parse_urlencoded_capture(b"unrelated=x")
 
 
+def test_parse_capture_request_dispatches_each_format() -> None:
+    # The sync validate/decode half the server calls before replying fast + organizing in the bg.
+    from grandplan.adapters.capture_intake import parse_capture_request
+
+    c1, a1 = parse_capture_request(b"content=hi+there", "application/x-www-form-urlencoded")
+    assert c1 == "hi there" and a1 == ()
+    c2, a2 = parse_capture_request(b'{"content":"json note"}', "application/json")
+    assert c2 == "json note" and a2 == ()
+    body, ct = _multipart({"content": "cap"}, [("file", "p.png", b"png")])
+    c3, a3 = parse_capture_request(body, ct)
+    assert c3 == "cap" and a3[0].name == "p.png"
+    with pytest.raises(ValueError):  # a bad body raises (caller turns it into a 400)
+        parse_capture_request(b"not json", "application/json")
+
+
 def test_handle_capture_request_accepts_urlencoded_form() -> None:
     # The exact shape an iOS Shortcut "Form" (text field) sends — must reach the pipeline, not the
     # JSON branch (which produced the 'invalid JSON body' phone error).

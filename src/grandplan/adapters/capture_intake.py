@@ -230,18 +230,44 @@ def handle_capture_request(
     organize pipeline. Auth + size gating already happened in the server precheck; a malformed body
     is a clean 400, never a crash.
     """
+    try:
+        content, attachments = parse_capture_request(raw, content_type)
+    except ValueError as exc:
+        return IntakeResult(400, {"error": str(exc)})
+    return _process_capture(
+        content, attachments, save=save, organize=organize, transcribe=transcribe
+    )
+
+
+def parse_capture_request(
+    raw: bytes, content_type: str
+) -> tuple[str, tuple[CaptureAttachment, ...]]:
+    """Decode a /capture body by Content-Type into `(content, attachments)`; raises ValueError.
+
+    The FAST, synchronous half of a capture (validate + decode). Splitting it out lets a server
+    reply immediately — 400 on a bad body, otherwise accept — and defer the slow save/transcribe/
+    organize to a background worker, so a phone's HTTP client doesn't time out waiting for the
+    local-LLM organize (which drops the connection mid-response: WinError 10053)."""
     from grandplan.adapters.http_intake import parse_payload
 
     mime = content_type.split(";", 1)[0].strip().lower()
-    try:
-        if mime == "multipart/form-data":
-            content, attachments = parse_multipart_capture(raw, content_type)
-        elif mime == "application/x-www-form-urlencoded":
-            content, attachments = parse_urlencoded_capture(raw)
-        else:
-            content, attachments = parse_capture(parse_payload(raw))
-    except ValueError as exc:
-        return IntakeResult(400, {"error": str(exc)})
+    if mime == "multipart/form-data":
+        return parse_multipart_capture(raw, content_type)
+    if mime == "application/x-www-form-urlencoded":
+        return parse_urlencoded_capture(raw)
+    return parse_capture(parse_payload(raw))
+
+
+def process_capture(
+    content: str,
+    attachments: tuple[CaptureAttachment, ...],
+    *,
+    save: Callable[[str, bytes], str],
+    organize: Callable[[str], str | None],
+    transcribe: Callable[[str], str | None] | None = None,
+) -> IntakeResult:
+    """Public alias for the save → transcribe → organize half (a server runs it in the background
+    after `parse_capture_request` has validated + the fast reply has been sent)."""
     return _process_capture(
         content, attachments, save=save, organize=organize, transcribe=transcribe
     )
