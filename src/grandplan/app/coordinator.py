@@ -236,7 +236,7 @@ class CaptureCoordinator:
             self._emit(Stage.FAILED, f"capture failed: {exc}")
             return False
         if not text or not text.strip():
-            self._emit(Stage.EMPTY, "no text was selected")
+            self._emit(Stage.EMPTY, "nothing new to capture — select text and press Ctrl+C first")
             return False
         return self._enqueue(text)
 
@@ -395,7 +395,9 @@ class CaptureCoordinator:
                 self._emit(Stage.CAPTURING, "reading the selection")
                 text = self._capturer.capture()
             if not text:
-                self._emit(Stage.EMPTY, "no text was selected")
+                self._emit(
+                    Stage.EMPTY, "nothing new to capture — select text and press Ctrl+C first"
+                )
                 return None
             # Show WHAT is being analyzed, not just that analysis is happening — this stage is
             # the longest (a full local-LLM call) and used to be a black box (US-7).

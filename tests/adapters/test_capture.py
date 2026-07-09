@@ -8,147 +8,59 @@ from grandplan.adapters.capture import ClipboardCapturer, HotkeyDebouncer, resol
 
 
 class FakeClipboard:
-    """In-memory clipboard backend; `send_copy` simulates Ctrl+C putting the selection on it."""
+    """In-memory clipboard: `read()` returns whatever the user has copied. No writer, no synthetic
+    copy — the safe copy-first model injects zero keystrokes."""
 
-    def __init__(self, *, clipboard: str | None = None, selection: str | None = None) -> None:
+    def __init__(self, *, clipboard: str | None = None) -> None:
         self.clipboard = clipboard
-        self.selection = selection
-        self.copies = 0
 
     def read(self) -> str | None:
         return self.clipboard
 
-    def write(self, text: str) -> None:
-        self.clipboard = text
 
-    def send_copy(self) -> None:
-        self.copies += 1
-        self.clipboard = self.selection
+def _uia(text: str | None):  # type: ignore[no-untyped-def]
+    return lambda: text
 
 
-def test_capture_returns_selection_and_restores_clipboard() -> None:
-    fake = FakeClipboard(clipboard="PREV", selection="hello selection")
-    assert ClipboardCapturer(fake).capture() == "hello selection"
-    assert fake.copies == 1
-    assert fake.clipboard == "PREV"  # prior clipboard restored
+def test_uia_selection_is_used_without_touching_the_clipboard() -> None:
+    # Native apps (Notepad, etc.) expose their selection to UI Automation — capture it directly.
+    fake = FakeClipboard(clipboard="something else entirely")
+    assert (
+        ClipboardCapturer(fake, uia=_uia("selected in notepad")).capture() == "selected in notepad"
+    )
 
 
-def test_empty_selection_returns_none_and_restores() -> None:
-    fake = FakeClipboard(clipboard="PREV", selection="   ")
-    assert ClipboardCapturer(fake).capture() is None
-    assert fake.clipboard == "PREV"
+def test_falls_back_to_the_text_the_user_copied() -> None:
+    # Web apps (Gmail, iCloud web, Docs) expose nothing to UIA → we read what the user copied with
+    # their OWN Ctrl+C. grandplan injects no keystrokes — safe in every app.
+    fake = FakeClipboard(clipboard="text I copied from gmail")
+    assert ClipboardCapturer(fake, uia=_uia(None)).capture() == "text I copied from gmail"
 
 
-def test_none_previous_clipboard_restored_as_empty_string() -> None:
-    fake = FakeClipboard(clipboard=None, selection="x")
-    assert ClipboardCapturer(fake).capture() == "x"
-    assert fake.clipboard == ""
+def test_empty_clipboard_returns_none() -> None:
+    assert ClipboardCapturer(FakeClipboard(clipboard="   "), uia=_uia(None)).capture() is None
+    assert ClipboardCapturer(FakeClipboard(clipboard=None), uia=_uia(None)).capture() is None
 
 
-def test_uia_path_skips_clipboard() -> None:
-    fake = FakeClipboard(clipboard="PREV", selection="unused")
-
-    def uia() -> str | None:
-        return "from uia"
-
-    capturer = ClipboardCapturer(fake, uia=uia)
-    assert capturer.capture() == "from uia"
-    assert fake.copies == 0  # clipboard untouched
-    assert fake.clipboard == "PREV"
-
-
-def test_uia_none_falls_back_to_clipboard() -> None:
-    fake = FakeClipboard(clipboard="PREV", selection="clip selection")
-
-    def uia() -> str | None:
-        return None
-
-    assert ClipboardCapturer(fake, uia=uia).capture() == "clip selection"
-    assert fake.copies == 1
+def test_repeated_trigger_on_unchanged_clipboard_does_not_re_capture() -> None:
+    # Pressing the hotkey again WITHOUT a fresh copy must be a no-op — never re-file stale content
+    # (the old "it captured a background command" class of bug). A new copy captures again.
+    fake = FakeClipboard(clipboard="my note")
+    cap = ClipboardCapturer(fake, uia=_uia(None))
+    assert cap.capture() == "my note"  # fresh copy → captured
+    assert cap.capture() is None  # unchanged clipboard → skipped
+    fake.clipboard = "a different note"  # user copies something new
+    assert cap.capture() == "a different note"  # fresh again → captured
 
 
-def test_no_fresh_selection_never_captures_stale_clipboard() -> None:
-    # Regression: a background process left content on the clipboard and the user highlighted nothing,
-    # so Ctrl+C is a no-op and leaves the clipboard UNCHANGED. We must return None — never the stale
-    # content the user didn't select (the real-world "it captured a background command" bug).
-    class NoSelectionClipboard:
-        """Ctrl+C copies nothing (no selection), so it leaves the clipboard exactly as it was."""
-
-        def __init__(self, content: str) -> None:
-            self.clipboard: str | None = content
-            self.copies = 0
-
+def test_capturer_only_needs_a_reader_never_injects_keystrokes() -> None:
+    # SAFETY: the backend exposes only read() — no clipboard writer, no synthetic Ctrl+C. So capture
+    # can never open DevTools, steal focus, or corrupt the user's typing (all caused by injection).
+    class ReadOnlyBackend:
         def read(self) -> str | None:
-            return self.clipboard
+            return "copied text"
 
-        def write(self, text: str) -> None:
-            self.clipboard = text
-
-        def send_copy(self) -> None:
-            self.copies += 1  # no selection → does NOT change the clipboard
-
-    fake = NoSelectionClipboard("STALE BACKGROUND COMMAND")
-    assert ClipboardCapturer(fake).capture() is None  # not the stale content
-    assert fake.clipboard == "STALE BACKGROUND COMMAND"  # prior clipboard restored
-
-
-# -- browser/web-app capture robustness (Gmail-in-browser bug) ------------------------------------
-
-
-def test_waits_for_physical_modifier_release_before_copying() -> None:
-    # The hotkey (e.g. ctrl+shift+g) means those modifiers are still PHYSICALLY held when capture
-    # runs; a synthetic Ctrl+C then lands as Ctrl+Shift+C (in Chrome that opens DevTools and copies
-    # NOTHING — the Gmail-in-browser "no text selected" bug). We must wait for release, THEN copy.
-    state = {"held": True, "checks": 0}
-
-    def modifiers_held() -> bool:
-        state["checks"] += 1
-        if state["checks"] >= 3:  # user lets go after a couple of polls
-            state["held"] = False
-        return state["held"]
-
-    held_at_copy: list[bool] = []
-
-    class RecordingClipboard(FakeClipboard):
-        def send_copy(self) -> None:
-            held_at_copy.append(state["held"])  # snapshot modifier state at the moment of Ctrl+C
-            super().send_copy()
-
-    fake = RecordingClipboard(clipboard="PREV", selection="text from gmail")
-    capturer = ClipboardCapturer(fake, modifiers_held=modifiers_held, sleep=lambda _s: None)
-    assert capturer.capture() == "text from gmail"
-    assert held_at_copy == [False]  # Ctrl+C only fired AFTER the modifiers were released
-    assert state["checks"] >= 3  # it actually polled/waited
-
-
-def test_never_synthesizes_copy_while_modifiers_stay_held() -> None:
-    # SAFETY (critical): if the hotkey modifiers are never released, injecting Ctrl+C would land as
-    # Ctrl+Shift+C — which opens Chrome DevTools AND can leave a key stuck down, turning the user's
-    # next keystrokes into shortcuts that DELETE their text (observed live). We must skip the
-    # synthetic copy entirely rather than inject into a held-modifier state.
-    class NoCopyClipboard(FakeClipboard):
-        def send_copy(self) -> None:
-            raise AssertionError("send_copy must NOT run while the modifiers are still held")
-
-    fake = NoCopyClipboard(clipboard="PREV", selection="unused")
-    capturer = ClipboardCapturer(fake, modifiers_held=lambda: True, sleep=lambda _s: None)
-    assert capturer.capture() is None  # no capture — but critically, no keystroke injection
-    assert fake.clipboard == "PREV"  # prior clipboard restored even on the safety skip
-
-
-def test_retries_copy_once_when_first_attempt_yields_nothing() -> None:
-    # A browser/web app (Gmail, Outlook web) often drops the FIRST synthetic Ctrl+C on focus/timing;
-    # one clean retry recovers it. Safe because we cleared the clipboard first (no stale capture).
-    class FlakyClipboard(FakeClipboard):
-        def send_copy(self) -> None:
-            self.copies += 1
-            if self.copies >= 2:  # the second Ctrl+C lands
-                self.clipboard = self.selection
-
-    fake = FlakyClipboard(clipboard="PREV", selection="recovered on retry")
-    assert ClipboardCapturer(fake, sleep=lambda _s: None).capture() == "recovered on retry"
-    assert fake.copies == 2
-    assert fake.clipboard == "PREV"  # prior clipboard still restored
+    assert ClipboardCapturer(ReadOnlyBackend(), uia=_uia(None)).capture() == "copied text"
 
 
 # -- hotkey resolution + debounce ----------------------------------------------------------------
