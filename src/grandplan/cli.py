@@ -89,6 +89,7 @@ def organize_text(
     entity_extractor: EntityExtractor | None = None,
     repo: NoteRepository | None = None,
     originals: OriginalStore | None = None,
+    skip_duplicates: bool = True,
 ) -> RunSummary:
     """Run the full core loop over each paragraph of `text` into `vault_dir`.
 
@@ -119,7 +120,12 @@ def organize_text(
         assessment = assess(
             proposed, embedder=active_embedder, repo=repo, reconciler=active_reconciler
         )
-        if assessment.proposal.is_probable_duplicate:
+        # A DELIBERATE capture (phone/hotkey send) must CREATE the note and let it LINK to similar
+        # ones — like the desktop review flow, which never auto-drops. Only BATCH import
+        # (`grandplan organize` on a file) skips fuzzy duplicates to avoid clutter. Re-running the
+        # EXACT same text is a no-op either way (content-hash note ids), so this skip is purely the
+        # near-duplicate cull — off for capture (`skip_duplicates=False`).
+        if skip_duplicates and assessment.proposal.is_probable_duplicate:
             skipped += 1
             continue
         # Placement runs BEFORE commit so the new note isn't a candidate for its own parent.
@@ -1095,6 +1101,7 @@ def _make_capture_handler(
                 organizer=organizer,
                 repo=_open_repo(index_root),
                 originals=JsonlOriginalStore(index_root / "inbox.jsonl"),
+                skip_duplicates=False,  # a deliberate capture is created + linked, never dropped
             )
             if summary.notes == 0:
                 return None  # duplicate of an earlier capture — nothing new committed

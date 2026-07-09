@@ -67,6 +67,37 @@ def test_offline_core_pipeline_makes_no_non_loopback_egress(
     assert (tmp_path / "vault" / "Plan.md").exists()
 
 
+def test_capture_keeps_similar_notes_instead_of_dropping_them(tmp_path: Path) -> None:
+    # A deliberate capture (phone / up path) must CREATE a note even when it's flagged similar to an
+    # existing one — the desktop creates + links; only re-running the EXACT text is an idempotent
+    # no-op (content-hash ids, not the fuzzy skip). `skip_duplicates=False` is what capture passes.
+    from grandplan.core.reconcile import SimilarityReconciler
+
+    # every neighbour scores as DUPLICATE (any score >= 0 clears the bar)
+    force_dup = SimilarityReconciler(link_threshold=0.0, duplicate_threshold=0.0)
+    text = "distinct thought about apples\n\nanother distinct thought about oranges"
+
+    kept = organize_text(
+        text,
+        source=Source(app="test"),
+        created="2026-06-17T00:00:00+00:00",
+        vault_dir=tmp_path / "keep",
+        reconciler=force_dup,
+        skip_duplicates=False,
+    )
+    assert kept.notes == 2 and kept.skipped_duplicates == 0  # nothing rejected
+
+    dropped = organize_text(
+        text,
+        source=Source(app="test"),
+        created="2026-06-17T00:00:00+00:00",
+        vault_dir=tmp_path / "drop",
+        reconciler=force_dup,
+        skip_duplicates=True,  # legacy batch behaviour: the 2nd paragraph is dropped as a duplicate
+    )
+    assert dropped.notes == 1 and dropped.skipped_duplicates == 1
+
+
 def test_egress_guard_actually_blocks_non_loopback(forbid_non_loopback_egress: None) -> None:
     # Negative control: prove the guard would catch a real egress attempt (so the test above
     # is meaningful, not vacuously green).
