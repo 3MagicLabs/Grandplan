@@ -92,6 +92,50 @@ def test_no_fresh_selection_never_captures_stale_clipboard() -> None:
     assert fake.clipboard == "STALE BACKGROUND COMMAND"  # prior clipboard restored
 
 
+# -- browser/web-app capture robustness (Gmail-in-browser bug) ------------------------------------
+
+
+def test_waits_for_physical_modifier_release_before_copying() -> None:
+    # The hotkey (e.g. ctrl+shift+g) means those modifiers are still PHYSICALLY held when capture
+    # runs; a synthetic Ctrl+C then lands as Ctrl+Shift+C (in Chrome that opens DevTools and copies
+    # NOTHING — the Gmail-in-browser "no text selected" bug). We must wait for release, THEN copy.
+    state = {"held": True, "checks": 0}
+
+    def modifiers_held() -> bool:
+        state["checks"] += 1
+        if state["checks"] >= 3:  # user lets go after a couple of polls
+            state["held"] = False
+        return state["held"]
+
+    held_at_copy: list[bool] = []
+
+    class RecordingClipboard(FakeClipboard):
+        def send_copy(self) -> None:
+            held_at_copy.append(state["held"])  # snapshot modifier state at the moment of Ctrl+C
+            super().send_copy()
+
+    fake = RecordingClipboard(clipboard="PREV", selection="text from gmail")
+    capturer = ClipboardCapturer(fake, modifiers_held=modifiers_held, sleep=lambda _s: None)
+    assert capturer.capture() == "text from gmail"
+    assert held_at_copy == [False]  # Ctrl+C only fired AFTER the modifiers were released
+    assert state["checks"] >= 3  # it actually polled/waited
+
+
+def test_retries_copy_once_when_first_attempt_yields_nothing() -> None:
+    # A browser/web app (Gmail, Outlook web) often drops the FIRST synthetic Ctrl+C on focus/timing;
+    # one clean retry recovers it. Safe because we cleared the clipboard first (no stale capture).
+    class FlakyClipboard(FakeClipboard):
+        def send_copy(self) -> None:
+            self.copies += 1
+            if self.copies >= 2:  # the second Ctrl+C lands
+                self.clipboard = self.selection
+
+    fake = FlakyClipboard(clipboard="PREV", selection="recovered on retry")
+    assert ClipboardCapturer(fake, sleep=lambda _s: None).capture() == "recovered on retry"
+    assert fake.copies == 2
+    assert fake.clipboard == "PREV"  # prior clipboard still restored
+
+
 # -- hotkey resolution + debounce ----------------------------------------------------------------
 
 

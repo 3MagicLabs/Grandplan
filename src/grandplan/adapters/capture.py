@@ -1,12 +1,19 @@
 """Windows selection capture (issue #6) — conforms to the `Capturer` port.
 
-Universal method: save the clipboard → **clear it** → send Ctrl+C → read the *fresh* selection
-(still empty ⇒ nothing was highlighted, so we capture nothing rather than whatever a background
-process last left on the clipboard) → **restore** the prior clipboard (so we never clobber it). An
-optional Windows UI Automation probe is tried first — it reads the current selection directly from
-the focused control without touching the clipboard at all. The clipboard/keyboard backend is
-injected, so the save/restore/fallback LOGIC is unit-tested here; the real backend
-(pyperclip + pynput + uiautomation) is lazily imported and integration-tested on Windows
+Universal method: save the clipboard → **clear it** → (wait for the user to let go of the hotkey
+modifiers) → send Ctrl+C → read the *fresh* selection (still empty ⇒ nothing was highlighted, so
+we capture nothing rather than whatever a background process last left on the clipboard) →
+**restore** the prior clipboard (so we never clobber it). An optional Windows UI Automation probe
+is tried first — it reads the current selection directly from the focused control without touching
+the clipboard at all.
+
+Browser/web-app robustness (Gmail-in-browser bug): a web app doesn't expose its selection to UI
+Automation, so it falls to the clipboard path — where two things bite. (1) The hotkey modifiers
+are still PHYSICALLY held when capture runs, so a synthetic Ctrl+C lands as Ctrl+Shift+C (in
+Chrome that opens DevTools and copies nothing); we wait for physical release first (`modifiers_held`
+probe). (2) A browser often drops the first synthetic Ctrl+C on focus/timing, so we retry the copy
+once. Both defenses live in this injected, unit-tested logic; the OS backends (pyperclip + pynput +
+uiautomation + GetAsyncKeyState) are lazily imported and integration-tested on Windows
 (`pip install grandplan[windows]`).
 """
 
@@ -21,6 +28,12 @@ from typing import Protocol
 logger = logging.getLogger(__name__)
 
 SelectionProbe = Callable[[], str | None]
+ModifierProbe = Callable[[], bool]
+
+# How long to wait for the user to physically release the hotkey modifiers before synthesizing
+# Ctrl+C (so it isn't turned into Ctrl+Shift+C). Bounded so a stuck key can never hang a capture.
+_MODIFIER_RELEASE_WAIT_S = 1.0
+_MODIFIER_POLL_STEP_S = 0.02
 
 
 class ClipboardBackend(Protocol):
@@ -36,13 +49,23 @@ class ClipboardBackend(Protocol):
 class ClipboardCapturer:
     """Capture the current selection via the clipboard, preserving prior clipboard contents."""
 
-    def __init__(self, backend: ClipboardBackend, *, uia: SelectionProbe | None = None) -> None:
+    def __init__(
+        self,
+        backend: ClipboardBackend,
+        *,
+        uia: SelectionProbe | None = None,
+        modifiers_held: ModifierProbe | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self._backend = backend
         self._uia = uia
+        self._modifiers_held = modifiers_held  # None ⇒ can't probe key state (tests / non-Windows)
+        self._sleep = sleep
 
     def capture(self) -> str | None:
         # 1) Prefer UI Automation: it reads the CURRENT selection straight from the focused control,
         #    never touching the clipboard — so it can't pick up stale or background-written content.
+        #    (Web apps like Gmail-in-a-browser don't expose it, so those fall through to step 2.)
         if self._uia is not None:
             selected = self._uia()
             if selected and selected.strip():
@@ -55,12 +78,31 @@ class ClipboardCapturer:
         self._backend.write(
             ""
         )  # clear so "no fresh selection" is distinguishable from stale content
-        self._backend.send_copy()
-        selected = self._backend.read()
+        self._wait_for_modifier_release()
+        selected = self._copy_and_read()
+        if not (selected and selected.strip()):
+            # A browser/web app often ignores the FIRST synthetic Ctrl+C (focus/keystroke timing is
+            # slower than a native control). One clean retry recovers it — safe because we already
+            # cleared, so we still can't capture stale content.
+            selected = self._copy_and_read()
         self._backend.write(previous if previous is not None else "")  # restore prior clipboard
         if selected and selected.strip():
             return selected
         return None
+
+    def _wait_for_modifier_release(self) -> None:
+        """Block until the hotkey modifiers are physically released (or a timeout), so the synthetic
+        Ctrl+C isn't polluted into Ctrl+Shift+C. No-op when key state can't be probed."""
+        if self._modifiers_held is None:
+            return
+        waited = 0.0
+        while waited < _MODIFIER_RELEASE_WAIT_S and self._modifiers_held():
+            self._sleep(_MODIFIER_POLL_STEP_S)
+            waited += _MODIFIER_POLL_STEP_S
+
+    def _copy_and_read(self) -> str | None:
+        self._backend.send_copy()
+        return self._backend.read()
 
 
 class _WindowsClipboardBackend:  # pragma: no cover - needs Windows + grandplan[windows]
@@ -144,8 +186,28 @@ def _uia_selection() -> str | None:  # pragma: no cover - needs Windows UI Autom
         return None
 
 
+def _windows_modifiers_held() -> bool:  # pragma: no cover - needs Windows user32
+    """True while any hotkey modifier (Ctrl/Shift/Alt/Win) is PHYSICALLY down, via GetAsyncKeyState.
+
+    Lets the capturer wait for the user to let go of the hotkey chord before it synthesizes Ctrl+C,
+    so the copy isn't corrupted into Ctrl+Shift+C (the Gmail-in-browser capture failure)."""
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        # VK: SHIFT 0x10, CONTROL 0x11, MENU(Alt) 0x12, LWIN 0x5B, RWIN 0x5C. High bit ⇒ key down.
+        return any(user32.GetAsyncKeyState(vk) & 0x8000 for vk in (0x10, 0x11, 0x12, 0x5B, 0x5C))
+    except Exception:  # noqa: BLE001 - if key state can't be read, don't block the capture
+        logger.debug(
+            "modifier-state probe failed; capturing without the release wait", exc_info=True
+        )
+        return False
+
+
 def make_windows_capturer() -> ClipboardCapturer:  # pragma: no cover - Windows wiring
-    return ClipboardCapturer(_WindowsClipboardBackend(), uia=_uia_selection)
+    return ClipboardCapturer(
+        _WindowsClipboardBackend(), uia=_uia_selection, modifiers_held=_windows_modifiers_held
+    )
 
 
 # Friendly hotkey specs → pynput GlobalHotKeys notation. We deliberately avoid Ctrl+Alt: on Windows
