@@ -68,6 +68,8 @@ class ClipboardCapturer:
         #    (Web apps like Gmail-in-a-browser don't expose it, so those fall through to step 2.)
         if self._uia is not None:
             selected = self._uia()
+            # Log LENGTH only (never the user's text) — enough to see which stage yields nothing.
+            logger.debug("capture: UIA probe returned %d chars", len(selected or ""))
             if selected and selected.strip():
                 return selected
         # 2) Clipboard fallback. CLEAR the clipboard first, THEN copy: if the user has nothing
@@ -78,27 +80,35 @@ class ClipboardCapturer:
         self._backend.write(
             ""
         )  # clear so "no fresh selection" is distinguishable from stale content
-        self._wait_for_modifier_release()
+        waited = self._wait_for_modifier_release()
         selected = self._copy_and_read()
+        logger.debug(
+            "capture: waited %.2fs for modifiers; clipboard after copy #1: %d chars",
+            waited,
+            len(selected or ""),
+        )
         if not (selected and selected.strip()):
             # A browser/web app often ignores the FIRST synthetic Ctrl+C (focus/keystroke timing is
             # slower than a native control). One clean retry recovers it — safe because we already
             # cleared, so we still can't capture stale content.
             selected = self._copy_and_read()
+            logger.debug("capture: clipboard after copy #2: %d chars", len(selected or ""))
         self._backend.write(previous if previous is not None else "")  # restore prior clipboard
         if selected and selected.strip():
             return selected
         return None
 
-    def _wait_for_modifier_release(self) -> None:
+    def _wait_for_modifier_release(self) -> float:
         """Block until the hotkey modifiers are physically released (or a timeout), so the synthetic
-        Ctrl+C isn't polluted into Ctrl+Shift+C. No-op when key state can't be probed."""
+        Ctrl+C isn't polluted into Ctrl+Shift+C. No-op when key state can't be probed. Returns the
+        seconds waited (for diagnostics)."""
         if self._modifiers_held is None:
-            return
+            return 0.0
         waited = 0.0
         while waited < _MODIFIER_RELEASE_WAIT_S and self._modifiers_held():
             self._sleep(_MODIFIER_POLL_STEP_S)
             waited += _MODIFIER_POLL_STEP_S
+        return waited
 
     def _copy_and_read(self) -> str | None:
         self._backend.send_copy()
@@ -152,14 +162,19 @@ class _WindowsClipboardBackend:  # pragma: no cover - needs Windows + grandplan[
                 with contextlib.suppress(Exception):
                     keyboard.release(modifier)
         time.sleep(0.05)  # let the modifier-up events land before the synthetic copy
+        # Small gaps around the keystroke: a browser (Chrome/Gmail) can miss an injected Ctrl+C when
+        # ctrl-down and 'c' arrive in the same tick — it needs Ctrl observed as held BEFORE 'c', and
+        # 'c' held briefly before release. Native controls tolerate no-gap; browsers often don't.
         with keyboard.pressed(Key.ctrl):
+            time.sleep(0.03)
             keyboard.press("c")
+            time.sleep(0.03)
             keyboard.release("c")
         # POLL until the foreground app populates the clipboard, rather than waiting a fixed 50 ms.
         # The first/cold capture (and slow apps) can take far longer than 50 ms to respond to Ctrl+C;
         # with the clear-before-copy step that would read an empty clipboard and wrongly report
         # "nothing selected". When nothing is actually selected, this just polls out and stays empty.
-        for _ in range(30):  # up to ~600 ms
+        for _ in range(40):  # up to ~800 ms
             time.sleep(0.02)
             if pyperclip.paste():
                 return
@@ -180,6 +195,11 @@ def _uia_selection() -> str | None:  # pragma: no cover - needs Windows UI Autom
             return None
         ranges = pattern.GetSelection()
         text = "".join(text_range.GetText(-1) for text_range in ranges) if ranges else ""
+        # Length only (never the user's text). A browser typically returns 0 chars here (its rendered
+        # selection isn't exposed on the focused control) → we fall back to the clipboard.
+        logger.debug(
+            "UIA: %d selection range(s), %d chars", len(ranges) if ranges else 0, len(text)
+        )
         return text or None
     except Exception:  # noqa: BLE001 - UIA can fail many ways; fall back to clipboard, but log why
         logger.debug("UIA selection probe failed; falling back to clipboard capture", exc_info=True)
