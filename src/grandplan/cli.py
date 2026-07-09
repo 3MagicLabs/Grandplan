@@ -1561,6 +1561,16 @@ def _run_gui(args: argparse.Namespace) -> int:
     if missing:
         print(missing, file=sys.stderr)
         return 1
+    serve = bool(getattr(args, "serve", False))
+    serve_token = _resolve_token(getattr(args, "token", "")) if serve else ""
+    serve_host = getattr(args, "host", "127.0.0.1")
+    if serve and serve_host not in ("127.0.0.1", "localhost") and not serve_token:
+        print(
+            "error: --serve refuses to bind a non-localhost host without a --token "
+            "(anyone on the network could POST captures into your vault)",
+            file=sys.stderr,
+        )
+        return 1
     vault_dir = Path(args.vault)
     # Diagnosability (#5): every GUI run gets a rotating file log + sys/threading excepthooks, so
     # a crash (or a dying hotkey thread) leaves a traceback even with no console. --debug ALSO
@@ -1592,6 +1602,10 @@ def _run_gui(args: argparse.Namespace) -> int:
             hotkey=args.hotkey_combo,
             enrich=getattr(args, "enrich", False),
             kb_model=getattr(args, "kb_model", "") or None,
+            serve=serve,
+            serve_host=serve_host,
+            serve_port=getattr(args, "port", 8765),
+            serve_token=serve_token,
         )
     except ImportError as exc:
         print(
@@ -1992,6 +2006,26 @@ def main(argv: list[str] | None = None) -> int:
         "capture stage) — use this to diagnose a hotkey or capture that isn't responding. A "
         "rotating file log (<index>/logs/grandplan.log, incl. crash tracebacks from any thread) "
         "is always written, with or without --debug",
+    )
+    gui.add_argument(
+        "--serve",
+        action="store_true",
+        help="ALSO host the phone /capture server in the tray app, routed through the same single "
+        "writer as the hotkey — so phone + desktop capture never conflict (unified mode)",
+    )
+    gui.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="phone-capture bind host (default 127.0.0.1; a routable host for your phone needs "
+        "--token / GRANDPLAN_TOKEN)",
+    )
+    gui.add_argument(
+        "--port", type=int, default=8765, help="phone-capture bind port (default 8765)"
+    )
+    gui.add_argument(
+        "--token",
+        default="",
+        help="shared secret for the phone intake (Bearer; or set GRANDPLAN_TOKEN)",
     )
 
     args = parser.parse_args(argv)

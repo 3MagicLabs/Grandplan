@@ -20,6 +20,7 @@ fully unit-tested (`tests/test_coordinator.py`) on any platform.
 
 from __future__ import annotations
 
+import logging
 import signal
 import threading
 from collections.abc import Callable
@@ -54,6 +55,8 @@ from grandplan.core.reconcile import Reconciler, SimilarityReconciler
 from grandplan.core.store import JsonlOriginalStore
 from grandplan.core.update_detect import HeuristicUpdateDetector, UpdateDetector
 from grandplan.core.vault import MarkdownVaultWriter
+
+logger = logging.getLogger(__name__)
 
 # Ctrl+Shift+G avoids two traps: Ctrl+Alt (= AltGr on Windows, fires while typing) AND printable keys
 # like Space — pynput does NOT consume the hotkey, so the keystroke also reaches the focused app, and a
@@ -162,6 +165,78 @@ def _capture_components(
     return organizer, LlmContextualReconciler(model=model), LlmPlacer(model=model)
 
 
+def _start_phone_server(  # pragma: no cover - binds a socket; needs the windows/gui runtime
+    coordinator: CaptureCoordinator,
+    *,
+    index_root: Path,
+    vault_dir: Path,
+    host: str,
+    port: int,
+    token: str,
+) -> None:
+    """Host the phone `/capture` server in a daemon thread, routing every capture through the
+    coordinator (single writer, shared with the hotkey/tray). The request is validated synchronously
+    (fast 400 on a bad body); save + transcribe + submit run on a background thread so the phone gets
+    an immediate 202 and never waits on the local model.
+    """
+    import importlib.util as _ilu
+
+    from grandplan.adapters.capture_intake import parse_capture_request, process_capture
+    from grandplan.adapters.http_intake import IntakeResult, serve_intake
+    from grandplan.core.directive import JsonlDirectiveStore
+
+    attachments_dir = vault_dir / "attachments"
+
+    def save(name: str, data: bytes) -> str:
+        attachments_dir.mkdir(parents=True, exist_ok=True)
+        target = attachments_dir / name
+        stem, dot, ext = name.partition(".")
+        counter = 1
+        while target.exists():  # never overwrite an earlier capture's file (lossless)
+            target = attachments_dir / f"{stem}-{counter}{dot}{ext}"
+            counter += 1
+        target.write_bytes(data)
+        return str(target)
+
+    transcribe: Callable[[str], str | None] | None = None
+    if _ilu.find_spec("faster_whisper") is not None:
+        from grandplan.adapters.voice import transcribe_file
+
+        transcribe = transcribe_file
+
+    def submit(text: str) -> str:
+        # Route through the coordinator's ONE worker (auto-approved: no desktop dialog). Fast —
+        # just enqueues; the worker does the organize/commit, serialized with hotkey captures.
+        coordinator.submit_capture(text, source=Source(app="phone", title="capture"))
+        return "queued"
+
+    def handler(raw: bytes, content_type: str) -> object:
+        try:
+            content, attachments = parse_capture_request(raw, content_type)
+        except ValueError as exc:
+            return IntakeResult(400, {"error": str(exc)})
+
+        def work() -> None:
+            try:
+                process_capture(
+                    content, attachments, save=save, organize=submit, transcribe=transcribe
+                )
+            except Exception:  # noqa: BLE001 - a bad background capture must not kill the thread
+                logger.exception("phone capture failed")
+
+        threading.Thread(target=work, name="grandplan-phone-capture", daemon=True).start()
+        return IntakeResult(202, {"status": "captured — organizing in the background"})
+
+    store = JsonlDirectiveStore(index_root / "directives.jsonl")
+    threading.Thread(
+        target=serve_intake,
+        args=(store,),
+        kwargs={"host": host, "port": port, "token": token, "capture": handler},
+        daemon=True,
+    ).start()
+    print(f"phone capture live: POST http://{host}:{port}/capture")
+
+
 def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui]
     *,
     vault_dir: Path,
@@ -172,6 +247,10 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     model: str = DEFAULT_MODEL,
     enrich: bool = False,
     kb_model: str | None = None,
+    serve: bool = False,
+    serve_host: str = "127.0.0.1",
+    serve_port: int = 8765,
+    serve_token: str = "",
 ) -> int:
     from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -511,6 +590,21 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         kwargs={"on_dead": bridge.hotkey_dead.emit},
         daemon=True,
     ).start()
+
+    # Unified mode (`gui --serve`): host the phone /capture server IN this process and route every
+    # remote capture through the SAME coordinator worker as the hotkey/tray — one writer, so phone
+    # and desktop capture never conflict. Phone captures auto-file (submit_capture skips the review
+    # dialog); the desktop hotkey still pops it. Fully opt-in: without --serve this block never runs,
+    # so the plain desktop GUI is byte-for-byte unchanged.
+    if serve:
+        _start_phone_server(
+            coordinator,
+            index_root=index_root,
+            vault_dir=vault_dir,
+            host=serve_host,
+            port=serve_port,
+            token=serve_token,
+        )
 
     # Make Ctrl+C / Ctrl+Break / SIGTERM quit cleanly. Qt's C++ event loop otherwise swallows the
     # signal — Python never gets the CPU to run its handler. Register a handler that asks the app to

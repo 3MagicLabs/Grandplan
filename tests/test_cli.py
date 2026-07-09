@@ -1214,6 +1214,40 @@ def test_main_gui_embeddings_without_dep_fails_fast(
     assert "sentence-transformers" in capsys.readouterr().err
 
 
+def test_gui_serve_params_flow_to_run_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # --serve (unified mode) must hand the phone-server host/port/token to run_app so the tray app
+    # can host /capture routed through its single writer.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    seen: list[dict[str, object]] = []
+    monkeypatch.setattr("grandplan.app.gui.run_app", lambda **kw: seen.append(kw) or 0)
+    assert (
+        main(["gui", "-o", str(tmp_path / "v"), "--serve", "--port", "9999", "--token", "sekret"])
+        == 0
+    )
+    assert seen[0]["serve"] is True
+    assert seen[0]["serve_port"] == 9999
+    assert seen[0]["serve_token"] == "sekret"
+    assert seen[0]["serve_host"] == "127.0.0.1"
+    # Without --serve the phone server stays off — the plain desktop GUI is unchanged.
+    assert main(["gui", "-o", str(tmp_path / "v")]) == 0
+    assert seen[1]["serve"] is False
+
+
+def test_gui_serve_requires_token_for_non_localhost(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Hosting phone capture on a routable host without a shared secret would let anyone on the LAN
+    # POST into the vault — refuse it, same rule as `up`/`serve`.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("GRANDPLAN_TOKEN", raising=False)
+    monkeypatch.setattr("grandplan.app.gui.run_app", lambda **kw: 0)
+    code = main(["gui", "-o", str(tmp_path / "v"), "--serve", "--host", "192.168.1.5"])
+    assert code == 1
+    assert "token" in capsys.readouterr().err
+
+
 def test_up_embeddings_without_dep_fails_fast(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
