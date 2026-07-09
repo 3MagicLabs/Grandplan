@@ -121,6 +121,21 @@ def test_waits_for_physical_modifier_release_before_copying() -> None:
     assert state["checks"] >= 3  # it actually polled/waited
 
 
+def test_never_synthesizes_copy_while_modifiers_stay_held() -> None:
+    # SAFETY (critical): if the hotkey modifiers are never released, injecting Ctrl+C would land as
+    # Ctrl+Shift+C — which opens Chrome DevTools AND can leave a key stuck down, turning the user's
+    # next keystrokes into shortcuts that DELETE their text (observed live). We must skip the
+    # synthetic copy entirely rather than inject into a held-modifier state.
+    class NoCopyClipboard(FakeClipboard):
+        def send_copy(self) -> None:
+            raise AssertionError("send_copy must NOT run while the modifiers are still held")
+
+    fake = NoCopyClipboard(clipboard="PREV", selection="unused")
+    capturer = ClipboardCapturer(fake, modifiers_held=lambda: True, sleep=lambda _s: None)
+    assert capturer.capture() is None  # no capture — but critically, no keystroke injection
+    assert fake.clipboard == "PREV"  # prior clipboard restored even on the safety skip
+
+
 def test_retries_copy_once_when_first_attempt_yields_nothing() -> None:
     # A browser/web app (Gmail, Outlook web) often drops the FIRST synthetic Ctrl+C on focus/timing;
     # one clean retry recovers it. Safe because we cleared the clipboard first (no stale capture).
