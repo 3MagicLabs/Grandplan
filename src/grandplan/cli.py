@@ -961,6 +961,7 @@ def _run_up(args: argparse.Namespace) -> int:
         _open_graph_in_obsidian(vault_dir)
     if args.dry_run:
         return 0
+    _enable_up_console_logging()  # so each capture's outcome is visible, not a black box
     _serve_all(  # pragma: no cover - launches the long-running server + watch threads
         store,
         vault_dir=vault_dir,
@@ -977,6 +978,20 @@ def _run_up(args: argparse.Namespace) -> int:
         model=args.model,
     )
     return 0
+
+
+def _enable_up_console_logging() -> None:  # pragma: no cover - console side effect for the server
+    """Print grandplan's INFO logs (per-request intake + each capture's outcome) to the console, so
+    `up` isn't a black box — you can watch a phone send land, create a note, or skip a duplicate."""
+    marker = "_grandplan_up_console"
+    gp = logging.getLogger("grandplan")
+    gp.setLevel(logging.INFO)
+    if not any(getattr(h, marker, False) for h in gp.handlers):
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        setattr(handler, marker, True)
+        gp.addHandler(handler)
+        gp.propagate = False  # our handler prints it once; don't also hit the root last-resort
 
 
 def _serve_all(  # pragma: no cover - long-running threads (HTTP serve + folder watch + hotkey)
@@ -1094,12 +1109,29 @@ def _make_capture_handler(
             return IntakeResult(400, {"error": str(exc)})
 
         def work() -> None:
+            log = logging.getLogger(__name__)
             try:
-                process_capture(
+                result = process_capture(
                     content, attachments, save=save, organize=organize, transcribe=transcribe
                 )
+                note = result.body.get("note")
+                if note:
+                    log.info(
+                        "phone capture: %s (%d chars, %d file(s))",
+                        note,
+                        len(content),
+                        len(attachments),
+                    )
+                else:
+                    # Organize ran (that's the CPU spike) but committed nothing — almost always a
+                    # near-duplicate of an existing note (dedup). Logged so it isn't a silent no-op.
+                    log.info(
+                        "phone capture: NO new note — organized but committed nothing "
+                        "(usually a duplicate of an existing note) [%d chars]",
+                        len(content),
+                    )
             except Exception:  # noqa: BLE001 - a failed background capture must not kill the thread
-                logging.getLogger(__name__).exception("background capture failed")
+                log.exception("background capture failed")
 
         threading.Thread(target=work, name="grandplan-capture", daemon=True).start()
         return IntakeResult(202, {"status": "captured — organizing in the background"})
