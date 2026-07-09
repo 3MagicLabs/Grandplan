@@ -1214,9 +1214,7 @@ def test_main_gui_embeddings_without_dep_fails_fast(
     assert "sentence-transformers" in capsys.readouterr().err
 
 
-def test_gui_serve_params_flow_to_run_app(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_gui_serve_params_flow_to_run_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # --serve (unified mode) must hand the phone-server host/port/token to run_app so the tray app
     # can host /capture routed through its single writer.
     monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
