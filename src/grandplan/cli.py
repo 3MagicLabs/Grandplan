@@ -830,6 +830,7 @@ def _capture_to_vault(
     placer: Placer | None = None,
     reconciler: Reconciler | None = None,
     entity_extractor: EntityExtractor | None = None,
+    embedder: Embedder | None = None,
 ) -> str | None:
     """Grab the current selection (via `capturer.capture()`) and organize it into the vault.
 
@@ -847,17 +848,25 @@ def _capture_to_vault(
         created=created,
         vault_dir=vault_dir,
         organizer=organizer,
+        embedder=embedder,
         placer=placer or HeuristicPlacer(),  # nest the capture under a related goal/project
         reconciler=reconciler,
         entity_extractor=entity_extractor,
         repo=_open_repo(index_root),
         originals=JsonlOriginalStore(index_root / "inbox.jsonl"),
+        skip_duplicates=False,  # a deliberate hotkey capture is created + linked, never dropped
     )
     return text
 
 
 def _run_hotkey(  # pragma: no cover - global hotkey listener + Windows selection capture (no UI)
-    vault_dir: Path, index_root: Path, *, hotkey: str, use_llm: bool, model: str
+    vault_dir: Path,
+    index_root: Path,
+    *,
+    hotkey: str,
+    use_llm: bool,
+    use_embeddings: bool,
+    model: str,
 ) -> None:
     """Listen for the global hotkey; on each press, capture the selection and organize it (forever).
 
@@ -868,6 +877,7 @@ def _run_hotkey(  # pragma: no cover - global hotkey listener + Windows selectio
 
     capturer = make_windows_capturer()
     organizer = OllamaOrganizer(model=model, require=False) if use_llm else None
+    embedder: Embedder = SentenceTransformerEmbedder() if use_embeddings else HashingEmbedder()
     placer: Placer = LlmPlacer(model=model) if use_llm else HeuristicPlacer()
     reconciler = LlmContextualReconciler(model=model) if use_llm else None
     entity_extractor = LlmEntityExtractor(model=model) if use_llm else None
@@ -884,6 +894,7 @@ def _run_hotkey(  # pragma: no cover - global hotkey listener + Windows selectio
             placer=placer,
             reconciler=reconciler,
             entity_extractor=entity_extractor,
+            embedder=embedder,
         )
         if text:
             print(f"  ✓ saved: {text[:60].strip()}")
@@ -938,6 +949,14 @@ def _run_up(args: argparse.Namespace) -> int:
         )
         return 1
     use_llm = not args.no_llm
+    use_embeddings = bool(args.embeddings)
+    if use_embeddings and importlib.util.find_spec("sentence_transformers") is None:
+        print(
+            'error: --embeddings needs sentence-transformers — `pip install -e ".[embeddings]"` '
+            "(or drop --embeddings to use the hashing baseline)",
+            file=sys.stderr,
+        )
+        return 1
     if hotkey and use_llm and importlib.util.find_spec("ollama") is None:
         # Don't fail — captures still work offline — but tell the user the AI won't run as asked.
         print(
@@ -981,6 +1000,7 @@ def _run_up(args: argparse.Namespace) -> int:
         interval=args.interval,
         hotkey=hotkey,
         use_llm=use_llm,
+        use_embeddings=use_embeddings,
         model=args.model,
     )
     return 0
@@ -1014,6 +1034,7 @@ def _serve_all(  # pragma: no cover - long-running threads (HTTP serve + folder 
     interval: float,
     hotkey: str | None,
     use_llm: bool,
+    use_embeddings: bool,
     model: str,
 ) -> None:
     """Run folder-watch (+ optional global hotkey) as daemon threads and the HTTP server foreground."""
@@ -1039,17 +1060,26 @@ def _serve_all(  # pragma: no cover - long-running threads (HTTP serve + folder 
         threading.Thread(
             target=_run_hotkey,
             args=(vault_dir, index_root),
-            kwargs={"hotkey": hotkey, "use_llm": use_llm, "model": model},
+            kwargs={
+                "hotkey": hotkey,
+                "use_llm": use_llm,
+                "use_embeddings": use_embeddings,
+                "model": model,
+            },
             daemon=True,
         ).start()
     capture = _make_capture_handler(
-        vault_dir=vault_dir, index_root=index_root, use_llm=use_llm, model=model
+        vault_dir=vault_dir,
+        index_root=index_root,
+        use_llm=use_llm,
+        use_embeddings=use_embeddings,
+        model=model,
     )
     serve_intake(store, host=host, port=port, token=token, capture=capture)
 
 
 def _make_capture_handler(
-    *, vault_dir: Path, index_root: Path, use_llm: bool, model: str
+    *, vault_dir: Path, index_root: Path, use_llm: bool, use_embeddings: bool, model: str
 ) -> Callable[[bytes, str], object]:
     """The POST /capture handler for `up` (#37): text + attachments from a phone → organized note.
 
@@ -1072,6 +1102,8 @@ def _make_capture_handler(
 
     lock = threading.Lock()
     organizer = OllamaOrganizer(model=model, require=False) if use_llm else None
+    # One embedder instance for the server's lifetime (the ST model loads once, not per capture).
+    embedder: Embedder = SentenceTransformerEmbedder() if use_embeddings else HashingEmbedder()
     attachments_dir = vault_dir / "attachments"
 
     def save(name: str, data: bytes) -> str:
@@ -1099,6 +1131,7 @@ def _make_capture_handler(
                 created=datetime.now(timezone.utc).isoformat(),
                 vault_dir=vault_dir,
                 organizer=organizer,
+                embedder=embedder,
                 repo=_open_repo(index_root),
                 originals=JsonlOriginalStore(index_root / "inbox.jsonl"),
                 skip_duplicates=False,  # a deliberate capture is created + linked, never dropped
@@ -1868,6 +1901,13 @@ def main(argv: list[str] | None = None) -> int:
         "model, falling back to offline when Ollama is unreachable)",
     )
     up_cmd.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model for hotkey captures")
+    up_cmd.add_argument(
+        "--embeddings",
+        action="store_true",
+        help="use local sentence-transformer embeddings for similarity/linking (needs the "
+        "'embeddings' extra). Match how the vault was built — a vault made with the hashing "
+        "baseline must be `regenerate`d with --embeddings before switching, or similarity breaks",
+    )
     up_cmd.add_argument(
         "--dry-run", action="store_true", help="set up + print the banner, but don't serve"
     )

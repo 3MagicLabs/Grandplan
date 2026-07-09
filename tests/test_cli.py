@@ -1214,6 +1214,24 @@ def test_main_gui_embeddings_without_dep_fails_fast(
     assert "sentence-transformers" in capsys.readouterr().err
 
 
+def test_up_embeddings_without_dep_fails_fast(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `up --embeddings` must fail fast with install guidance (not organize the first phone capture
+    # on a half-configured embedder) — same contract as the GUI.
+    import importlib.util as ilu
+
+    real_find_spec = ilu.find_spec
+    monkeypatch.setattr(
+        ilu,
+        "find_spec",
+        lambda name, *a, **k: None if name == "sentence_transformers" else real_find_spec(name),
+    )
+    code = main(["up", "-o", str(tmp_path / "v"), "--embeddings", "--dry-run"])
+    assert code == 1
+    assert "sentence-transformers" in capsys.readouterr().err
+
+
 # -- capture-check input diagnostics -------------------------------------------------------------
 
 from grandplan.cli import _capture_check_deps  # noqa: E402
