@@ -8,12 +8,14 @@ is tried first — it reads the current selection directly from the focused cont
 the clipboard at all.
 
 Browser/web-app robustness (Gmail-in-browser bug): a web app doesn't expose its selection to UI
-Automation, so it falls to the clipboard path — where two things bite. (1) The hotkey modifiers
-are still PHYSICALLY held when capture runs, so a synthetic Ctrl+C lands as Ctrl+Shift+C (in
-Chrome that opens DevTools and copies nothing); we wait for physical release first (`modifiers_held`
-probe). (2) A browser often drops the first synthetic Ctrl+C on focus/timing, so we retry the copy
-once. Both defenses live in this injected, unit-tested logic; the OS backends (pyperclip + pynput +
-uiautomation + GetAsyncKeyState) are lazily imported and integration-tested on Windows
+Automation, so it falls to the clipboard path — where two things bite. (1) The hotkey modifiers are
+still PHYSICALLY held when capture runs, so a synthetic Ctrl+C lands as Ctrl+Shift+C (in Chrome that
+opens DevTools and copies nothing). The backend force-releases the modifiers in software with
+scan-code key-UP events, then sends a clean scan-code Ctrl+C — so the copy works WITHOUT the user
+letting go of the keys (AutoHotkey's technique; scan codes are also what Chromium reliably honors).
+(2) A browser often drops the first synthetic Ctrl+C on focus/timing, so we retry the copy once —
+this lives in the injected, unit-tested `ClipboardCapturer`. The OS backend (pyperclip + user32
+keybd_event, pynput fallback + uiautomation) is lazily imported and integration-tested on Windows
 (`pip install grandplan[windows]`).
 """
 
@@ -31,8 +33,11 @@ SelectionProbe = Callable[[], str | None]
 ModifierProbe = Callable[[], bool]
 
 # How long to wait for the user to physically release the hotkey modifiers before synthesizing
-# Ctrl+C (so it isn't turned into Ctrl+Shift+C). Bounded so a stuck key can never hang a capture.
-_MODIFIER_RELEASE_WAIT_S = 1.0
+# Ctrl+C (so it isn't turned into Ctrl+Shift+C — which in Chrome opens DevTools and copies nothing,
+# the observed Gmail-in-browser failure). The loop copies the INSTANT the keys go up; this is only
+# the cap. Raised from 1s after a real capture held the chord ~1s+ and the wait timed out while
+# still held. Still bounded so a genuinely stuck key can never hang a capture.
+_MODIFIER_RELEASE_WAIT_S = 3.0
 _MODIFIER_POLL_STEP_S = 0.02
 
 
@@ -131,45 +136,14 @@ class _WindowsClipboardBackend:  # pragma: no cover - needs Windows + grandplan[
         import time
 
         import pyperclip
-        from pynput.keyboard import Controller, Key
 
-        keyboard = Controller()
-        # The capture hotkey is a modifier combo (e.g. ctrl+shift+g, or ctrl+shift+f13 via the Copilot
-        # key). pynput does not consume it, so when this runs those modifiers are still held — a raw
-        # Ctrl+C would collide with the held SHIFT and become Ctrl+Shift+C, which copies NOTHING (the
-        # clipboard stays empty and we wrongly report "no text selected"). Release every modifier and
-        # let the key-up events register, THEN send a clean Ctrl+C. (Releasing a not-held key is a
-        # harmless no-op, so this is safe regardless of which modifiers the chosen hotkey used.)
-        for name in (
-            "shift",
-            "shift_l",
-            "shift_r",
-            "alt",
-            "alt_l",
-            "alt_r",
-            "alt_gr",
-            "cmd",
-            "cmd_l",
-            "cmd_r",
-            "ctrl",
-            "ctrl_l",
-            "ctrl_r",
-        ):
-            modifier = getattr(Key, name, None)
-            if modifier is not None:
-                # Releasing a not-held key is a harmless no-op; suppress any backend error so a flaky
-                # key-release can never break the capture itself.
-                with contextlib.suppress(Exception):
-                    keyboard.release(modifier)
-        time.sleep(0.05)  # let the modifier-up events land before the synthetic copy
-        # Small gaps around the keystroke: a browser (Chrome/Gmail) can miss an injected Ctrl+C when
-        # ctrl-down and 'c' arrive in the same tick — it needs Ctrl observed as held BEFORE 'c', and
-        # 'c' held briefly before release. Native controls tolerate no-gap; browsers often don't.
-        with keyboard.pressed(Key.ctrl):
-            time.sleep(0.03)
-            keyboard.press("c")
-            time.sleep(0.03)
-            keyboard.release("c")
+        # Force the hotkey modifiers UP, then send a clean Ctrl+C. The user is typically STILL
+        # physically holding the hotkey chord (e.g. ctrl+shift+g) when this runs, so a naive Ctrl+C
+        # becomes Ctrl+Shift+C — which in Chrome opens DevTools and copies nothing (the Gmail bug).
+        # Injecting scan-code key-UPs makes the target see the modifiers released regardless of the
+        # physical keys, so the copy is clean without waiting on the user (AutoHotkey's technique).
+        if not _force_clean_ctrl_c_windows():
+            self._pynput_ctrl_c()  # fallback if the scan-code path is unavailable
         # POLL until the foreground app populates the clipboard, rather than waiting a fixed 50 ms.
         # The first/cold capture (and slow apps) can take far longer than 50 ms to respond to Ctrl+C;
         # with the clear-before-copy step that would read an empty clipboard and wrongly report
@@ -178,6 +152,24 @@ class _WindowsClipboardBackend:  # pragma: no cover - needs Windows + grandplan[
             time.sleep(0.02)
             if pyperclip.paste():
                 return
+
+    def _pynput_ctrl_c(self) -> None:
+        import time
+
+        from pynput.keyboard import Controller, Key
+
+        keyboard = Controller()
+        for name in ("shift", "shift_l", "shift_r", "alt", "alt_l", "alt_r", "alt_gr", "ctrl"):
+            modifier = getattr(Key, name, None)
+            if modifier is not None:
+                with contextlib.suppress(Exception):
+                    keyboard.release(modifier)
+        time.sleep(0.05)
+        with keyboard.pressed(Key.ctrl):
+            time.sleep(0.03)
+            keyboard.press("c")
+            time.sleep(0.03)
+            keyboard.release("c")
 
 
 def _uia_selection() -> str | None:  # pragma: no cover - needs Windows UI Automation
@@ -206,28 +198,49 @@ def _uia_selection() -> str | None:  # pragma: no cover - needs Windows UI Autom
         return None
 
 
-def _windows_modifiers_held() -> bool:  # pragma: no cover - needs Windows user32
-    """True while any hotkey modifier (Ctrl/Shift/Alt/Win) is PHYSICALLY down, via GetAsyncKeyState.
+def _force_clean_ctrl_c_windows() -> bool:  # pragma: no cover - needs Windows user32
+    """Force Shift/Ctrl/Alt UP (scan-code), then send a clean Ctrl+C (scan-code). Returns True if sent.
 
-    Lets the capturer wait for the user to let go of the hotkey chord before it synthesizes Ctrl+C,
-    so the copy isn't corrupted into Ctrl+Shift+C (the Gmail-in-browser capture failure)."""
+    Scan-code key-UP events make the target app's input stream show the modifiers released even while
+    the user still physically holds the hotkey chord, so the following Ctrl+C is a *clean* Ctrl+C —
+    not Ctrl+Shift+C. Scan codes (not virtual keys) are also what Chromium apps reliably honor. This
+    is why capture no longer needs the user to let go of the keys first."""
     try:
         import ctypes
+        import time
 
         user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-        # VK: SHIFT 0x10, CONTROL 0x11, MENU(Alt) 0x12, LWIN 0x5B, RWIN 0x5C. High bit ⇒ key down.
-        return any(user32.GetAsyncKeyState(vk) & 0x8000 for vk in (0x10, 0x11, 0x12, 0x5B, 0x5C))
-    except Exception:  # noqa: BLE001 - if key state can't be read, don't block the capture
-        logger.debug(
-            "modifier-state probe failed; capturing without the release wait", exc_info=True
-        )
+        scancode = 0x0008  # KEYEVENTF_SCANCODE
+        keyup = 0x0002  # KEYEVENTF_KEYUP
+        sc_lshift, sc_rshift, sc_lctrl, sc_lalt, sc_c = 0x2A, 0x36, 0x1D, 0x38, 0x2E
+
+        def key(sc: int, flags: int) -> None:
+            user32.keybd_event(0, sc, flags, 0)  # vk=0: the scan code drives the event
+
+        for sc in (
+            sc_lshift,
+            sc_rshift,
+            sc_lalt,
+            sc_lctrl,
+        ):  # force every modifier up (no-op if not held)
+            key(sc, scancode | keyup)
+        time.sleep(0.03)
+        key(sc_lctrl, scancode)  # clean Ctrl down → C down → C up → Ctrl up
+        time.sleep(0.02)
+        key(sc_c, scancode)
+        time.sleep(0.02)
+        key(sc_c, scancode | keyup)
+        key(sc_lctrl, scancode | keyup)
+        return True
+    except Exception:  # noqa: BLE001 - fall back to the pynput path if user32/keybd_event is unavailable
+        logger.debug("scan-code clean Ctrl+C failed; falling back to pynput", exc_info=True)
         return False
 
 
 def make_windows_capturer() -> ClipboardCapturer:  # pragma: no cover - Windows wiring
-    return ClipboardCapturer(
-        _WindowsClipboardBackend(), uia=_uia_selection, modifiers_held=_windows_modifiers_held
-    )
+    # No `modifiers_held` wait: the backend force-releases the modifiers in software before copying
+    # (scan-code key-ups), so we don't add latency waiting for the user to physically let go.
+    return ClipboardCapturer(_WindowsClipboardBackend(), uia=_uia_selection)
 
 
 # Friendly hotkey specs → pynput GlobalHotKeys notation. We deliberately avoid Ctrl+Alt: on Windows
