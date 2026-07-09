@@ -109,6 +109,28 @@ def test_submit_text_rejects_blank_input(tmp_path: Path) -> None:
     assert coord.submit_text("   ") is False  # nothing to capture
 
 
+def test_submit_capture_auto_approves_without_the_review_dialog(tmp_path: Path) -> None:
+    # A remote/phone capture routed through the coordinator must commit WITHOUT the review dialog
+    # (you're away), while still flowing through the SAME single worker as hotkey captures — the
+    # unified-mode invariant that makes phone + desktop capture conflict-free.
+    reviewed: list[object] = []
+    coord, repo, _ = _make(
+        tmp_path,
+        capturer=SeqCapturer([None]),
+        review=lambda state: reviewed.append(state) or False,  # would REJECT if ever consulted
+    )
+    assert coord.submit_capture("a brand new remote thought from my phone") is True
+    result = coord.process_one(timeout=0)
+    assert result is not None  # committed despite review() returning False
+    assert reviewed == []  # the dialog was NEVER consulted for an auto-approved capture
+    assert len(repo.notes()) == 1
+
+
+def test_submit_capture_rejects_blank_input(tmp_path: Path) -> None:
+    coord, _, _ = _make(tmp_path, capturer=SeqCapturer([None]), review=lambda state: True)
+    assert coord.submit_capture("   ") is False
+
+
 def test_pending_count_and_capacity_track_the_queue(tmp_path: Path) -> None:
     # Backpressure observability (#3): queued captures are visible; capacity is the buffer size.
     coord, _, _ = _make(

@@ -154,6 +154,17 @@ def snippet_of(text: str, limit: int = _SNIPPET_CHARS) -> str:
 _REQUEST = object()
 
 
+@dataclass(frozen=True)
+class _AutoCapture:
+    """A pre-composed capture that AUTO-APPROVES (no review dialog) — a remote/phone `/capture`
+    routed through THIS coordinator so it serializes with hotkey/tray captures on the one worker
+    (single writer, no cross-surface conflict). `source` overrides the coordinator's default so the
+    note is provenance-tagged (e.g. app="phone")."""
+
+    text: str
+    source: Source | None = None
+
+
 class CaptureCoordinator:
     """Serializes capture requests through one worker, reporting progress at each stage."""
 
@@ -237,6 +248,15 @@ class CaptureCoordinator:
         if not text.strip():
             return False
         return self._enqueue(text)
+
+    def submit_capture(self, text: str, *, source: Source | None = None) -> bool:
+        """Enqueue a PRE-COMPOSED capture that AUTO-APPROVES (no review dialog) — a remote/phone
+        `/capture` routed through this coordinator so it shares the ONE worker with hotkey/tray
+        captures (single writer, no conflict). `source` provenance-tags the note (e.g. app="phone").
+        Returns False if blank or the buffer is full. Thread-safe."""
+        if not text.strip():
+            return False
+        return self._enqueue(_AutoCapture(text=text, source=source))
 
     def _enqueue(self, request: object) -> bool:
         try:
@@ -357,11 +377,20 @@ class CaptureCoordinator:
 
     def _process(self, request: object = _REQUEST) -> Committed | None:
         try:
-            # A typed-text request (quick-capture) carries its own text; the selection request reads
-            # the current selection via the capturer. Either way the rest of the pipeline is identical.
-            if isinstance(request, str):
+            # Three request shapes, one pipeline: an _AutoCapture (remote/phone) carries pre-composed
+            # text and AUTO-APPROVES (no dialog); a str (quick-capture) carries typed text; anything
+            # else reads the current selection via the capturer. All commit through this one worker.
+            auto_approve = False
+            source = self._source
+            if isinstance(request, _AutoCapture):
+                self._emit(Stage.CAPTURING, "receiving a remote capture")
+                text: str | None = request.text
+                auto_approve = True
+                if request.source is not None:
+                    source = request.source
+            elif isinstance(request, str):
                 self._emit(Stage.CAPTURING, "capturing typed note")
-                text: str | None = request
+                text = request
             else:
                 self._emit(Stage.CAPTURING, "reading the selection")
                 text = self._capturer.capture()
@@ -374,7 +403,7 @@ class CaptureCoordinator:
             pending = start_review(
                 text,
                 created=self._clock(),
-                source=self._source,
+                source=source,
                 organizer=self._organizer,
                 embedder=self._embedder,
                 reconciler=self._reconciler,
@@ -385,7 +414,9 @@ class CaptureCoordinator:
                 placer=self._placer,
             )
             self._emit(Stage.AWAITING_REVIEW, pending.state.title)
-            if not self._review(pending.state):
+            # A remote/phone capture commits without the desktop review dialog (you're away); a
+            # desktop hotkey/quick capture waits for your approve/edit decision.
+            if not auto_approve and not self._review(pending.state):
                 discard(pending)
                 self._emit(Stage.DISCARDED, "discarded — raw capture kept in the inbox")
                 return None
