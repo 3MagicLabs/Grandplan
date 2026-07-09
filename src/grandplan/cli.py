@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import logging
 import os
 import re
 import shutil
@@ -1476,11 +1475,9 @@ def _run_gui(args: argparse.Namespace) -> int:
     from grandplan.app.diagnostics import install_diagnostics
 
     debug = bool(getattr(args, "debug", False))
+    # install_diagnostics attaches the console handler itself under --debug (basicConfig here was a
+    # no-op once the file handler existed — the bug that made --debug print nothing to the console).
     log_path = install_diagnostics(migrate_legacy_index(vault_dir), debug=debug)
-    if debug:
-        logging.basicConfig(
-            level=logging.DEBUG, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-        )
     print(f"log: {log_path}")
     if getattr(args, "init", False):
         _init_vault(vault_dir, migrate_legacy_index(vault_dir))

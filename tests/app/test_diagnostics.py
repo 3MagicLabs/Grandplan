@@ -81,3 +81,28 @@ def test_debug_raises_verbosity(tmp_path: Path) -> None:
     log_path = install_diagnostics(tmp_path, debug=True)
     logging.getLogger("grandplan.test").debug("debug detail")
     assert "debug detail" in log_path.read_text(encoding="utf-8")
+
+
+def _console_handlers() -> list[logging.Handler]:
+    # Only OUR --debug console handler (by marker) — pytest attaches its own StreamHandlers to root.
+    from grandplan.app.diagnostics import _CONSOLE_MARKER
+
+    root = logging.getLogger()
+    return [h for h in root.handlers if getattr(h, _CONSOLE_MARKER, False)]
+
+
+def test_debug_attaches_a_console_handler_so_logs_actually_stream(tmp_path: Path) -> None:
+    # Regression: --debug printed NOTHING to the terminal because the file handler was already on
+    # root, so logging.basicConfig() (the old mechanism) was a silent no-op. --debug must attach a
+    # real console handler itself.
+    install_diagnostics(tmp_path, debug=True)
+    consoles = _console_handlers()
+    assert len(consoles) == 1
+    assert consoles[0].level <= logging.DEBUG
+    install_diagnostics(tmp_path, debug=True)  # idempotent — no duplicate console handler
+    assert len(_console_handlers()) == 1
+
+
+def test_no_console_handler_without_debug(tmp_path: Path) -> None:
+    install_diagnostics(tmp_path, debug=False)
+    assert _console_handlers() == []  # normal runs stay quiet on the console (file log only)

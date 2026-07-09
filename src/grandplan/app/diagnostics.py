@@ -28,11 +28,17 @@ logger = logging.getLogger(__name__)
 _MAX_BYTES = 1_000_000  # ~1 MiB per file, 3 backups: bounded even for a chatty long-running tray
 _BACKUPS = 3
 _FORMAT = "%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s"
-_MARKER = "_grandplan_diagnostics"  # tags our handler so install is idempotent
+_MARKER = "_grandplan_diagnostics"  # tags our file handler so install is idempotent
+_CONSOLE_MARKER = "_grandplan_console"  # tags our --debug console handler (idempotent)
 
 
 def install_diagnostics(index_root: Path, *, debug: bool = False) -> Path:
-    """Attach the rotating file handler + crash hooks; returns the log file path."""
+    """Attach the rotating file handler (+ a console handler under --debug) + crash hooks.
+
+    Returns the log file path. `--debug` streams DEBUG to the console: we add a StreamHandler
+    OURSELVES rather than calling `logging.basicConfig`, which is a silent no-op once the file
+    handler below has populated `root.handlers` (the bug that made `--debug` print nothing).
+    """
     log_dir = index_root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "grandplan.log"
@@ -46,6 +52,13 @@ def install_diagnostics(index_root: Path, *, debug: bool = False) -> Path:
         handler.setFormatter(logging.Formatter(_FORMAT))
         setattr(handler, _MARKER, True)
         root.addHandler(handler)
+
+    if debug and not any(getattr(h, _CONSOLE_MARKER, False) for h in root.handlers):
+        console = logging.StreamHandler()
+        console.setLevel(logging.DEBUG)
+        console.setFormatter(logging.Formatter(_FORMAT))
+        setattr(console, _CONSOLE_MARKER, True)
+        root.addHandler(console)
 
     _install_excepthooks()
     logger.info("diagnostics: logging to %s (debug=%s)", log_path, debug)
