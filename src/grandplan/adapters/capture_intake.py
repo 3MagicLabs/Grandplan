@@ -3,10 +3,12 @@
 The second route on the intake server: where `/directive` queues work for an agent, `/capture`
 runs the NORMAL organize pipeline immediately — send a thought, a voice note, an image, or a
 social-post link + comment from a phone on your wifi, and it lands in the vault like a hotkey
-capture. Two wire formats, one pipeline (`handle_capture_request` dispatches on Content-Type):
+capture. Three wire formats, one pipeline (`handle_capture_request` dispatches on Content-Type):
 - **multipart/form-data** — the phone-friendly path: a share-sheet shortcut attaches the raw
   shared file plus an optional caption, no base64/JSON gymnastics (text fields content/text/
   caption/note; file parts become attachments).
+- **application/x-www-form-urlencoded** — a text-only Form (what iOS Shortcuts sends for a
+  link/thought with no file): `content=...&text=...`.
 - **application/json** — `{"content": str?, "attachments": [{"name": str, "data": <base64>}]?}`.
 Either way, at least one of content / attachments is required.
 
@@ -168,6 +170,25 @@ def parse_multipart_capture(
     return content, tuple(attachments)
 
 
+def parse_urlencoded_capture(body: bytes) -> tuple[str, tuple[CaptureAttachment, ...]]:
+    """Validate an `application/x-www-form-urlencoded` /capture body (text only; raises ValueError).
+
+    What an iOS Shortcut "Form" with a text field sends (and many simple HTTP clients) — a plain
+    `content=...&text=...`. A form only switches to multipart/form-data when it carries a FILE, so a
+    text/link share arrives urlencoded; without this branch it fell to the JSON parser and 400'd
+    ("invalid JSON body"). No binary attachments are possible in this encoding — share a file and
+    the client sends multipart instead (handled by `parse_multipart_capture`).
+    """
+    from urllib.parse import parse_qsl
+
+    pairs = parse_qsl(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+    parts = [value.strip() for key, value in pairs if key in _TEXT_FIELDS and value.strip()]
+    content = "\n\n".join(parts)
+    if not content:
+        raise ValueError("nothing to capture: provide content")
+    return content, ()
+
+
 def compose_capture_text(
     content: str,
     saved: list[tuple[CaptureAttachment, str]],
@@ -199,18 +220,24 @@ def handle_capture_request(
     organize: Callable[[str], str | None],
     transcribe: Callable[[str], str | None] | None = None,
 ) -> IntakeResult:
-    """The one /capture entry the server calls — accepts EITHER wire format, one pipeline.
+    """The one /capture entry the server calls — accepts ANY of three wire formats, one pipeline.
 
-    A `multipart/form-data` body (a phone share-sheet shortcut attaching a raw file) OR the
-    original JSON body with base64 attachments. Both decode to the same `(content, attachments)`
-    and run the identical save → transcribe → organize pipeline. Auth + size gating already
-    happened in the server precheck; a malformed body is a clean 400, never a crash.
+    - `multipart/form-data` — a share-sheet shortcut attaching a raw file (+ optional caption);
+    - `application/x-www-form-urlencoded` — a text-only Form (what iOS Shortcuts sends for a
+      link/thought with no file);
+    - `application/json` — the original body, with base64 attachments.
+    All decode to the same `(content, attachments)` and run the identical save → transcribe →
+    organize pipeline. Auth + size gating already happened in the server precheck; a malformed body
+    is a clean 400, never a crash.
     """
     from grandplan.adapters.http_intake import parse_payload
 
+    mime = content_type.split(";", 1)[0].strip().lower()
     try:
-        if content_type.split(";", 1)[0].strip().lower() == "multipart/form-data":
+        if mime == "multipart/form-data":
             content, attachments = parse_multipart_capture(raw, content_type)
+        elif mime == "application/x-www-form-urlencoded":
+            content, attachments = parse_urlencoded_capture(raw)
         else:
             content, attachments = parse_capture(parse_payload(raw))
     except ValueError as exc:

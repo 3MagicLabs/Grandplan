@@ -17,6 +17,7 @@ from grandplan.adapters.capture_intake import (
     handle_capture_request,
     parse_capture,
     parse_multipart_capture,
+    parse_urlencoded_capture,
     safe_name,
 )
 from grandplan.adapters.http_intake import MAX_BODY_BYTES, precheck_routes
@@ -139,6 +140,35 @@ def test_parse_multipart_applies_the_same_security_rules() -> None:
     empty_body, empty_ct = _multipart({}, [])  # no text, no files → rejected (either 400 message)
     with pytest.raises(ValueError):
         parse_multipart_capture(empty_body, empty_ct)
+
+
+def test_parse_urlencoded_capture_decodes_text_fields() -> None:
+    # iOS Shortcuts (and many simple HTTP clients) send a TEXT-only Form as
+    # application/x-www-form-urlencoded, NOT multipart — the server must accept it.
+    content, attachments = parse_urlencoded_capture(
+        b"content=hello+world+https%3A%2F%2Fx.com%2Fp&other=ignored"
+    )
+    assert content == "hello world https://x.com/p"
+    assert attachments == ()  # urlencoded can't carry binary files
+
+
+def test_parse_urlencoded_capture_rejects_empty() -> None:
+    with pytest.raises(ValueError, match="nothing to capture"):
+        parse_urlencoded_capture(b"unrelated=x")
+
+
+def test_handle_capture_request_accepts_urlencoded_form() -> None:
+    # The exact shape an iOS Shortcut "Form" (text field) sends — must reach the pipeline, not the
+    # JSON branch (which produced the 'invalid JSON body' phone error).
+    organized: list[str] = []
+    result = handle_capture_request(
+        b"content=note+from+phone",
+        "application/x-www-form-urlencoded; charset=utf-8",
+        save=lambda n, d: f"/v/{n}",
+        organize=lambda t: organized.append(t) or "1 note(s) organized",
+    )
+    assert result.status == 201
+    assert organized == ["note from phone"]
 
 
 def test_handle_capture_request_dispatches_json_and_multipart_to_one_pipeline() -> None:
