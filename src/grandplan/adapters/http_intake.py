@@ -146,8 +146,9 @@ def serve_intake(
 
     Binds 127.0.0.1 by default (safe). Pass a routable host to reach it from another device — only do
     that together with a `token`, since the endpoint then accepts requests from the network.
-    `capture` (#37): a `Callable[[dict], IntakeResult]` handling POST /capture (text + attachments
-    → an organized note); None keeps the server directive-only.
+    `capture` (#37): a `Callable[[bytes, str], IntakeResult]` handling POST /capture — it receives
+    the raw body + Content-Type and decodes either a multipart upload or a JSON body itself; None
+    keeps the server directive-only.
     """
     from datetime import datetime, timezone
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -180,13 +181,18 @@ def serve_intake(
             if early is not None:
                 self._reply(early)
                 return
+            body = self.rfile.read(length)
+            if capture is not None and self.path.rstrip("/") == "/capture":
+                # Hand the RAW body + Content-Type to the capture handler so it can accept either a
+                # multipart file upload (phone share sheet) or a JSON+base64 body — the intake shell
+                # stays format-agnostic for captures (auth/size were already gated pre-read).
+                content_type = self.headers.get("Content-Type", "")
+                self._reply(capture(body, content_type))  # type: ignore[operator]
+                return
             try:
-                payload = parse_payload(self.rfile.read(length))
+                payload = parse_payload(body)
             except ValueError as exc:
                 self._reply(IntakeResult(400, {"error": str(exc)}))
-                return
-            if capture is not None and self.path.rstrip("/") == "/capture":
-                self._reply(capture(payload))  # type: ignore[operator]
                 return
             result = handle_intake(
                 store,

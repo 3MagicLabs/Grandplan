@@ -14,7 +14,9 @@ from grandplan.adapters.capture_intake import (
     MAX_ATTACHMENT_BYTES,
     MAX_CAPTURE_BODY_BYTES,
     handle_capture,
+    handle_capture_request,
     parse_capture,
+    parse_multipart_capture,
     safe_name,
 )
 from grandplan.adapters.http_intake import MAX_BODY_BYTES, precheck_routes
@@ -22,6 +24,32 @@ from grandplan.adapters.http_intake import MAX_BODY_BYTES, precheck_routes
 
 def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
+
+
+def _multipart(
+    text_fields: dict[str, str],
+    file_parts: list[tuple[str, str, bytes]],
+    boundary: str = "BoUnDaRy123",
+) -> tuple[bytes, str]:
+    """Build a real multipart/form-data body (what a phone share-sheet shortcut sends)."""
+    chunks: list[bytes] = []
+    for name, val in text_fields.items():
+        chunks += [
+            f"--{boundary}".encode(),
+            f'Content-Disposition: form-data; name="{name}"'.encode(),
+            b"",
+            val.encode("utf-8"),
+        ]
+    for field, filename, data in file_parts:
+        chunks += [
+            f"--{boundary}".encode(),
+            f'Content-Disposition: form-data; name="{field}"; filename="{filename}"'.encode(),
+            b"Content-Type: application/octet-stream",
+            b"",
+            data,
+        ]
+    chunks += [f"--{boundary}--".encode(), b""]
+    return b"\r\n".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
 # -- name sanitisation: nothing may escape the attachments folder ---------------------------------
@@ -80,6 +108,71 @@ def test_parse_capture_enforces_per_attachment_cap() -> None:
     huge = _b64(b"x" * (MAX_ATTACHMENT_BYTES + 1))
     with pytest.raises(ValueError, match="exceeds"):
         parse_capture({"attachments": [{"name": "big.png", "data": huge}]})
+
+
+# -- multipart uploads: a phone shares a file directly, no base64/JSON ----------------------------
+
+
+def test_parse_multipart_decodes_text_and_file_without_base64() -> None:
+    # The whole point of #37's file-upload path: the phone attaches the raw shared file (photo,
+    # voice memo) plus a caption; no client-side base64 or nested JSON.
+    body, content_type = _multipart(
+        {"content": "shared from instagram https://insta/p/x plus my note"},
+        [("file", "photo.jpg", b"\xff\xd8rawjpegbytes")],
+    )
+    content, attachments = parse_multipart_capture(body, content_type)
+    assert "instagram" in content
+    assert len(attachments) == 1
+    assert attachments[0].name == "photo.jpg"
+    assert attachments[0].data == b"\xff\xd8rawjpegbytes"  # verbatim bytes, undecoded
+    assert attachments[0].suffix == ".jpg"
+
+
+def test_parse_multipart_applies_the_same_security_rules() -> None:
+    # traversal name sanitised, and the same extension allow-list as the JSON path
+    body, ct = _multipart({}, [("file", "../../evil.jpg", b"x")])
+    _content, atts = parse_multipart_capture(body, ct)
+    assert atts[0].name == "evil.jpg"  # traversal stripped
+    bad_body, bad_ct = _multipart({}, [("file", "malware.exe", b"x")])
+    with pytest.raises(ValueError, match="not allowed"):
+        parse_multipart_capture(bad_body, bad_ct)
+    empty_body, empty_ct = _multipart({}, [])  # no text, no files → rejected (either 400 message)
+    with pytest.raises(ValueError):
+        parse_multipart_capture(empty_body, empty_ct)
+
+
+def test_handle_capture_request_dispatches_json_and_multipart_to_one_pipeline() -> None:
+    saved: dict[str, bytes] = {}
+    organized: list[str] = []
+
+    def save(name: str, data: bytes) -> str:
+        saved[name] = data
+        return f"/vault/attachments/{name}"
+
+    def organize(text: str) -> str:
+        organized.append(text)
+        return "1 note(s) organized"
+
+    # multipart voice memo → transcribed and referenced, exactly like the JSON path
+    body, ct = _multipart({"content": "phone note"}, [("file", "memo.m4a", b"aacbytes")])
+    result = handle_capture_request(
+        body, ct, save=save, organize=organize, transcribe=lambda p: "spoken words"
+    )
+    assert result.status == 201
+    assert saved["memo.m4a"] == b"aacbytes"
+    assert "phone note" in organized[0] and "spoken words" in organized[0]
+    assert result.body["transcribed"] == ["memo.m4a"]
+
+    # same entry point still accepts the original JSON+base64 body (back-compat)
+    json_body = f'{{"content":"typed","attachments":[{{"name":"a.png","data":"{_b64(b"png")}"}}]}}'
+    r2 = handle_capture_request(
+        json_body.encode(), "application/json", save=save, organize=organize, transcribe=None
+    )
+    assert r2.status == 201 and saved["a.png"] == b"png"
+
+    # a malformed JSON body is a clean 400, never a crash
+    r3 = handle_capture_request(b"not json", "application/json", save=save, organize=organize)
+    assert r3.status == 400
 
 
 # -- handling: save + transcribe + organize --------------------------------------------------------

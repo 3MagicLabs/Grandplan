@@ -1029,7 +1029,7 @@ def _serve_all(  # pragma: no cover - long-running threads (HTTP serve + folder 
 
 def _make_capture_handler(
     *, vault_dir: Path, index_root: Path, use_llm: bool, model: str
-) -> Callable[[dict[str, object]], object]:
+) -> Callable[[bytes, str], object]:
     """The POST /capture handler for `up` (#37): text + attachments from a phone → organized note.
 
     Attachments land verbatim under `<vault>/attachments/` (name-sanitized, deduped); voice notes
@@ -1041,7 +1041,7 @@ def _make_capture_handler(
     import importlib.util as _ilu
     import threading
 
-    from grandplan.adapters.capture_intake import handle_capture
+    from grandplan.adapters.capture_intake import handle_capture_request
 
     lock = threading.Lock()
     organizer = OllamaOrganizer(model=model, require=False) if use_llm else None
@@ -1079,8 +1079,10 @@ def _make_capture_handler(
                 return None  # duplicate of an earlier capture — nothing new committed
             return f"{summary.notes} note(s) organized"
 
-    def handler(payload: dict[str, object]) -> object:
-        return handle_capture(payload, save=save, organize=organize, transcribe=transcribe)
+    def handler(raw: bytes, content_type: str) -> object:
+        return handle_capture_request(
+            raw, content_type, save=save, organize=organize, transcribe=transcribe
+        )
 
     return handler
 

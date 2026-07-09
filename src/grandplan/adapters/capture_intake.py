@@ -3,8 +3,12 @@
 The second route on the intake server: where `/directive` queues work for an agent, `/capture`
 runs the NORMAL organize pipeline immediately — send a thought, a voice note, an image, or a
 social-post link + comment from a phone on your wifi, and it lands in the vault like a hotkey
-capture. Payload: `{"content": str?, "attachments": [{"name": str, "data": <base64>}]?}` — at
-least one of the two.
+capture. Two wire formats, one pipeline (`handle_capture_request` dispatches on Content-Type):
+- **multipart/form-data** — the phone-friendly path: a share-sheet shortcut attaches the raw
+  shared file plus an optional caption, no base64/JSON gymnastics (text fields content/text/
+  caption/note; file parts become attachments).
+- **application/json** — `{"content": str?, "attachments": [{"name": str, "data": <base64>}]?}`.
+Either way, at least one of content / attachments is required.
 
 Security posture (same as `/directive`, verified by tests): token-gated pre-body-read, size caps
 enforced BEFORE reading, attachment names sanitized against path traversal, extensions
@@ -111,6 +115,59 @@ def parse_capture(payload: dict[str, object]) -> tuple[str, tuple[CaptureAttachm
     return content, tuple(attachments)
 
 
+_TEXT_FIELDS = frozenset({"content", "text", "caption", "note"})
+
+
+def parse_multipart_capture(
+    body: bytes, content_type: str
+) -> tuple[str, tuple[CaptureAttachment, ...]]:
+    """Validate + decode a `multipart/form-data` /capture upload (raises ValueError on bad input).
+
+    This is the phone-friendly path (#37): a share-sheet shortcut attaches the raw shared file —
+    a photo, a voice memo, a document — plus an optional caption, with NO client-side base64 or
+    nested JSON. Text fields named content/text/caption/note become the note's thoughts; every
+    file part becomes an attachment. The SAME security rules as the JSON path apply — name
+    sanitised against traversal, extension allow-listed, per-file size cap — and the return shape
+    is identical, so the rest of the pipeline (`_process_capture`) is unchanged.
+    """
+    from email.parser import BytesParser
+    from email.policy import default
+
+    # email.parser wants headers; prepend just the Content-Type so it can find the boundary.
+    prefixed = b"Content-Type: " + content_type.encode("latin-1") + b"\r\n\r\n" + body
+    message = BytesParser(policy=default).parsebytes(prefixed)
+    if not message.is_multipart():
+        raise ValueError("expected a multipart/form-data body")
+    content_parts: list[str] = []
+    attachments: list[CaptureAttachment] = []
+    for part in message.iter_parts():
+        # get_payload(decode=True) is bytes for a leaf form-data part (None for a nested multipart,
+        # which /capture doesn't use) — narrow it so the type is bytes throughout.
+        decoded = part.get_payload(decode=True)
+        payload = decoded if isinstance(decoded, bytes) else b""
+        filename = part.get_filename()
+        if filename:
+            name = safe_name(filename)
+            suffix = "." + name.rsplit(".", 1)[1].lower() if "." in name else ""
+            if suffix not in _ALLOWED_EXT:
+                raise ValueError(f"attachment type {suffix or '(none)'} not allowed")
+            if not payload:
+                raise ValueError(f"attachment {name!r} is empty")
+            if len(payload) > MAX_ATTACHMENT_BYTES:
+                raise ValueError(f"attachment {name!r} exceeds {MAX_ATTACHMENT_BYTES} bytes")
+            attachments.append(CaptureAttachment(name=name, data=payload))
+            continue
+        field = part.get_param("name", header="content-disposition")
+        if field in _TEXT_FIELDS:
+            text = payload.decode("utf-8", errors="replace").strip()
+            if text:
+                content_parts.append(text)
+    content = "\n\n".join(content_parts)
+    if not content and not attachments:
+        raise ValueError("nothing to capture: provide content and/or a file")
+    return content, tuple(attachments)
+
+
 def compose_capture_text(
     content: str,
     saved: list[tuple[CaptureAttachment, str]],
@@ -134,6 +191,35 @@ def compose_capture_text(
     return "\n\n".join(parts)
 
 
+def handle_capture_request(
+    raw: bytes,
+    content_type: str,
+    *,
+    save: Callable[[str, bytes], str],
+    organize: Callable[[str], str | None],
+    transcribe: Callable[[str], str | None] | None = None,
+) -> IntakeResult:
+    """The one /capture entry the server calls — accepts EITHER wire format, one pipeline.
+
+    A `multipart/form-data` body (a phone share-sheet shortcut attaching a raw file) OR the
+    original JSON body with base64 attachments. Both decode to the same `(content, attachments)`
+    and run the identical save → transcribe → organize pipeline. Auth + size gating already
+    happened in the server precheck; a malformed body is a clean 400, never a crash.
+    """
+    from grandplan.adapters.http_intake import parse_payload
+
+    try:
+        if content_type.split(";", 1)[0].strip().lower() == "multipart/form-data":
+            content, attachments = parse_multipart_capture(raw, content_type)
+        else:
+            content, attachments = parse_capture(parse_payload(raw))
+    except ValueError as exc:
+        return IntakeResult(400, {"error": str(exc)})
+    return _process_capture(
+        content, attachments, save=save, organize=organize, transcribe=transcribe
+    )
+
+
 def handle_capture(
     payload: dict[str, object],
     *,
@@ -141,16 +227,30 @@ def handle_capture(
     organize: Callable[[str], str | None],
     transcribe: Callable[[str], str | None] | None = None,
 ) -> IntakeResult:
-    """Process one authenticated /capture request (pure orchestration; IO is injected).
+    """Process one authenticated JSON /capture payload (pure orchestration; IO is injected).
 
-    `save(name, data) -> stored path`, `transcribe(path) -> text|None` (None/absent = keep audio
-    as attachment only), `organize(text) -> note id|None`. Auth + size gating happen in the
-    server's precheck BEFORE this runs.
+    Kept as the JSON-body entry (and back-compat seam); `handle_capture_request` dispatches the
+    wire format. `save(name, data) -> stored path`, `transcribe(path) -> text|None` (None/absent =
+    keep audio as attachment only), `organize(text) -> note id|None`.
     """
     try:
         content, attachments = parse_capture(payload)
     except ValueError as exc:
         return IntakeResult(400, {"error": str(exc)})
+    return _process_capture(
+        content, attachments, save=save, organize=organize, transcribe=transcribe
+    )
+
+
+def _process_capture(
+    content: str,
+    attachments: tuple[CaptureAttachment, ...],
+    *,
+    save: Callable[[str, bytes], str],
+    organize: Callable[[str], str | None],
+    transcribe: Callable[[str], str | None] | None,
+) -> IntakeResult:
+    """Save attachments verbatim → transcribe audio → organize the composed text (shared core)."""
     try:
         saved: list[tuple[CaptureAttachment, str]] = []
         transcripts: dict[str, str] = {}
