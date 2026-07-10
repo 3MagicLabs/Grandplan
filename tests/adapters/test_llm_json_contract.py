@@ -187,3 +187,15 @@ def test_default_num_ctx_ignores_malformed_values(
 
     monkeypatch.setenv("GRANDPLAN_NUM_CTX", bad)
     assert default_num_ctx() == DEFAULT_NUM_CTX  # logged + ignored, never a capture-time crash
+
+
+def test_default_keep_alive_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A loaded model's llama-server spins the CPU while idle, so keep-alive controls how long the
+    # machine stays busy after the app is closed. Default 5m (down from 30m); GRANDPLAN_KEEP_ALIVE
+    # tunes it (e.g. "0" unloads immediately for the lowest idle CPU).
+    from grandplan.adapters._ollama import DEFAULT_KEEP_ALIVE, default_keep_alive
+
+    monkeypatch.delenv("GRANDPLAN_KEEP_ALIVE", raising=False)
+    assert default_keep_alive() == DEFAULT_KEEP_ALIVE == "5m"
+    monkeypatch.setenv("GRANDPLAN_KEEP_ALIVE", "0")
+    assert default_keep_alive() == "0"  # read per call — unloads right after each capture

@@ -61,6 +61,24 @@ def default_num_ctx() -> int:
     return value
 
 
+# How long Ollama keeps a model RESIDENT after a call. This matters for idle CPU: a loaded model's
+# llama-server can spin the CPU while idle, so a long keep-alive means the machine stays busy long
+# after the app is closed (observed: two runners pinning cores 30 min after the last capture). 5m
+# keeps back-to-back captures warm while releasing the model — and the CPU — a few minutes after you
+# stop. Request-level keep_alive overrides Ollama's OLLAMA_KEEP_ALIVE env, so this is the real knob.
+DEFAULT_KEEP_ALIVE = "5m"
+_ENV_KEEP_ALIVE = "GRANDPLAN_KEEP_ALIVE"
+
+
+def default_keep_alive() -> str:
+    """How long to keep the model loaded after a call: `GRANDPLAN_KEEP_ALIVE`, else `5m`.
+
+    Accepts any Ollama duration — e.g. `0` unloads immediately after each call (lowest idle CPU,
+    reloads on the next capture), `30s`, `10m`, or `-1` to keep it loaded forever. Read per call.
+    """
+    return os.environ.get(_ENV_KEEP_ALIVE) or DEFAULT_KEEP_ALIVE
+
+
 _OPENERS = {"{": "}", "[": "]"}
 _CLOSERS = frozenset({"}", "]"})
 
@@ -89,7 +107,7 @@ def chat_json(
             "temperature": 0,
             "num_ctx": num_ctx if num_ctx is not None else default_num_ctx(),
         },
-        keep_alive="30m",
+        keep_alive=default_keep_alive(),
     )
     return str(response["message"]["content"])
 
@@ -123,7 +141,7 @@ def chat_json_stream(
             "temperature": 0,
             "num_ctx": num_ctx if num_ctx is not None else default_num_ctx(),
         },
-        keep_alive="30m",
+        keep_alive=default_keep_alive(),
         stream=True,
     ):
         chunk = str(part["message"]["content"])
