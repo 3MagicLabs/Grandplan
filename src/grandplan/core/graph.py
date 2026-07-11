@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from grandplan.core.fs import write_text_if_changed
 from grandplan.core.models import Edge, Note
 from grandplan.core.ports import NoteRepository
 
@@ -48,5 +49,7 @@ def to_graph(repo: NoteRepository) -> dict[str, object]:
 
 
 def export_graph(repo: NoteRepository, path: Path) -> Path:
-    path.write_text(json.dumps(to_graph(repo), ensure_ascii=False, indent=2), encoding="utf-8")
+    # Skip the write when unchanged (audit P1.4): graph.json is re-dumped every capture but rarely
+    # differs — an unconditional multi-MB rewrite bumps its mtime and re-uploads it on cloud sync.
+    write_text_if_changed(path, json.dumps(to_graph(repo), ensure_ascii=False, indent=2))
     return path

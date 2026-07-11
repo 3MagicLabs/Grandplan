@@ -24,6 +24,7 @@ import re
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
+from grandplan.core.fs import write_text_if_changed
 from grandplan.core.models import Edge, Note, NoteEvent, NoteStatus, Original
 from grandplan.core.resources import Resource, ResourceKind
 
@@ -98,7 +99,11 @@ class MarkdownVaultWriter:
             backlinks=backlinks,
             sources=sources,
         )
-        path.write_text(markdown, encoding="utf-8")
+        # Skip the write when the re-rendered file is byte-identical to what's on disk (audit P1.1):
+        # a projection re-renders every note each capture, but only a few actually change. Skipping
+        # keeps mtimes stable so a cloud-synced vault doesn't re-upload everything. `path` is still
+        # returned (the note IS "written" for the caller's rename-sweep), whether or not bytes moved.
+        write_text_if_changed(path, markdown)
         return path
 
     def _unique_stem(self, note: Note) -> str:

@@ -338,3 +338,43 @@ def test_reconcile_deletions_protects_a_just_committed_note(tmp_path: Path) -> N
     )
     assert any(read_id(p) == "t1" for p in vault.glob("*.md"))  # created, not tombstoned
     assert [n.id for n in repo.current_notes()] == ["t1"]
+
+
+def test_repeat_projection_over_unchanged_vault_rewrites_nothing(tmp_path: Path) -> None:
+    # Incremental-projection guarantee (audit P1.1/P1.4): projecting an UNCHANGED vault a second time
+    # must not rewrite a single file — otherwise every capture bumps every mtime and a cloud-synced
+    # vault (OneDrive) re-uploads the whole thing. Robust to coarse mtime resolution: we stamp every
+    # file to a distinctly OLD time, re-project, and assert nothing was bumped to ~now.
+    import os
+    from datetime import date
+
+    repo = InMemoryNoteRepository()
+    repo.add_note(
+        Note(id="t1", original_id="o1", title="Do the thing", body="b", type=NoteType.TASK), (1.0,)
+    )
+    repo.add_note(
+        Note(id="t2", original_id="o2", title="Other note", body="b", type=NoteType.IDEA), (1.0,)
+    )
+    repo.add_edge(Edge("t1", "t2", EdgeKind.RELATES))
+    originals = InMemoryOriginalStore()
+    originals.add(_original("o1"))
+    originals.add(_original("o2"))
+    vault = tmp_path / "vault"
+    today = date(2026, 7, 10)
+
+    write_projections(repo, vault, originals=originals, today=today)
+    files = [p for p in vault.rglob("*") if p.is_file()]
+    assert (
+        files
+    )  # sanity: the first projection wrote notes + graph + Plan/Masterplan/Timeline/Today
+
+    old = 1_000_000.0  # a distinctly old mtime; any rewrite would bump it to ~now
+    for path in files:
+        os.utime(path, (old, old))
+
+    write_projections(
+        repo, vault, originals=originals, today=today
+    )  # identical inputs → no changes
+    after = {p: p.stat().st_mtime for p in vault.rglob("*") if p.is_file()}
+    assert set(after) == set(files)  # no files added or removed
+    assert all(mtime == old for mtime in after.values())  # every file untouched — zero rewrites

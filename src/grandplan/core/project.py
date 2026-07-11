@@ -21,6 +21,7 @@ from datetime import date
 from pathlib import Path
 
 from grandplan.core.agenda import build_agenda, render_agenda
+from grandplan.core.fs import write_text_if_changed
 from grandplan.core.graph import export_graph
 from grandplan.core.models import Edge, Note
 from grandplan.core.planner import (
@@ -111,11 +112,11 @@ def write_obsidian_config(vault_dir: Path) -> Path | None:
             changed = True
         if not changed:
             return None  # the user already configured both → respect them
-        config.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        write_text_if_changed(config, json.dumps(data, indent=2))  # skip if unchanged (P1.4)
         return config
     config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text(
-        json.dumps({"colorGroups": groups, "search": _GRAPH_FILTER}, indent=2), encoding="utf-8"
+    write_text_if_changed(
+        config, json.dumps({"colorGroups": groups, "search": _GRAPH_FILTER}, indent=2)
     )
     return config
 
@@ -159,7 +160,7 @@ Obsidian graph so it shows only real notes and their true connections.
 def write_guide(vault_dir: Path) -> Path:
     """Write the agent/human guide describing the vault's conventions (foreign file preserved)."""
     path = _safe_target(vault_dir / "_grandplan-guide.md", _is_grandplan_guide)
-    path.write_text(_GUIDE, encoding="utf-8")
+    write_text_if_changed(path, _GUIDE)  # identical every projection — skip it (audit P1.4)
     return path
 
 
@@ -196,8 +197,8 @@ def write_agenda(repo: NoteRepository, path: Path, today: date) -> Path:
     """Write the daily 'Today' agenda — overdue / due-today / next-up, urgency-ranked — for `today`."""
     plan = build_plan(repo)
     status_by_id = {note.id: (repo.status_of(note.id) or note.status) for note in plan.now}
-    path.write_text(
-        render_agenda(build_agenda(plan.now, status_by_id, today=today), today), encoding="utf-8"
+    write_text_if_changed(  # skip if unchanged (P1.4)
+        path, render_agenda(build_agenda(plan.now, status_by_id, today=today), today)
     )
     return path
 

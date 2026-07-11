@@ -12,6 +12,7 @@ import heapq
 from dataclasses import dataclass
 from pathlib import Path
 
+from grandplan.core.fs import write_text_if_changed
 from grandplan.core.models import EdgeKind, Horizon, Note, NoteStatus, NoteType
 from grandplan.core.ports import NoteRepository
 
@@ -219,7 +220,7 @@ def _mermaid_label(title: str) -> str:
 
 
 def write_plan(repo: NoteRepository, path: Path) -> Path:
-    path.write_text(render_plan(build_plan(repo)), encoding="utf-8")
+    write_text_if_changed(path, render_plan(build_plan(repo)))  # skip if unchanged (audit P1.4)
     return path
 
 
@@ -265,7 +266,7 @@ def render_masterplan(plan: Plan) -> str:
 
 
 def write_masterplan(repo: NoteRepository, path: Path) -> Path:
-    path.write_text(render_masterplan(build_plan(repo)), encoding="utf-8")
+    write_text_if_changed(path, render_masterplan(build_plan(repo)))  # skip if unchanged (P1.4)
     return path
 
 
@@ -359,7 +360,7 @@ def _due_suffix(note: Note) -> str:
 
 
 def write_timeline(repo: NoteRepository, path: Path) -> Path:
-    path.write_text(render_timeline(build_timeline(repo)), encoding="utf-8")
+    write_text_if_changed(path, render_timeline(build_timeline(repo)))  # skip if unchanged (P1.4)
     return path
 
 

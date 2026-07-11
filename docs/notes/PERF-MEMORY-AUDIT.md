@@ -49,6 +49,13 @@ lock around append+projection, or document `--write` as exclusive.*
 
 ## P1 — Per-capture amplification (the dominant scaling problem; 3 auditors converged)
 
+> **Status: the WRITE amplification (P1.1 + P1.4) is FIXED.** Every projection write now goes
+> through `core.fs.write_text_if_changed`, which skips a write when the file is byte-identical to
+> what's on disk — so a capture over an unchanged vault rewrites **zero** files and never bumps an
+> mtime (no OneDrive re-upload storm). Proven by `test_repeat_projection_over_unchanged_vault_
+> rewrites_nothing`. The READ amplification (P1.2 redundant `build_plan` recompute, P1.3 deletion
+> reconciliation opening every `.md`) is **still open** — captures are much lighter but not yet O(1).
+
 **P1.1 Every commit rewrites the ENTIRE vault.** `gui.py:377-380` (`after_commit`) →
 `write_projections` → `write_notes` loops ALL notes (`project.py:257-313`), reads each file
 (`vault.py:88`) and rewrites it unconditionally (`vault.py:101` — no content comparison, even
