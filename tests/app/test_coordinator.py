@@ -16,6 +16,7 @@ import pytest
 from grandplan.app.coordinator import (
     CaptureCoordinator,
     CaptureStatus,
+    ItemState,
     Stage,
     committed_note_id,
 )
@@ -207,6 +208,7 @@ def test_approve_commits_writes_vault_and_reports_full_stage_sequence(tmp_path: 
     assert originals.get(result.original.id) is not None  # captured to the inbox
     assert len(committed) == 1  # after_commit (e.g. re-projection) ran exactly once
     assert _stages(statuses) == [
+        Stage.QUEUED,  # accepted into the line (drives the live queue view)
         Stage.CAPTURING,
         Stage.ANALYZING,
         Stage.AWAITING_REVIEW,
@@ -304,6 +306,7 @@ def test_discard_writes_nothing_but_keeps_inbox(tmp_path: Path) -> None:
     assert originals.all()  # raw capture retained in the inbox
     assert committed == []  # no commit -> no re-projection
     assert _stages(statuses) == [
+        Stage.QUEUED,  # accepted into the line (drives the live queue view)
         Stage.CAPTURING,
         Stage.ANALYZING,
         Stage.AWAITING_REVIEW,
@@ -510,3 +513,118 @@ def test_stop_keeps_worker_reference_when_join_times_out(
     release.set()  # release the worker so it can finish and observe the shutdown flag
     coord.stop()
     assert coord._thread is None  # clean stop now clears the ref
+
+
+# -- live queue view snapshot (US-7 "carousel") ---------------------------------------------------
+
+
+def test_queue_snapshot_lists_queued_items_with_place_in_line(tmp_path: Path) -> None:
+    # Each capture appears in the line the moment it is fired, with its 1-based place and a snippet.
+    coord, _, _ = _make(
+        tmp_path, capturer=SeqCapturer([None]), review=lambda state: True, max_pending=8
+    )
+    assert coord.submit_text("first thought about the roadmap")
+    assert coord.submit_capture("second one straight from my phone", source=Source(app="phone"))
+    snap = coord.queue_snapshot()
+    assert [item.position for item in snap] == [1, 2]  # place in line
+    assert all(item.state is ItemState.QUEUED for item in snap)
+    assert snap[0].snippet.startswith("first thought")
+    assert snap[0].source == "grandplan"  # desktop provenance → 🖥️ icon
+    assert snap[1].source == "phone"  # phone provenance → 📱 icon
+
+
+def test_enqueue_emits_a_queued_stage_so_the_view_refreshes_immediately(tmp_path: Path) -> None:
+    # The view must repaint the instant a note joins the line, not only on the next stage change of
+    # the in-flight note — so a successful enqueue emits Stage.QUEUED.
+    seen: list[CaptureStatus] = []
+    coord, _, _ = _make(
+        tmp_path,
+        capturer=SeqCapturer([None]),
+        review=lambda state: True,
+        on_status=seen.append,
+        max_pending=4,
+    )
+    assert coord.submit_text("a fresh idea worth keeping")
+    assert Stage.QUEUED in _stages(seen)
+
+
+def test_snapshot_shows_the_note_in_flight_with_its_live_stage(tmp_path: Path) -> None:
+    # While a note is being made, it sits at position 0 as IN_FLIGHT carrying the live pipeline Stage.
+    observed: dict[str, object] = {}
+
+    def review(state: ReviewState) -> bool:
+        item = coord.queue_snapshot()[0]  # coord is late-bound; assigned before process_one runs
+        observed["state"] = item.state
+        observed["stage"] = item.stage
+        observed["position"] = item.position
+        observed["snippet"] = item.snippet
+        return True
+
+    coord, _, _ = _make(tmp_path, capturer=SeqCapturer([None]), review=review, max_pending=4)
+    assert coord.submit_text("a note being processed right now")
+    coord.process_one(timeout=0)
+    assert observed["state"] is ItemState.IN_FLIGHT
+    assert observed["stage"] is Stage.AWAITING_REVIEW
+    assert observed["position"] == 0
+    assert str(observed["snippet"]).startswith("a note being processed")
+
+
+def test_saved_note_moves_into_the_recent_history(tmp_path: Path) -> None:
+    coord, _, _ = _make(
+        tmp_path, capturer=SeqCapturer([None]), review=lambda state: True, max_pending=4
+    )
+    assert coord.submit_text("remember to water the plants")
+    coord.process_one(timeout=0)
+    snap = coord.queue_snapshot()
+    assert len(snap) == 1
+    assert snap[0].state is ItemState.SAVED
+    assert snap[0].stage is None  # no longer walking the pipeline
+    assert snap[0].position == 0
+
+
+def test_positions_renumber_as_the_line_drains(tmp_path: Path) -> None:
+    coord, _, _ = _make(
+        tmp_path, capturer=SeqCapturer([None]), review=lambda state: True, max_pending=8
+    )
+    for text in ("one", "two", "three"):
+        assert coord.submit_text(text)
+    assert [item.position for item in coord.queue_snapshot()] == [1, 2, 3]
+    coord.process_one(timeout=0)  # drain "one"
+    queued = [i for i in coord.queue_snapshot() if i.state is ItemState.QUEUED]
+    assert [item.position for item in queued] == [1, 2]  # "two"/"three" moved up the line
+    assert queued[0].snippet == "two"
+
+
+def test_discarded_note_is_recorded_in_history(tmp_path: Path) -> None:
+    coord, _, _ = _make(
+        tmp_path, capturer=SeqCapturer([None]), review=lambda state: False, max_pending=4
+    )
+    assert coord.submit_text("a throwaway thought")
+    coord.process_one(timeout=0)
+    assert coord.queue_snapshot()[0].state is ItemState.DISCARDED
+
+
+def test_rejected_submit_leaves_no_phantom_in_the_snapshot(tmp_path: Path) -> None:
+    # A REJECTED_BUSY submit (buffer full) must NOT create a descriptor — put_nowait fails first.
+    coord, _, _ = _make(
+        tmp_path, capturer=SeqCapturer([None]), review=lambda state: True, max_pending=1
+    )
+    assert coord.submit_text("accepted") is True
+    assert coord.submit_text("rejected — the buffer is full") is False
+    snap = coord.queue_snapshot()
+    assert len(snap) == 1
+    assert snap[0].snippet == "accepted"
+
+
+def test_recent_history_is_capped_and_most_recent_first(tmp_path: Path) -> None:
+    coord, _, _ = _make(
+        tmp_path, capturer=SeqCapturer([None]), review=lambda state: True, max_pending=16
+    )
+    for n in range(7):
+        assert coord.submit_text(f"note number {n}")
+    for _ in range(7):
+        coord.process_one(timeout=0)
+    snap = coord.queue_snapshot()
+    assert len(snap) == 5  # capped at _RECENT_CAP — history doesn't grow unbounded
+    assert snap[0].snippet == "note number 6"  # most-recent first
+    assert snap[-1].snippet == "note number 2"

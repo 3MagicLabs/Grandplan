@@ -40,6 +40,7 @@ from grandplan.app.coordinator import (
     committed_note_id,
 )
 from grandplan.app.progress import ProgressView, progress_for
+from grandplan.app.queue_view import build_queue_view
 from grandplan.app.review import ReviewState
 from grandplan.core.edit_detect import EditDetector, HeuristicEditDetector
 from grandplan.core.embed import HashingEmbedder
@@ -403,6 +404,10 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
                 self._hide_timer.start(2500)  # linger briefly so the outcome is readable
 
     progress_popup = _ProgressPopup()
+    # Live capture-queue window (US-7): the whole line + each note's stage, updated in real time.
+    # Built hidden; opened from the tray menu. It renders coordinator.queue_snapshot() on every
+    # status change — the pure row model lives in app.progress (tested), this is a thin renderer.
+    queue_window, queue_update = build_queue_view()
     ui_state = {"show_popup": True}  # toggled by the popup's "–" button and the tray menu item
 
     def _set_show_popup(show: bool) -> None:
@@ -421,10 +426,15 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         waiting = coordinator.enrichment_pending()
         suffix = f"  ·  enriching {waiting} note(s) in background" if waiting else ""
         tray.setToolTip(f"grandplan — {status.detail or status.stage.value}{suffix}")
-        if ui_state["show_popup"]:
-            progress_popup.render_view(progress_for(status))  # live progress popup
-        else:
+        # Always repaint the live queue window (whether or not it is open) so it is current when
+        # raised — it shows the whole line + each note's stage, straight from the coordinator.
+        queue_update(coordinator.queue_snapshot())
+        if not ui_state["show_popup"]:
             progress_popup.hide()  # minimized → status stays in the tray (tooltip + notifications)
+        elif status.stage is not Stage.QUEUED:
+            progress_popup.render_view(progress_for(status))  # live single-note popup
+        # A QUEUED event (another note joined the line) only feeds the queue window — it must not
+        # flicker the single-note popup off the note currently in flight.
         if status.stage in _NOTIFY_STAGES:
             tray.showMessage("grandplan", status.detail or status.stage.value)
 
@@ -557,8 +567,15 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         chat_windows.append(window)
         window.show()  # type: ignore[attr-defined]
 
+    def open_queue() -> None:
+        queue_update(coordinator.queue_snapshot())  # freshen before showing
+        queue_window.show()
+        queue_window.raise_()
+        queue_window.activateWindow()
+
     menu = QtWidgets.QMenu()
     menu.addAction("Capture now", lambda: coordinator.submit())
+    menu.addAction("Capture queue…", open_queue)
     menu.addAction("Chat with vault…", open_chat)
     show_action = menu.addAction("Show progress popup")
     show_action.setCheckable(True)

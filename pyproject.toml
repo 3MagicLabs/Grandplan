@@ -64,7 +64,7 @@ ignore_missing_imports = true
 # the real PySide6 types reads as unused where PySide6 is Any. Scope both relaxations to these two
 # modules so the typecheck passes identically with or without the extra (CI/dev parity); everything
 # else stays strict.
-module = ["grandplan.app.gui", "grandplan.app.chat_window"]
+module = ["grandplan.app.gui", "grandplan.app.chat_window", "grandplan.app.queue_view"]
 disallow_subclassing_any = false
 warn_unused_ignores = false
 

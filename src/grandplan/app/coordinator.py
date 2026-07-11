@@ -23,6 +23,7 @@ It reuses the tested `app.review` controller — it adds *coordination*, not pip
 
 from __future__ import annotations
 
+import itertools
 import logging
 import queue
 import threading
@@ -65,6 +66,7 @@ _ENRICH_BACKLOG_CAP = (
 class Stage(str, Enum):
     """A point in one capture's lifecycle, emitted for visibility (US-7)."""
 
+    QUEUED = "queued"  # accepted into the line, waiting behind the in-flight capture (queue view)
     CAPTURING = "capturing"
     ANALYZING = "analyzing"  # organize (local LLM) + embed + reconcile
     AWAITING_REVIEW = "awaiting_review"
@@ -79,6 +81,32 @@ class Stage(str, Enum):
     ENRICHED = "enriched"  # one background-enrichment job finished (tray count ticks down)
 
 
+class ItemState(str, Enum):
+    """Display state of one capture in the live queue view (independent of the fine-grained Stage)."""
+
+    QUEUED = "queued"  # waiting in line behind the in-flight capture
+    IN_FLIGHT = "in_flight"  # being processed right now (carries a live Stage)
+    SAVED = "saved"  # committed to the vault
+    DISCARDED = "discarded"  # reviewed and thrown away (raw kept in the inbox)
+    FAILED = "failed"  # processing failed; nothing committed
+    EMPTY = "empty"  # reached the worker with no text — dropped, never shown in history
+
+
+# The ordered pipeline a capture walks while IN_FLIGHT; also the strip the queue view highlights.
+_INFLIGHT_STAGES = frozenset(
+    {Stage.CAPTURING, Stage.ANALYZING, Stage.AWAITING_REVIEW, Stage.COMMITTING}
+)
+# Terminal stages that fix a queue item's final display state (PROJECTION_FAILED = note WAS saved).
+_TERMINAL_ITEM_STATE: dict[Stage, ItemState] = {
+    Stage.SAVED: ItemState.SAVED,
+    Stage.PROJECTION_FAILED: ItemState.SAVED,
+    Stage.DISCARDED: ItemState.DISCARDED,
+    Stage.FAILED: ItemState.FAILED,
+    Stage.EMPTY: ItemState.EMPTY,
+}
+_RECENT_CAP = 5  # how many just-finished notes the queue view keeps as fading history
+
+
 @dataclass(frozen=True)
 class CaptureStatus:
     """A progress update for one capture: a stage plus an optional human-readable detail."""
@@ -86,6 +114,50 @@ class CaptureStatus:
     stage: Stage
     detail: str = ""
     pending: int = 0  # captures still queued behind this one (backpressure depth at emit time)
+
+
+@dataclass(frozen=True)
+class QueueItem:
+    """One capture's place in the live queue view — an immutable snapshot the GUI renders.
+
+    `state` is the display bucket (in-flight / queued / finished); `stage` is the live pipeline
+    Stage while IN_FLIGHT (else None); `position` is the 1-based place in line for a QUEUED item
+    (0 for the in-flight note and finished history)."""
+
+    id: str
+    snippet: str  # a one-line preview of the captured text
+    source: str  # the Source.app that produced it (e.g. "phone", "grandplan") → the view's icon
+    state: ItemState
+    stage: Stage | None
+    position: int
+    detail: str = ""
+
+
+@dataclass
+class _TrackedItem:
+    """Mutable descriptor mirroring one queued/in-flight capture (the `queue.Queue` can't be peeked).
+
+    Created at enqueue, promoted to IN_FLIGHT when the worker pulls it, advanced by the pipeline
+    stages, then moved to recent history. Only the coordinator mutates it, always under the items
+    lock; the public `QueueItem` snapshot is an immutable copy so the GUI never sees it change."""
+
+    id: str
+    snippet: str
+    source: str
+    state: ItemState
+    stage: Stage | None = None
+    detail: str = ""
+
+    def snapshot(self, position: int) -> QueueItem:
+        return QueueItem(
+            id=self.id,
+            snippet=self.snippet,
+            source=self.source,
+            state=self.state,
+            stage=self.stage,
+            position=position,
+            detail=self.detail,
+        )
 
 
 ReviewFn = Callable[[ReviewState], bool]
@@ -216,6 +288,15 @@ class CaptureCoordinator:
         self._enrich = enrich  # None = enrichment off (non-fast runs derive links inline)
         self._enrich_backlog: deque[str] = deque()
         self._enrich_lock = threading.Lock()
+        # Live queue view (US-7): descriptors mirroring the capture line so the GUI can render each
+        # note's place in line + stage in real time. `_queued` tracks the Queue in FIFO lockstep,
+        # `_inflight` is the note being processed, `_recent` is a small fading history of finished
+        # notes. All three are guarded by `_items_lock`; snapshots are immutable copies.
+        self._items_lock = threading.Lock()
+        self._queued_items: deque[_TrackedItem] = deque()
+        self._inflight: _TrackedItem | None = None
+        self._recent: deque[_TrackedItem] = deque(maxlen=_RECENT_CAP)
+        self._seq = itertools.count(1)  # monotonic ids (generated under _items_lock)
 
     # -- public API -----------------------------------------------------------------------------
 
@@ -259,19 +340,117 @@ class CaptureCoordinator:
         return self._enqueue(_AutoCapture(text=text, source=source))
 
     def _enqueue(self, request: object) -> bool:
-        try:
-            self._queue.put_nowait(request)
-            return True
-        except queue.Full:
+        # Put on the Queue and append the mirror descriptor atomically, so a snapshot never sees a
+        # note in one but not the other (the worker removes from both front-first, keeping FIFO).
+        with self._items_lock:
+            try:
+                self._queue.put_nowait(request)
+            except queue.Full:
+                item = None
+            else:
+                item = self._describe(request, ItemState.QUEUED)
+                self._queued_items.append(item)
+        if item is None:
             self._emit(
                 Stage.REJECTED_BUSY,
                 "a capture is already in progress — finish the current review first",
             )
             return False
+        # Refresh the queue view the instant a note joins the line (not just on the next stage
+        # change of the in-flight note). Not a notify-stage, so it stays tray-only, no popup.
+        self._emit(Stage.QUEUED, item.snippet or "queued")
+        return True
 
     def pending_count(self) -> int:
         """How many captures are queued waiting behind the one in flight (backpressure depth)."""
         return self._queue.qsize()
+
+    def queue_snapshot(self) -> tuple[QueueItem, ...]:
+        """An ordered, immutable view of the whole capture line for the live queue view (US-7).
+
+        In-flight first (position 0, live stage), then the queued notes (positions 1..N in line),
+        then the most-recently finished notes (position 0). Thread-safe; each item is a copy, so the
+        GUI never holds a live descriptor that the worker could mutate under it."""
+        with self._items_lock:
+            rows: list[QueueItem] = []
+            if self._inflight is not None:
+                rows.append(self._inflight.snapshot(0))
+            for position, item in enumerate(self._queued_items, start=1):
+                rows.append(item.snapshot(position))
+            rows.extend(item.snapshot(0) for item in self._recent)
+            return tuple(rows)
+
+    def _describe(self, request: object, state: ItemState) -> _TrackedItem:
+        """Build a tracking descriptor from a queued request (id generated under _items_lock).
+
+        A `_REQUEST` token reads the selection only when the worker runs it, so its snippet is
+        filled in later (`_set_inflight_snippet`); str / _AutoCapture carry their text now."""
+        if isinstance(request, _AutoCapture):
+            text = request.text
+            source = request.source.app if request.source is not None else self._source.app
+        elif isinstance(request, str):
+            text = request
+            source = self._source.app
+        else:  # _REQUEST sentinel — text not known until the worker reads the selection
+            text = ""
+            source = self._source.app
+        return _TrackedItem(
+            id=str(next(self._seq)),
+            snippet=snippet_of(text) if text else "",
+            source=source,
+            state=state,
+        )
+
+    def _begin_inflight(self, request: object) -> None:
+        """Promote the front queued descriptor (or synthesise one for a direct/test call) to in-flight."""
+        with self._items_lock:
+            if self._queued_items:
+                item = self._queued_items.popleft()  # FIFO-matched to the Queue.get just done
+            else:
+                item = self._describe(request, ItemState.IN_FLIGHT)
+            item.state = ItemState.IN_FLIGHT
+            item.stage = None
+            self._inflight = item
+
+    def _set_inflight_snippet(self, text: str) -> None:
+        """Fill the in-flight snippet once text is known (the `_REQUEST`/selection path)."""
+        with self._items_lock:
+            if self._inflight is not None and not self._inflight.snippet:
+                self._inflight.snippet = snippet_of(text)
+
+    def _track_stage(self, stage: Stage, detail: str) -> None:
+        """Advance the in-flight descriptor (its live stage, or its final state). Called only for the
+        pipeline's own transitions (`_advance`) — never for submit-path EMPTY/REJECTED_BUSY, which
+        concern a *different* capture than the one the worker is processing."""
+        with self._items_lock:
+            item = self._inflight
+            if item is None:
+                return
+            if stage in _TERMINAL_ITEM_STATE:
+                item.state = _TERMINAL_ITEM_STATE[stage]
+                item.stage = None  # finished — no longer walking the pipeline
+                item.detail = detail
+            elif stage in _INFLIGHT_STAGES:
+                item.stage = stage
+                item.detail = detail
+
+    def _end_inflight(self) -> None:
+        """Retire the in-flight descriptor into the fading history (dropping EMPTY no-ops)."""
+        with self._items_lock:
+            item = self._inflight
+            self._inflight = None
+            if item is not None and item.state in (
+                ItemState.SAVED,
+                ItemState.DISCARDED,
+                ItemState.FAILED,
+            ):
+                self._recent.appendleft(item)  # most-recent first
+
+    def _advance(self, stage: Stage, detail: str = "") -> None:
+        """A pipeline transition of the in-flight note: track it, then emit (order matters — the
+        snapshot must already reflect the new stage when the GUI repaints on this status)."""
+        self._track_stage(stage, detail)
+        self._emit(stage, detail)
 
     def submit_enrichment(self, note_id: str) -> bool:
         """Queue a committed note for the background links/placement pass (#38). Best-effort:
@@ -376,6 +555,7 @@ class CaptureCoordinator:
                 self.run_one_enrichment()
 
     def _process(self, request: object = _REQUEST) -> Committed | None:
+        self._begin_inflight(request)  # this note is now the one being made (queue view)
         try:
             # Three request shapes, one pipeline: an _AutoCapture (remote/phone) carries pre-composed
             # text and AUTO-APPROVES (no dialog); a str (quick-capture) carries typed text; anything
@@ -383,25 +563,26 @@ class CaptureCoordinator:
             auto_approve = False
             source = self._source
             if isinstance(request, _AutoCapture):
-                self._emit(Stage.CAPTURING, "receiving a remote capture")
+                self._advance(Stage.CAPTURING, "receiving a remote capture")
                 text: str | None = request.text
                 auto_approve = True
                 if request.source is not None:
                     source = request.source
             elif isinstance(request, str):
-                self._emit(Stage.CAPTURING, "capturing typed note")
+                self._advance(Stage.CAPTURING, "capturing typed note")
                 text = request
             else:
-                self._emit(Stage.CAPTURING, "reading the selection")
+                self._advance(Stage.CAPTURING, "reading the selection")
                 text = self._capturer.capture()
             if not text:
-                self._emit(
+                self._advance(
                     Stage.EMPTY, "nothing new to capture — select text and press Ctrl+C first"
                 )
                 return None
+            self._set_inflight_snippet(text)  # fill the queue-view snippet for the selection path
             # Show WHAT is being analyzed, not just that analysis is happening — this stage is
             # the longest (a full local-LLM call) and used to be a black box (US-7).
-            self._emit(Stage.ANALYZING, f"organizing with local AI: “{snippet_of(text)}”")
+            self._advance(Stage.ANALYZING, f"organizing with local AI: “{snippet_of(text)}”")
             pending = start_review(
                 text,
                 created=self._clock(),
@@ -415,23 +596,24 @@ class CaptureCoordinator:
                 edit_detector=self._edit_detector,
                 placer=self._placer,
             )
-            self._emit(Stage.AWAITING_REVIEW, pending.state.title)
+            self._advance(Stage.AWAITING_REVIEW, pending.state.title)
             # A remote/phone capture commits without the desktop review dialog (you're away); a
             # desktop hotkey/quick capture waits for your approve/edit decision.
             if not auto_approve and not self._review(pending.state):
                 discard(pending)
-                self._emit(Stage.DISCARDED, "discarded — raw capture kept in the inbox")
+                self._advance(Stage.DISCARDED, "discarded — raw capture kept in the inbox")
                 return None
-            self._emit(Stage.COMMITTING, _committing_detail(pending))
+            self._advance(Stage.COMMITTING, _committing_detail(pending))
             result = approve(pending, repo=self._repo, vault=self._vault)
-            self._emit(Stage.SAVED, _saved_detail(result))
+            self._advance(Stage.SAVED, _saved_detail(result))
             self._run_after_commit(result)
             return result
         except Exception as exc:  # noqa: BLE001 - one bad capture must not kill the worker
             logger.exception("capture failed")
-            self._emit(Stage.FAILED, str(exc))
+            self._advance(Stage.FAILED, str(exc))
             return None
         finally:
+            self._end_inflight()  # retire it into history BEFORE IDLE, so the snapshot is current
             self._emit(Stage.IDLE, "ready")
 
     def _run_after_commit(self, result: Committed) -> None:
@@ -443,7 +625,7 @@ class CaptureCoordinator:
         except Exception:  # noqa: BLE001 - the note is already saved; projection is best-effort
             logger.exception("post-commit projection failed")
             # Distinct from FAILED: the note IS committed; only the derived plan/graph is stale.
-            self._emit(Stage.PROJECTION_FAILED, "note saved, but updating the plan failed")
+            self._advance(Stage.PROJECTION_FAILED, "note saved, but updating the plan failed")
 
     def _emit(self, stage: Stage, detail: str = "") -> None:
         logger.info("capture %s%s", stage.value, f": {detail}" if detail else "")
