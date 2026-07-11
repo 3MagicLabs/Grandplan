@@ -134,6 +134,24 @@ def test_read_note_id_round_trips(tmp_path: Path) -> None:
     assert read_note_id(tmp_path / "missing.md") is None
 
 
+def test_read_note_id_reads_only_the_head_not_the_whole_body(tmp_path: Path) -> None:
+    # audit P1.3: the id is parsed from the frontmatter head, so a large note's body is never
+    # slurped on a deletion scan. Proof: a valid head followed by non-UTF-8 bytes BEYOND the 512-char
+    # window still yields the id — reading the whole file would hit the bad bytes and fail/crash.
+    path = tmp_path / "big.md"
+    head = b'---\nid: "abc123"\n---\n# Title\n\n'
+    path.write_bytes(head + b"x" * 600 + b"\xff\xfe not valid utf-8 " * 50)
+    assert read_note_id(path) == "abc123"
+
+
+def test_read_note_id_returns_none_on_a_garbled_head(tmp_path: Path) -> None:
+    # A binary/garbled head is treated as "not a grandplan note" (None), never a crash that would
+    # break every capture's projection when one bad file sits in the vault.
+    path = tmp_path / "garbled.md"
+    path.write_bytes(b"\xff\xfe\xff\xfe binary junk in the head")
+    assert read_note_id(path) is None
+
+
 # -- PR-D: resource references ------------------------------------------------------------------
 
 

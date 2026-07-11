@@ -27,6 +27,7 @@ from grandplan.core.models import Edge, Note
 from grandplan.core.planner import (
     _MASTERPLAN_MARKER,
     _TIMELINE_MARKER,
+    Plan,
     build_plan,
     write_masterplan,
     write_plan,
@@ -193,9 +194,15 @@ def remove_phantom_link_files(vault_dir: Path) -> int:
     return removed
 
 
-def write_agenda(repo: NoteRepository, path: Path, today: date) -> Path:
-    """Write the daily 'Today' agenda — overdue / due-today / next-up, urgency-ranked — for `today`."""
-    plan = build_plan(repo)
+def write_agenda(
+    repo: NoteRepository, path: Path, today: date, *, plan: Plan | None = None
+) -> Path:
+    """Write the daily 'Today' agenda — overdue / due-today / next-up, urgency-ranked — for `today`.
+
+    `plan` reuses a plan the caller already built (audit P1.2) so a full projection derives it once.
+    """
+    if plan is None:
+        plan = build_plan(repo)
     status_by_id = {note.id: (repo.status_of(note.id) or note.status) for note in plan.now}
     write_text_if_changed(  # skip if unchanged (P1.4)
         path, render_agenda(build_agenda(plan.now, status_by_id, today=today), today)
@@ -242,14 +249,21 @@ def write_projections(
     write_guide(vault_dir)  # the agent/human guide to the vault's conventions
     remove_phantom_link_files(vault_dir)  # sweep empty `<id>.md` stubs from old phantom links
     graph_path = export_graph(repo, _safe_target(vault_dir / "graph.json", _is_grandplan_graph))
-    plan_path = write_plan(repo, _safe_target(vault_dir / "Plan.md", _is_grandplan_plan))
+    # Build the plan ONCE and share it across Plan / Masterplan / agenda (audit P1.2): each derives
+    # from the same O(N·E) event-log replay, so recomputing it per-view tripled the cost per capture.
+    plan = build_plan(repo)
+    plan_path = write_plan(repo, _safe_target(vault_dir / "Plan.md", _is_grandplan_plan), plan=plan)
     # The Masterplan MOC (notes stratified by horizon); foreign same-named file is preserved.
-    write_masterplan(repo, _safe_target(vault_dir / "Masterplan.md", _is_grandplan_masterplan))
+    write_masterplan(
+        repo, _safe_target(vault_dir / "Masterplan.md", _is_grandplan_masterplan), plan=plan
+    )
     # The Timeline (feasible execution order from the dependency DAG + due dates).
     write_timeline(repo, _safe_target(vault_dir / "Timeline.md", _is_grandplan_timeline))
     # The daily agenda (overdue / due-today / next-up), only when the caller supplied today's date.
     if today is not None:
-        write_agenda(repo, _safe_target(vault_dir / "Today.md", _is_grandplan_agenda), today)
+        write_agenda(
+            repo, _safe_target(vault_dir / "Today.md", _is_grandplan_agenda), today, plan=plan
+        )
     if originals is not None:
         write_notes(repo, originals, vault_dir, preserve_external_body=preserve_external_body)
     return graph_path, plan_path

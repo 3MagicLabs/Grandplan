@@ -331,10 +331,19 @@ def _sanitize_tags(tags: tuple[str, ...]) -> list[str]:
 
 
 def _file_note_id(path: Path) -> str | None:
-    """The `id` recorded in an existing note file's frontmatter, if any (for collision checks)."""
+    """The `id` recorded in a note file's frontmatter, if any (for collision / orphan / delete checks).
+
+    Reads only the frontmatter HEAD, not the whole file (audit P1.3): the id lives in the first few
+    lines, so slurping a large note's entire body just to read its id wasted I/O on every deletion
+    scan (which reads every `.md` in the vault). A missing/unreadable/non-text head yields None —
+    treated as "not a grandplan note", never a crash of the projection."""
     try:
-        head = path.read_text(encoding="utf-8")[:512]
-    except OSError:
+        with path.open("rb") as handle:
+            head_bytes = handle.read(512)  # only the first 512 BYTES leave the disk — not the body
+    except OSError:  # missing / unreadable
         return None
+    head = head_bytes.decode(
+        "utf-8", errors="ignore"
+    )  # lenient: a garbled head can't crash the scan
     match = _ID_LINE.search(head)
     return match.group(1) if match else None

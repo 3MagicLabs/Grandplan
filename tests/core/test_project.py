@@ -378,3 +378,27 @@ def test_repeat_projection_over_unchanged_vault_rewrites_nothing(tmp_path: Path)
     after = {p: p.stat().st_mtime for p in vault.rglob("*") if p.is_file()}
     assert set(after) == set(files)  # no files added or removed
     assert all(mtime == old for mtime in after.values())  # every file untouched — zero rewrites
+
+
+def test_projection_builds_the_plan_only_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # audit P1.2: a full projection must derive the plan a SINGLE time and share it across
+    # Plan / Masterplan / agenda, instead of recomputing the O(N·E) event-log replay for each view.
+    from datetime import date
+
+    import grandplan.core.project as project
+
+    calls = {"n": 0}
+    real_build_plan = project.build_plan
+
+    def counting(repo):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        return real_build_plan(repo)
+
+    monkeypatch.setattr(project, "build_plan", counting)
+    repo = _repo()
+    originals = InMemoryOriginalStore()
+    originals.add(_original("o1"))
+    write_projections(repo, tmp_path / "v", originals=originals, today=date(2026, 7, 10))
+    assert calls["n"] == 1  # was 3 (Plan + Masterplan + agenda each rebuilt it)

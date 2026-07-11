@@ -49,12 +49,20 @@ lock around append+projection, or document `--write` as exclusive.*
 
 ## P1 — Per-capture amplification (the dominant scaling problem; 3 auditors converged)
 
-> **Status: the WRITE amplification (P1.1 + P1.4) is FIXED.** Every projection write now goes
-> through `core.fs.write_text_if_changed`, which skips a write when the file is byte-identical to
-> what's on disk — so a capture over an unchanged vault rewrites **zero** files and never bumps an
-> mtime (no OneDrive re-upload storm). Proven by `test_repeat_projection_over_unchanged_vault_
-> rewrites_nothing`. The READ amplification (P1.2 redundant `build_plan` recompute, P1.3 deletion
-> reconciliation opening every `.md`) is **still open** — captures are much lighter but not yet O(1).
+> **Status (2026-07-10): P1.1, P1.2, P1.4 FIXED; P1.3 mitigated.**
+> - **P1.1 + P1.4 (write amplification) — FIXED.** Every projection write goes through
+>   `core.fs.write_text_if_changed`, which skips a write when the file is byte-identical to disk — a
+>   capture over an unchanged vault rewrites **zero** files and never bumps an mtime (no OneDrive
+>   re-upload storm). Proven by `test_repeat_projection_over_unchanged_vault_rewrites_nothing`.
+> - **P1.2 (redundant `build_plan`) — FIXED.** `write_projections` builds the plan ONCE and shares
+>   it across Plan / Masterplan / agenda (was 3× the O(N·E) replay). Proven by
+>   `test_projection_builds_the_plan_only_once`.
+> - **P1.3 (deletion scan reads every `.md`) — MITIGATED.** `_file_note_id` now reads only the
+>   frontmatter HEAD (512 bytes, binary + lenient decode) instead of slurping the whole body, and a
+>   garbled file yields `None` instead of crashing the projection. The scan still *opens* every
+>   `.md` (O(N) opens) — cheap on local disk, only costly on OneDrive Files-On-Demand (which
+>   hydrates placeholders). Fully eliminating the opens needs an mtime/size-keyed id cache; deferred
+>   as it adds persistent state near the delete path for a benefit that mostly disappears off OneDrive.
 
 **P1.1 Every commit rewrites the ENTIRE vault.** `gui.py:377-380` (`after_commit`) →
 `write_projections` → `write_notes` loops ALL notes (`project.py:257-313`), reads each file

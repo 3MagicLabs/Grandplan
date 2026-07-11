@@ -219,8 +219,10 @@ def _mermaid_label(title: str) -> str:
     return title.replace('"', "'").replace("[", "(").replace("]", ")").replace("\n", " ")
 
 
-def write_plan(repo: NoteRepository, path: Path) -> Path:
-    write_text_if_changed(path, render_plan(build_plan(repo)))  # skip if unchanged (audit P1.4)
+def write_plan(repo: NoteRepository, path: Path, *, plan: Plan | None = None) -> Path:
+    # `plan` lets a caller pass a plan it already built so we don't re-derive it (audit P1.2): a full
+    # projection builds the plan once and shares it across Plan/Masterplan/agenda instead of 3×.
+    write_text_if_changed(path, render_plan(plan if plan is not None else build_plan(repo)))
     return path
 
 
@@ -265,8 +267,9 @@ def render_masterplan(plan: Plan) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def write_masterplan(repo: NoteRepository, path: Path) -> Path:
-    write_text_if_changed(path, render_masterplan(build_plan(repo)))  # skip if unchanged (P1.4)
+def write_masterplan(repo: NoteRepository, path: Path, *, plan: Plan | None = None) -> Path:
+    # Reuse a caller-supplied plan when given (audit P1.2); otherwise derive it. Skip if unchanged.
+    write_text_if_changed(path, render_masterplan(plan if plan is not None else build_plan(repo)))
     return path
 
 
