@@ -155,3 +155,16 @@ def test_capture_components_no_llm_is_fully_deterministic_regardless_of_fast() -
         assert isinstance(organizer, HeuristicOrganizer)
         assert isinstance(reconciler, SimilarityReconciler)
         assert isinstance(placer, HeuristicPlacer)
+
+
+def test_reachable_ipv4s_drops_loopback_and_link_local() -> None:
+    # The phone-app banner must never print the bind address / an unreachable interface: loopback
+    # (127.*) and APIPA link-local (169.254.*, a disconnected/unassigned NIC) are filtered; real LAN
+    # + Tailscale addresses survive, deduped and sorted.
+    from grandplan.app.gui import _reachable_ipv4s
+
+    got = _reachable_ipv4s(
+        ["127.0.0.1", "169.254.83.107", "192.168.1.237", "100.64.0.5", "192.168.1.237"]
+    )
+    assert got == ["100.64.0.5", "192.168.1.237"]
+    assert _reachable_ipv4s(["127.0.0.1", "169.254.1.1"]) == []  # nothing reachable → empty

@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import signal
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -166,6 +166,44 @@ def _capture_components(
     return organizer, LlmContextualReconciler(model=model), LlmPlacer(model=model)
 
 
+def _reachable_ipv4s(candidates: Iterable[str]) -> list[str]:
+    """Keep only IPv4 addresses another device could actually dial — drop loopback (127.*) and
+    link-local/APIPA (169.254.*, an unassigned/disconnected interface). Pure, so it's unit-tested."""
+    return sorted({ip for ip in candidates if not ip.startswith(("127.", "169.254."))})
+
+
+def _lan_ipv4s() -> list[str]:  # pragma: no cover - depends on the host's interfaces
+    """This machine's reachable IPv4 addresses, for the phone-app banner. Offline: a local hostname
+    lookup, no network egress — so we never print the bind address (0.0.0.0) as if the phone could
+    open it. The user picks the one on their phone's network (Wi-Fi 192.168.* / Tailscale 100.*)."""
+    import socket
+
+    found: set[str] = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.add(str(info[4][0]))  # AF_INET sockaddr is (host, port); host is the IPv4 string
+    except OSError:
+        pass
+    return _reachable_ipv4s(found)
+
+
+def _print_phone_banner(host: str, port: int, token: str) -> None:  # pragma: no cover - stdout only
+    """Print how to reach the phone app — real IP(s), never the unroutable 0.0.0.0 bind address."""
+    tokened = f"/?token={token}" if token else "/"
+    print(f"phone capture live: POST http://{host}:{port}/capture")
+    if host in ("0.0.0.0", "", "::"):
+        urls = _lan_ipv4s()
+        if urls:
+            print("phone app — open ONE of these on your phone (same Wi-Fi, or Tailscale 100.x):")
+            for ip in urls:
+                print(f"    http://{ip}:{port}{tokened}")
+        else:
+            print(f"phone app: open http://<this-PC's-IP>:{port}{tokened} on your phone")
+        print("    (0.0.0.0 is only the bind address — the phone must use the PC's real IP)")
+    else:
+        print(f"phone app: open http://{host}:{port}{tokened} in your phone browser")
+
+
 def _start_phone_server(  # pragma: no cover - binds a socket; needs the windows/gui runtime
     coordinator: CaptureCoordinator,
     *,
@@ -268,9 +306,7 @@ def _start_phone_server(  # pragma: no cover - binds a socket; needs the windows
         },
         daemon=True,
     ).start()
-    tokened = f"/?token={token}" if token else "/"
-    print(f"phone capture live: POST http://{host}:{port}/capture")
-    print(f"phone app: open http://{host}:{port}{tokened} in your phone browser")
+    _print_phone_banner(host, port, token)
 
 
 def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui]
