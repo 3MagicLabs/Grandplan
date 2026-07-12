@@ -296,6 +296,63 @@ def _run_attach(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_import(args: argparse.Namespace) -> int:
+    """`grandplan import --from <src> -o <dest>`: merge all notes from one vault into another.
+
+    Appends the source vault's notes + verbatim captures to the DESTINATION's append-only index/inbox
+    (skipping any note ids the destination already has → idempotent), backs up the destination index
+    first, then re-projects. The freshly-imported notes are PROTECTED from deletion-reconciliation
+    (their `.md` files don't exist yet), while normal deletion handling still applies to the rest, so
+    no imported note is mistaken for a user deletion and tombstoned. The source vault is left untouched.
+    """
+    import shutil
+
+    from grandplan.core.index_location import index_dir
+    from grandplan.core.vault_import import import_index_records, import_inbox_records
+
+    dest_vault = Path(args.vault)
+    src_vault = Path(args.from_vault)
+    src_root = index_dir(src_vault)
+    if not (src_root / "index.jsonl").exists():
+        print(
+            f"no grandplan index for source vault {src_vault} (nothing to import)", file=sys.stderr
+        )
+        return 1
+    dest_root = migrate_legacy_index(dest_vault)
+    dest_index, dest_inbox = dest_root / "index.jsonl", dest_root / "inbox.jsonl"
+
+    # Back up the destination index + inbox first, so the merge is reversible.
+    for name in ("index.jsonl", "inbox.jsonl"):
+        target = dest_root / name
+        if target.exists():
+            shutil.copy2(target, target.parent / f"{name}.bak")
+
+    dest_note_ids = {note.id for note in JsonlNoteRepository(dest_index).notes()}
+    dest_original_ids = {original.id for original in JsonlOriginalStore(dest_inbox).all()}
+    imported = import_index_records(src_root / "index.jsonl", dest_index, dest_note_ids)
+    imported_originals = import_inbox_records(
+        src_root / "inbox.jsonl", dest_inbox, dest_original_ids
+    )
+
+    # Re-project the destination. protect_ids shields the just-imported notes (no `.md` yet) from
+    # being tombstoned; write_notes then writes their files, and the rest reconciles as normal.
+    repo = JsonlNoteRepository(dest_index)  # reload with the merged events
+    write_projections(
+        repo,
+        dest_vault,
+        originals=JsonlOriginalStore(dest_inbox),
+        reconcile_deletions=True,
+        protect_ids=frozenset(imported),
+        today=datetime.now(timezone.utc).date(),
+    )
+    print(
+        f"imported {len(imported)} note(s) + {imported_originals} capture(s) "
+        f"from {src_vault} into {dest_vault}"
+    )
+    print(f"backup of the previous destination index: {dest_index}.bak")
+    return 0
+
+
 def _run_rerender(args: argparse.Namespace) -> int:
     """`grandplan rerender -o <vault>`: re-render every note from the index with the current format —
     resolves old phantom `[[id]]` links, adds type/status tags, and writes the graph colour config."""
@@ -1618,7 +1675,7 @@ def _run_gui(args: argparse.Namespace) -> int:
 # Path-bearing CLI arguments: a leading `~` is expanded to the user's home so `-o ~/MyVault` works
 # (PowerShell/cmd don't expand `~` for external commands, and Path() doesn't either). `-` (stdin/
 # stdout) and empty defaults are left untouched.
-_PATH_ARGS = ("vault", "folder", "out", "input", "content")
+_PATH_ARGS = ("vault", "folder", "out", "input", "content", "from_vault")
 
 
 def _expand_user_paths(args: argparse.Namespace) -> None:
@@ -1671,6 +1728,20 @@ def main(argv: list[str] | None = None) -> int:
         "rerender", help="Re-render all notes (fix old links, add tags, colour the graph)."
     )
     rerender.add_argument("-o", "--vault", required=True, help="the vault directory")
+
+    import_cmd = subparsers.add_parser(
+        "import",
+        help="Merge all notes from another vault into this one (e.g. a mis-targeted vault).",
+    )
+    import_cmd.add_argument(
+        "-o", "--vault", required=True, help="the DESTINATION vault (notes are imported INTO it)"
+    )
+    import_cmd.add_argument(
+        "--from",
+        dest="from_vault",
+        required=True,
+        help="the SOURCE vault to import notes from (left untouched)",
+    )
 
     regenerate = subparsers.add_parser(
         "regenerate",
@@ -2040,6 +2111,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_attach(args)
     if args.command == "rerender":
         return _run_rerender(args)
+    if args.command == "import":
+        return _run_import(args)
     if args.command == "regenerate":
         return _run_regenerate(args)
     if args.command == "doctor":

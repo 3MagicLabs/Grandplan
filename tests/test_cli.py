@@ -1319,3 +1319,40 @@ def test_resolve_token_empty_when_unset(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.delenv("GRANDPLAN_TOKEN", raising=False)
     assert _resolve_token("") == ""  # neither set → no auth (localhost-trust default)
+
+
+def test_import_merges_a_mistargeted_vault_into_the_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The recovery flow: notes accidentally captured into the WRONG vault are merged into the real
+    # one — the destination keeps its own notes, gains the imported ones (with their .md written and
+    # NOT tombstoned by deletion-reconciliation), and its previous index is backed up.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    from grandplan.core.index_location import index_dir
+    from grandplan.core.note_store import JsonlNoteRepository
+    from grandplan.core.vault import read_note_id
+
+    wrong_txt = tmp_path / "wrong.txt"
+    wrong_txt.write_text("buy milk and eggs\n\nplan the Lisbon trip", encoding="utf-8")
+    wrong_vault = tmp_path / "wrong-vault"
+    assert main(["organize", str(wrong_txt), "-o", str(wrong_vault), "--no-llm"]) == 0
+
+    right_txt = tmp_path / "right.txt"
+    right_txt.write_text("finish the quarterly report", encoding="utf-8")
+    dest_vault = tmp_path / "dest-vault"
+    assert main(["organize", str(right_txt), "-o", str(dest_vault), "--no-llm"]) == 0
+
+    dest_index = index_dir(dest_vault) / "index.jsonl"
+    before = {note.id for note in JsonlNoteRepository(dest_index).notes()}
+    wrong_ids = {
+        note.id for note in JsonlNoteRepository(index_dir(wrong_vault) / "index.jsonl").notes()
+    }
+    assert before and wrong_ids and not (before & wrong_ids)  # sanity: distinct, non-empty sets
+
+    assert main(["import", "--from", str(wrong_vault), "-o", str(dest_vault)]) == 0
+
+    after = {note.id for note in JsonlNoteRepository(dest_index).notes()}
+    assert after == before | wrong_ids  # destination's own notes PLUS the imported ones
+    md_ids = {read_note_id(md) for md in dest_vault.glob("*.md")}
+    assert wrong_ids <= md_ids  # every imported note got a .md (protected from tombstoning)
+    assert (index_dir(dest_vault) / "index.jsonl.bak").exists()  # reversible: prior index backed up
