@@ -62,6 +62,7 @@ def pending_view_to_dict(view: PendingReviewView) -> dict[str, object]:
         "is_edit": state.is_edit,
         "edit_target_title": state.edit_target_title,
         "edit_summary": state.edit_summary,
+        "proposed_updates": [list(update) for update in state.proposed_updates],
     }
 
 
@@ -149,6 +150,11 @@ MOBILE_APP_HTML = """<!doctype html>
   .snip { font-weight:600; overflow-wrap:anywhere; }
   .meta { color:var(--mut); font-size:13px; margin-top:3px; }
   .tags { margin-top:6px; display:flex; flex-wrap:wrap; gap:5px; }
+  .orig { margin-top:8px; padding:8px 10px; background:var(--bg); border:1px solid var(--line);
+          border-radius:8px; font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere;
+          max-height:180px; overflow-y:auto; }
+  .orig-label { margin-top:8px; font-size:11px; letter-spacing:.5px; text-transform:uppercase;
+                color:var(--mut); }
   .tag { font-size:12px; background:var(--bg); border:1px solid var(--line);
          border-radius:20px; padding:1px 9px; color:var(--mut); }
   .badge { font-size:11px; font-weight:700; border-radius:6px; padding:1px 7px; margin-left:6px; }
@@ -208,12 +214,19 @@ function pendingCard(p) {
            : p.is_edit ? 'Edit <b>'+esc(p.edit_target_title)+'</b>: '+esc(p.edit_summary)
            : esc(p.title || p.snippet);
   const tags = (p.tags||[]).map(t => '<span class="tag">'+esc(t)+'</span>').join("");
-  const rel = (p.related_titles||[]).length ? '<div class="meta">related: '
+  const links = (p.links||[]).length ? '<div class="meta">relationships: '
+              + p.links.map(l => esc(l[0]) + ' ' + esc(l[1])).join(", ") + '</div>' : '';
+  const rel = (p.related_titles||[]).length ? '<div class="meta">similar to: '
               + p.related_titles.map(esc).join(", ") + '</div>' : '';
+  const upd = (p.proposed_updates||[]).length ? '<div class="meta">also updating on save: '
+              + p.proposed_updates.map(u => esc(u[0]) + ' → ' + esc(u[1])).join(", ") + '</div>' : '';
+  const orig = p.original_text
+              ? '<div class="orig-label">original (verbatim)</div><div class="orig">'
+                + esc(p.original_text) + '</div>' : '';
   return '<div class="card" data-id="'+esc(p.id)+'">'
        + '<div class="snip">'+head+badge+'</div>'
        + '<div class="meta">'+esc(p.note_type)+' · from '+esc(p.source)+'</div>'
-       + (tags ? '<div class="tags">'+tags+'</div>' : '') + rel
+       + (tags ? '<div class="tags">'+tags+'</div>' : '') + links + rel + upd + orig
        + '<div class="btns"><button class="approve" data-act="approve" data-id="'+esc(p.id)
        + '">Save</button><button class="discard" data-act="discard" data-id="'+esc(p.id)
        + '">Discard</button></div></div>';

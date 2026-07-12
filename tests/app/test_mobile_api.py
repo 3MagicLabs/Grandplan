@@ -47,13 +47,15 @@ def test_pending_view_serialises_the_review_state() -> None:
         related_titles=("Dentist appointment",),
         is_probable_duplicate=False,
         links=(("relates", "Dentist appointment"),),
+        proposed_updates=(("Old dentist note", "done"),),
     )
     view = PendingReviewView(id="7", state=state, source="phone", snippet="call the dentist")
     payload = pending_to_json([view])[0]
     assert payload["id"] == "7" and payload["title"] == "Call the dentist"
     assert payload["note_type"] == "task" and payload["tags"] == ["health"]
-    assert payload["original_text"] == "call the dentist tomorrow"
-    assert payload["links"] == [["relates", "Dentist appointment"]]
+    assert payload["original_text"] == "call the dentist tomorrow"  # the verbatim capture, shown
+    assert payload["links"] == [["relates", "Dentist appointment"]]  # typed relationships
+    assert payload["proposed_updates"] == [["Old dentist note", "done"]]  # side-effects on save
     assert payload["is_probable_duplicate"] is False
     json.dumps(payload)  # fully JSON-encodable
 
@@ -81,6 +83,9 @@ def test_web_app_is_self_contained_and_wired_to_the_api() -> None:
     assert "/api/queue" in html and "/api/pending" in html
     assert "Authorization" in html and "Bearer" in html and "token" in html
     assert "http://" not in html and "https://" not in html  # no external requests
+    # Review parity with the desktop dialog: the card renders the verbatim original + relationships +
+    # save-time side-effects, not just the title/tags.
+    assert "original_text" in html and "relationships" in html and "proposed_updates" in html
 
 
 # -- request handlers (auth + routing; the socket shell in http_intake just calls these) ----------
