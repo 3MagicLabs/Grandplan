@@ -353,6 +353,47 @@ def _run_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_relink(args: argparse.Namespace) -> int:
+    """`grandplan relink -o <vault>`: add the missing similarity/typed links BETWEEN existing notes.
+
+    Capture links a new note only against the notes present at that moment, so imported notes (or ones
+    captured before their neighbours existed) can sit unconnected. This reconciles every note against
+    the others using its STORED embedding and records the proposed edges — WITHOUT re-organizing or
+    re-embedding. Append-only + idempotent (existing edges skipped, no self-links); the index is backed
+    up first. Default uses the fast similarity reconciler (RELATES links, no model needed); `--llm` adds
+    the richer typed links (builds_on/refines/…) via the local model — one call per note, slower.
+    """
+    import shutil
+
+    from grandplan.core.relink import relink_notes
+
+    vault_dir = Path(args.vault)
+    index_root = migrate_legacy_index(vault_dir)
+    index_path = index_root / "index.jsonl"
+    if not index_path.exists():
+        print(f"no index found for {vault_dir} (nothing to relink)", file=sys.stderr)
+        return 1
+    shutil.copy2(index_path, index_path.parent / "index.jsonl.bak")  # reversible
+
+    repo = JsonlNoteRepository(index_path)
+    reconciler: Reconciler = (
+        LlmContextualReconciler(model=args.model) if args.llm else SimilarityReconciler()
+    )
+    added = relink_notes(repo, reconciler)
+    write_projections(
+        repo,
+        vault_dir,
+        originals=JsonlOriginalStore(index_root / "inbox.jsonl"),
+        reconcile_deletions=True,
+        today=datetime.now(timezone.utc).date(),
+    )
+    print(
+        f"relink: added {added} link(s) across {len(repo.current_notes())} note(s) in {vault_dir}"
+    )
+    print(f"backup of the previous index: {index_path}.bak")
+    return 0
+
+
 def _run_rerender(args: argparse.Namespace) -> int:
     """`grandplan rerender -o <vault>`: re-render every note from the index with the current format —
     resolves old phantom `[[id]]` links, adds type/status tags, and writes the graph colour config."""
@@ -1743,6 +1784,18 @@ def main(argv: list[str] | None = None) -> int:
         help="the SOURCE vault to import notes from (left untouched)",
     )
 
+    relink = subparsers.add_parser(
+        "relink", help="Add missing links between existing notes (e.g. after import)."
+    )
+    relink.add_argument("-o", "--vault", required=True, help="the vault directory")
+    relink.add_argument(
+        "--llm",
+        action="store_true",
+        help="use the local model for richer TYPED links (builds_on/refines/…), one call per note; "
+        "default is the fast similarity reconciler (RELATES links, no model needed)",
+    )
+    relink.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model for --llm typed links")
+
     regenerate = subparsers.add_parser(
         "regenerate",
         help="Re-organize the whole vault from the captured originals (heuristic→LLM quality).",
@@ -2113,6 +2166,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_rerender(args)
     if args.command == "import":
         return _run_import(args)
+    if args.command == "relink":
+        return _run_relink(args)
     if args.command == "regenerate":
         return _run_regenerate(args)
     if args.command == "doctor":

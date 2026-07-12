@@ -1356,3 +1356,36 @@ def test_import_merges_a_mistargeted_vault_into_the_destination(
     md_ids = {read_note_id(md) for md in dest_vault.glob("*.md")}
     assert wrong_ids <= md_ids  # every imported note got a .md (protected from tombstoning)
     assert (index_dir(dest_vault) / "index.jsonl.bak").exists()  # reversible: prior index backed up
+
+
+def test_relink_runs_over_a_vault_and_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # relink reconciles existing notes off their STORED embeddings and records missing edges without
+    # re-organizing; append-only, backed up, and a second run adds nothing. (The link-forming logic
+    # itself is unit-tested with controlled embeddings in tests/core/test_relink.py.)
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    from grandplan.core.index_location import index_dir
+    from grandplan.core.note_store import JsonlNoteRepository
+
+    vault = tmp_path / "vault"
+    src = tmp_path / "n.txt"
+    src.write_text(
+        "launch the analytics product\n\nanalytics product launch checklist", encoding="utf-8"
+    )
+    assert main(["organize", str(src), "-o", str(vault), "--no-llm"]) == 0
+    index_path = index_dir(vault) / "index.jsonl"
+
+    assert main(["relink", "-o", str(vault)]) == 0
+    assert (index_dir(vault) / "index.jsonl.bak").exists()  # reversible
+    edges = len(JsonlNoteRepository(index_path).edges())
+
+    assert main(["relink", "-o", str(vault)]) == 0  # idempotent
+    assert len(JsonlNoteRepository(index_path).edges()) == edges
+
+
+def test_relink_errors_on_a_vault_with_no_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    assert main(["relink", "-o", str(tmp_path / "no-such-vault")]) == 1
