@@ -1154,7 +1154,7 @@ def _make_capture_handler(
                 result = process_capture(
                     content, attachments, save=save, organize=organize, transcribe=transcribe
                 )
-                note = result.body.get("note")
+                note = (result.body or {}).get("note")
                 if note:
                     log.info(
                         "phone capture: %s (%d chars, %d file(s))",

@@ -14,9 +14,14 @@ phone opens `http://<host>:8765/?token=<secret>` once; the data endpoints stay p
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
+from grandplan.adapters.http_intake import IntakeResult, check_auth
 from grandplan.app.coordinator import PendingReviewView, QueueItem
+
+QueueProvider = Callable[[], list[dict[str, object]]]
+PendingProvider = Callable[[], list[dict[str, object]]]
+DecideFn = Callable[[str, bool], bool]
 
 
 def queue_item_to_dict(item: QueueItem) -> dict[str, object]:
@@ -78,6 +83,41 @@ def parse_decision_path(path: str) -> tuple[str, bool] | None:
     if action == "discard":
         return pending_id, False
     return None
+
+
+def handle_mobile_get(
+    path: str,
+    provided_token: str | None,
+    *,
+    token: str,
+    queue: QueueProvider,
+    pending: PendingProvider,
+) -> IntakeResult:
+    """Route a GET: `/` → the web app shell (public), `/api/queue` + `/api/pending` → JSON (gated)."""
+    normalized = path.split("?", 1)[0].rstrip("/") or "/"
+    if normalized == "/":  # public shell — no data, just HTML that then authenticates its API calls
+        return IntakeResult(200, text=MOBILE_APP_HTML, content_type="text/html; charset=utf-8")
+    if normalized in ("/api/queue", "/api/pending"):
+        if not check_auth(token, provided_token):
+            return IntakeResult(401, {"error": "unauthorized"})
+        payload: dict[str, object] = (
+            {"queue": queue()} if normalized == "/api/queue" else {"pending": pending()}
+        )
+        return IntakeResult(200, payload)
+    return IntakeResult(404, {"error": "not found"})
+
+
+def handle_mobile_decision(
+    path: str, provided_token: str | None, *, token: str, decide: DecideFn
+) -> IntakeResult:
+    """Route POST `/api/pending/<id>/approve|discard` → resolve the parked review (gated)."""
+    if not check_auth(token, provided_token):
+        return IntakeResult(401, {"error": "unauthorized"})
+    parsed = parse_decision_path(path.split("?", 1)[0])
+    if parsed is None:
+        return IntakeResult(404, {"error": "not found"})
+    pending_id, approve = parsed
+    return IntakeResult(200, {"resolved": decide(pending_id, approve)})
 
 
 # The whole phone UI: one self-contained page (no external requests — CSP-safe, offline). It reads
@@ -195,7 +235,8 @@ function queueRow(q) {
 }
 async function refresh() {
   try {
-    const [pending, queue] = await Promise.all([api("/api/pending"), api("/api/queue")]);
+    const [pRes, qRes] = await Promise.all([api("/api/pending"), api("/api/queue")]);
+    const pending = pRes.pending || [], queue = qRes.queue || [];
     el("err").textContent = ""; el("dot").className = "live";
     el("pending").innerHTML = pending.length ? pending.map(pendingCard).join("")
         : '<div class="empty">Nothing to review.</div>';

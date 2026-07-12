@@ -24,10 +24,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class IntakeResult:
-    """The HTTP status + JSON body for an intake request (pure; the shell serializes it)."""
+    """The HTTP status + body for an intake request (pure; the shell serializes it).
+
+    `body` is JSON-encoded by default. For the phone web app we also need a raw HTML response, so an
+    optional `text` (+ `content_type`) takes precedence when set — the shell sends it verbatim."""
 
     status: int
-    body: dict[str, object]
+    body: dict[str, object] | None = None
+    text: str | None = None  # raw body (e.g. HTML); when set, sent instead of the JSON `body`
+    content_type: str = "application/json"
 
 
 def handle_intake(
@@ -141,6 +146,8 @@ def serve_intake(
     port: int = 8765,
     token: str = "",
     capture: object = None,
+    on_get: object = None,
+    on_decision: object = None,
 ) -> None:  # pragma: no cover - binds a socket; the request logic is tested via handle_intake
     """Run the HTTP intake server until interrupted. POST /directive (and /capture when wired).
 
@@ -148,7 +155,9 @@ def serve_intake(
     that together with a `token`, since the endpoint then accepts requests from the network.
     `capture` (#37): a `Callable[[bytes, str], IntakeResult]` handling POST /capture — it receives
     the raw body + Content-Type and decodes either a multipart upload or a JSON body itself; None
-    keeps the server directive-only.
+    keeps the server directive-only. `on_get(path, provided_token) -> IntakeResult` serves the phone
+    web app + read APIs (GET /, /api/queue, /api/pending); `on_decision(path, provided_token) ->
+    IntakeResult` handles POST /api/pending/<id>/approve|discard. Both do their own auth.
     """
     from datetime import datetime, timezone
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -158,10 +167,15 @@ def serve_intake(
             # One audit line per response (status + client IP, never the token or body) — the default
             # access log stays off (log_message below), so this is the sole, intentional trail.
             logger.info("intake %s from %s -> %d", self.path, self.client_address[0], result.status)
-            encoded = json.dumps(result.body).encode("utf-8")
+            if result.text is not None:  # raw body (the phone web app's HTML)
+                encoded = result.text.encode("utf-8")
+                content_type = result.content_type
+            else:
+                encoded = json.dumps(result.body or {}).encode("utf-8")
+                content_type = "application/json"
             try:
                 self.send_response(result.status)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(encoded)))
                 self.end_headers()
                 self.wfile.write(encoded)
@@ -171,7 +185,21 @@ def serve_intake(
                 # scary per-request traceback (WinError 10053 / broken pipe).
                 logger.debug("client disconnected before reply: %s", exc)
 
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            # The phone web app (public shell) + its read APIs (token-gated inside on_get). No body.
+            if on_get is None:
+                self._reply(IntakeResult(404, {"error": "not found"}))
+                return
+            provided = bearer_token(self.headers.get("Authorization", ""))
+            self._reply(on_get(self.path, provided))  # type: ignore[operator]
+
         def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            # Approve/discard a parked review (tiny/no body) — routed before the sized directive/
+            # capture precheck, since these paths carry an id in the URL, not a Content-Length body.
+            if on_decision is not None and self.path.rstrip("/").startswith("/api/pending/"):
+                provided = bearer_token(self.headers.get("Authorization", ""))
+                self._reply(on_decision(self.path, provided))  # type: ignore[operator]
+                return
             try:
                 length = int(self.headers.get("Content-Length", 0) or 0)
             except ValueError:

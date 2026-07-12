@@ -81,3 +81,61 @@ def test_web_app_is_self_contained_and_wired_to_the_api() -> None:
     assert "/api/queue" in html and "/api/pending" in html
     assert "Authorization" in html and "Bearer" in html and "token" in html
     assert "http://" not in html and "https://" not in html  # no external requests
+
+
+# -- request handlers (auth + routing; the socket shell in http_intake just calls these) ----------
+
+from grandplan.app.mobile_api import handle_mobile_decision, handle_mobile_get  # noqa: E402
+
+_QUEUE = lambda: [{"id": "1", "snippet": "x", "state": "queued"}]  # noqa: E731
+_PENDING = lambda: [{"id": "2", "title": "y"}]  # noqa: E731
+
+
+def test_get_root_serves_the_public_web_app_shell() -> None:
+    # The page itself needs no token (it has no data) — it authenticates its own /api calls.
+    result = handle_mobile_get(
+        "/?token=whatever", None, token="secret", queue=_QUEUE, pending=_PENDING
+    )
+    assert result.status == 200
+    assert result.content_type.startswith("text/html")
+    assert result.text is not None and result.text.lstrip().startswith("<!doctype html>")
+
+
+def test_get_apis_are_token_gated() -> None:
+    q = handle_mobile_get("/api/queue", "secret", token="secret", queue=_QUEUE, pending=_PENDING)
+    assert q.status == 200 and q.body == {"queue": _QUEUE()}
+    p = handle_mobile_get("/api/pending", "secret", token="secret", queue=_QUEUE, pending=_PENDING)
+    assert p.status == 200 and p.body == {"pending": _PENDING()}
+    bad = handle_mobile_get("/api/queue", "wrong", token="secret", queue=_QUEUE, pending=_PENDING)
+    assert bad.status == 401  # wrong token → refused
+    open_ = handle_mobile_get("/api/queue", None, token="", queue=_QUEUE, pending=_PENDING)
+    assert open_.status == 200  # no token configured → open (localhost default)
+
+
+def test_get_unknown_route_is_404() -> None:
+    assert (
+        handle_mobile_get("/api/nope", None, token="", queue=_QUEUE, pending=_PENDING).status == 404
+    )
+
+
+def test_decision_routes_to_the_coordinator_and_is_gated() -> None:
+    calls: list[tuple[str, bool]] = []
+
+    def decide(pid: str, approve: bool) -> bool:
+        calls.append((pid, approve))
+        return True
+
+    ok = handle_mobile_decision("/api/pending/5/approve", "s", token="s", decide=decide)
+    assert ok.status == 200 and ok.body == {"resolved": True}
+    assert calls == [("5", True)]
+    assert handle_mobile_decision("/api/pending/5/discard", "s", token="s", decide=decide).body == {
+        "resolved": True
+    }
+    assert calls[-1] == ("5", False)
+    assert (
+        handle_mobile_decision("/api/pending/5/approve", "no", token="s", decide=decide).status
+        == 401
+    )
+    assert (
+        handle_mobile_decision("/api/pending/5/bogus", "s", token="s", decide=decide).status == 404
+    )
