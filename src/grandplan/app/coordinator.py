@@ -362,10 +362,11 @@ class CaptureCoordinator:
         return self._enqueue(text)
 
     def submit_capture(self, text: str, *, source: Source | None = None) -> bool:
-        """Enqueue a PRE-COMPOSED capture that AUTO-APPROVES (no review dialog) — a remote/phone
-        `/capture` routed through this coordinator so it shares the ONE worker with hotkey/tray
-        captures (single writer, no conflict). `source` provenance-tags the note (e.g. app="phone").
-        Returns False if blank or the buffer is full. Thread-safe."""
+        """Enqueue a PRE-COMPOSED remote/phone `/capture` — routed through this coordinator so it
+        shares the ONE worker with hotkey/tray captures (single writer, no conflict) and is REVIEWED
+        like any other (mobile parity: approve/discard from the phone or desktop, no longer
+        auto-saved). `source` provenance-tags the note (e.g. app="phone"). Returns False if blank or
+        the buffer is full. Thread-safe."""
         if not text.strip():
             return False
         return self._enqueue(_AutoCapture(text=text, source=source))
@@ -658,14 +659,13 @@ class CaptureCoordinator:
         self._begin_inflight(request)  # this note is now the one being made (queue view)
         try:
             # Three request shapes, one pipeline: an _AutoCapture (remote/phone) carries pre-composed
-            # text and AUTO-APPROVES (no dialog); a str (quick-capture) carries typed text; anything
-            # else reads the current selection via the capturer. All commit through this one worker.
-            auto_approve = False
+            # text + a source override; a str (quick-capture) carries typed text; anything else reads
+            # the current selection. All organize, then await an approve/discard, then commit through
+            # this one worker — phone captures are reviewed too (mobile parity), no longer auto-saved.
             source = self._source
             if isinstance(request, _AutoCapture):
                 self._advance(Stage.CAPTURING, "receiving a remote capture")
                 text: str | None = request.text
-                auto_approve = True
                 if request.source is not None:
                     source = request.source
             elif isinstance(request, str):
@@ -697,10 +697,9 @@ class CaptureCoordinator:
                 placer=self._placer,
             )
             self._advance(Stage.AWAITING_REVIEW, pending.state.title)
-            # A capture with `auto_approve` commits without a decision; otherwise the worker waits
-            # for an approve/discard — resolved by a synchronous resolver, the desktop dialog, or a
-            # phone call (whichever first) via `_await_decision`.
-            if not auto_approve and not self._await_decision(pending):
+            # The worker waits for an approve/discard — resolved by a synchronous resolver (tests /
+            # headless), the desktop dialog, or a phone call (whichever first) via `_await_decision`.
+            if not self._await_decision(pending):
                 discard(pending)
                 self._advance(Stage.DISCARDED, "discarded — raw capture kept in the inbox")
                 return None

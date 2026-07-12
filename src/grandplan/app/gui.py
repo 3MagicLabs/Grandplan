@@ -184,6 +184,12 @@ def _start_phone_server(  # pragma: no cover - binds a socket; needs the windows
 
     from grandplan.adapters.capture_intake import parse_capture_request, process_capture
     from grandplan.adapters.http_intake import IntakeResult, serve_intake
+    from grandplan.app.mobile_api import (
+        handle_mobile_decision,
+        handle_mobile_get,
+        pending_to_json,
+        queue_to_json,
+    )
     from grandplan.core.directive import JsonlDirectiveStore
 
     attachments_dir = vault_dir / "attachments"
@@ -206,10 +212,30 @@ def _start_phone_server(  # pragma: no cover - binds a socket; needs the windows
         transcribe = transcribe_file
 
     def submit(text: str) -> str:
-        # Route through the coordinator's ONE worker (auto-approved: no desktop dialog). Fast —
-        # just enqueues; the worker does the organize/commit, serialized with hotkey captures.
+        # Route through the coordinator's ONE worker (serialized with hotkey captures). The capture is
+        # organized then PARKED for review (mobile parity) — approve/discard from the phone or desktop.
         coordinator.submit_capture(text, source=Source(app="phone", title="capture"))
         return "queued"
+
+    # The phone web app + its read/decision APIs, all backed by the SAME coordinator the desktop uses.
+    def on_get(path: str, provided: str | None) -> IntakeResult:
+        return handle_mobile_get(
+            path,
+            provided,
+            token=token,
+            queue=lambda: queue_to_json(coordinator.queue_snapshot()),
+            pending=lambda: pending_to_json(coordinator.pending_reviews()),
+        )
+
+    def decide(pending_id: str, approve: bool) -> bool:
+        return (
+            coordinator.approve_pending(pending_id)
+            if approve
+            else coordinator.discard_pending(pending_id)
+        )
+
+    def on_decision(path: str, provided: str | None) -> IntakeResult:
+        return handle_mobile_decision(path, provided, token=token, decide=decide)
 
     def handler(raw: bytes, content_type: str) -> object:
         try:
@@ -232,10 +258,19 @@ def _start_phone_server(  # pragma: no cover - binds a socket; needs the windows
     threading.Thread(
         target=serve_intake,
         args=(store,),
-        kwargs={"host": host, "port": port, "token": token, "capture": handler},
+        kwargs={
+            "host": host,
+            "port": port,
+            "token": token,
+            "capture": handler,
+            "on_get": on_get,
+            "on_decision": on_decision,
+        },
         daemon=True,
     ).start()
+    tokened = f"/?token={token}" if token else "/"
     print(f"phone capture live: POST http://{host}:{port}/capture")
+    print(f"phone app: open http://{host}:{port}{tokened} in your phone browser")
 
 
 def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui]
@@ -291,7 +326,6 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     # Bridge worker-thread events to the main (GUI) thread. Signals emitted from the worker are
     # delivered on the main thread's event loop (Qt queued connection), so widgets stay main-thread.
     class _Bridge(QtCore.QObject):
-        review_requested = QtCore.Signal(object)  # _ReviewRequest
         status_changed = QtCore.Signal(object)  # CaptureStatus
         hotkey_dead = QtCore.Signal(str)  # reason the global hotkey stopped working (#7)
 
@@ -415,9 +449,29 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         if not show:
             progress_popup.hide()  # tray-only mode; reappears on the next status when re-enabled
 
-    def _on_review_requested(request: _ReviewRequest) -> None:
-        request.approved = _show_review(request.state)
-        request.event.set()  # unblock the worker waiting for the decision
+    _reviewing = {"busy": False}  # guard: never stack a second modal over an open review dialog
+
+    def _show_pending_review() -> None:
+        # A capture is parked awaiting a decision (coordinator review=None → mobile parity). A
+        # DESKTOP-origin capture pops the review dialog here, exactly as before. A PHONE capture is
+        # reviewed on the phone — it still appears in pending_reviews() (so the phone can act and the
+        # queue window shows it), but we don't pop a desktop modal you're away from. First surface to
+        # decide wins: if the phone already resolved it, approve/discard_pending is a harmless no-op.
+        if _reviewing["busy"]:
+            return
+        for review_item in coordinator.pending_reviews():
+            if "phone" in review_item.source.lower():
+                continue
+            _reviewing["busy"] = True
+            try:
+                approved = _show_review(review_item.state)
+            finally:
+                _reviewing["busy"] = False
+            if approved:
+                coordinator.approve_pending(review_item.id)
+            else:
+                coordinator.discard_pending(review_item.id)
+            return  # one review at a time (pending_reviews holds at most one)
 
     def _on_status_changed(status: CaptureStatus) -> None:
         # Surface the background-enrichment backlog (#38): notes still waiting for their typed
@@ -437,23 +491,11 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         # flicker the single-note popup off the note currently in flight.
         if status.stage in _NOTIFY_STAGES:
             tray.showMessage("grandplan", status.detail or status.stage.value)
+        # A capture just reached the review stage — present it (desktop-origin pops the dialog).
+        if status.stage is Stage.AWAITING_REVIEW:
+            _show_pending_review()
 
-    bridge.review_requested.connect(_on_review_requested)
     bridge.status_changed.connect(_on_status_changed)
-
-    # Tracks reviews the worker is blocked on, so quit can release them instead of hanging.
-    pending_reviews: set[_ReviewRequest] = set()
-
-    def review(state: ReviewState) -> bool:
-        """Called on the worker thread: ask the main thread to show the dialog, then block."""
-        request = _ReviewRequest(state=state)
-        pending_reviews.add(request)
-        try:
-            bridge.review_requested.emit(request)
-            request.event.wait()
-            return request.approved
-        finally:
-            pending_reviews.discard(request)
 
     def reproject(result: Committed) -> None:
         # Refresh the plan + graph AND re-render the note files from derived state, so a status
@@ -505,7 +547,7 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         repo=repo,
         originals=originals,
         vault=vault,
-        review=review,
+        review=None,  # park each review so it's resolvable from the desktop dialog OR the phone
         source=Source(app="grandplan", title="capture"),
         on_status=bridge.status_changed.emit,
         after_commit=after_commit,
@@ -516,12 +558,10 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     )
 
     def quit_app() -> None:
-        # Release any worker blocked waiting for a review decision (approved stays False = discard),
-        # then ask the Qt loop to exit. The actual worker shutdown (coordinator.stop) runs AFTER
-        # exec() returns, so clicking Quit closes the UI immediately instead of freezing on an
-        # in-flight capture's join (the worker is a daemon, so the process exits regardless).
-        for request in list(pending_reviews):
-            request.event.set()
+        # Ask the Qt loop to exit. A worker parked awaiting a review decision is woken by
+        # coordinator.stop() (run AFTER exec() returns → discard, raw kept in the inbox); the worker
+        # is a daemon, so the process exits regardless — Quit closes the UI immediately instead of
+        # freezing on an in-flight capture's join.
         app.quit()
 
     # Chat panel (#39 stage 3): converse with the vault + draft review-gated plans, from the tray.
@@ -608,11 +648,11 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         daemon=True,
     ).start()
 
-    # Unified mode (`gui --serve`): host the phone /capture server IN this process and route every
-    # remote capture through the SAME coordinator worker as the hotkey/tray — one writer, so phone
-    # and desktop capture never conflict. Phone captures auto-file (submit_capture skips the review
-    # dialog); the desktop hotkey still pops it. Fully opt-in: without --serve this block never runs,
-    # so the plain desktop GUI is byte-for-byte unchanged.
+    # Unified mode (`gui --serve`): host the phone server IN this process and route every remote
+    # capture through the SAME coordinator worker as the hotkey/tray — one writer, so phone and
+    # desktop capture never conflict. It also serves the phone web app (live queue + review inbox):
+    # captures are reviewed from the phone OR the desktop, first wins. Fully opt-in — without --serve
+    # this block never runs, so the plain desktop GUI is unchanged.
     if serve:
         _start_phone_server(
             coordinator,
@@ -641,10 +681,8 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     try:
         return int(app.exec())
     finally:
-        # Final cleanup once the UI is gone — release any waiter and stop the worker. Off the UI
-        # path, so quitting is never blocked by an in-flight capture.
-        for request in list(pending_reviews):
-            request.event.set()
+        # Final cleanup once the UI is gone — stop the worker (this also wakes a review parked in
+        # _await_decision → discard). Off the UI path, so quitting is never blocked by a capture.
         coordinator.stop()
 
 

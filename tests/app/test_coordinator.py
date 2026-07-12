@@ -110,21 +110,21 @@ def test_submit_text_rejects_blank_input(tmp_path: Path) -> None:
     assert coord.submit_text("   ") is False  # nothing to capture
 
 
-def test_submit_capture_auto_approves_without_the_review_dialog(tmp_path: Path) -> None:
-    # A remote/phone capture routed through the coordinator must commit WITHOUT the review dialog
-    # (you're away), while still flowing through the SAME single worker as hotkey captures — the
-    # unified-mode invariant that makes phone + desktop capture conflict-free.
-    reviewed: list[object] = []
+def test_submit_capture_is_reviewed_like_any_other(tmp_path: Path) -> None:
+    # Mobile parity: a remote/phone capture is NO LONGER auto-saved — it flows through the SAME
+    # single worker AND the SAME review as a hotkey capture (approve/discard from phone or desktop),
+    # provenance-tagged so a review surface can show where it came from.
+    reviewed: list[ReviewState] = []
     coord, repo, _ = _make(
         tmp_path,
         capturer=SeqCapturer([None]),
-        review=lambda state: reviewed.append(state) or False,  # would REJECT if ever consulted
+        review=lambda state: reviewed.append(state) or True,  # a resolver IS consulted now
     )
     assert coord.submit_capture("a brand new remote thought from my phone") is True
     result = coord.process_one(timeout=0)
-    assert result is not None  # committed despite review() returning False
-    assert reviewed == []  # the dialog was NEVER consulted for an auto-approved capture
-    assert len(repo.notes()) == 1
+    assert result is not None and len(repo.notes()) == 1  # committed after approval
+    assert len(reviewed) == 1  # the review WAS consulted (not auto-approved)
+    assert reviewed[0].original_text == "a brand new remote thought from my phone"
 
 
 def test_submit_capture_rejects_blank_input(tmp_path: Path) -> None:
