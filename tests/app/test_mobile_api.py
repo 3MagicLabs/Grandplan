@@ -48,6 +48,7 @@ def test_pending_view_serialises_the_review_state() -> None:
         is_probable_duplicate=False,
         links=(("relates", "Dentist appointment"),),
         proposed_updates=(("Old dentist note", "done"),),
+        body="Call the dentist office to book a cleaning.",
     )
     view = PendingReviewView(id="7", state=state, source="phone", snippet="call the dentist")
     payload = pending_to_json([view])[0]
@@ -57,6 +58,7 @@ def test_pending_view_serialises_the_review_state() -> None:
     assert payload["links"] == [["relates", "Dentist appointment"]]  # typed relationships
     assert payload["proposed_updates"] == [["Old dentist note", "done"]]  # side-effects on save
     assert payload["is_probable_duplicate"] is False
+    assert payload["body"] == state.body  # the editable body is exposed to the phone
     json.dumps(payload)  # fully JSON-encodable
 
 
@@ -86,6 +88,11 @@ def test_web_app_is_self_contained_and_wired_to_the_api() -> None:
     # Review parity with the desktop dialog: the card renders the verbatim original + relationships +
     # save-time side-effects, not just the title/tags.
     assert "original_text" in html and "relationships" in html and "proposed_updates" in html
+    # Inline editing: the card has editable fields and Save posts them as a JSON body of edits.
+    assert (
+        "edit-title" in html and "edit-body" in html and "edit-tags" in html and "edit-type" in html
+    )
+    assert "Content-Type" in html and "application/json" in html
 
 
 # -- request handlers (auth + routing; the socket shell in http_intake just calls these) ----------
@@ -124,19 +131,19 @@ def test_get_unknown_route_is_404() -> None:
 
 
 def test_decision_routes_to_the_coordinator_and_is_gated() -> None:
-    calls: list[tuple[str, bool]] = []
+    calls: list[tuple[str, bool, object]] = []
 
-    def decide(pid: str, approve: bool) -> bool:
-        calls.append((pid, approve))
+    def decide(pid: str, approve: bool, edits: object) -> bool:
+        calls.append((pid, approve, edits))
         return True
 
     ok = handle_mobile_decision("/api/pending/5/approve", "s", token="s", decide=decide)
     assert ok.status == 200 and ok.body == {"resolved": True}
-    assert calls == [("5", True)]
+    assert calls == [("5", True, None)]  # plain approve (no body) → no edits
     assert handle_mobile_decision("/api/pending/5/discard", "s", token="s", decide=decide).body == {
         "resolved": True
     }
-    assert calls[-1] == ("5", False)
+    assert calls[-1] == ("5", False, None)
     assert (
         handle_mobile_decision("/api/pending/5/approve", "no", token="s", decide=decide).status
         == 401
@@ -144,3 +151,34 @@ def test_decision_routes_to_the_coordinator_and_is_gated() -> None:
     assert (
         handle_mobile_decision("/api/pending/5/bogus", "s", token="s", decide=decide).status == 404
     )
+
+
+def test_decision_applies_edits_from_the_body() -> None:
+    seen: list[object] = []
+
+    def decide(pid: str, approve: bool, edits: object) -> bool:
+        seen.append(edits)
+        return True
+
+    body = json.dumps(
+        {"title": "Fixed title", "body": "new body", "tags": ["a", "b"], "note_type": "task"}
+    ).encode()
+    handle_mobile_decision("/api/pending/9/approve", "s", token="s", decide=decide, body=body)
+    edits = seen[0]
+    assert edits is not None
+    assert edits.title == "Fixed title" and edits.tags == ("a", "b")  # type: ignore[attr-defined]
+    assert edits.note_type == "task" and edits.body == "new body"  # type: ignore[attr-defined]
+    # A discard never carries edits, even with a body.
+    handle_mobile_decision("/api/pending/9/discard", "s", token="s", decide=decide, body=body)
+    assert seen[1] is None
+
+
+def test_parse_review_edits_is_lenient() -> None:
+    from grandplan.app.mobile_api import parse_review_edits
+
+    assert parse_review_edits(b"") is None  # no body → no edits
+    assert parse_review_edits(b"not json") is None  # garbled → no edits, never a crash
+    assert parse_review_edits(b"{}") is None  # empty object → no usable field
+    edits = parse_review_edits(b'{"title": "T", "tags": ["x", 3, "y"]}')  # 3 dropped (not a str)
+    assert edits is not None and edits.title == "T" and edits.tags == ("x", "y")
+    assert edits.body is None and edits.note_type is None

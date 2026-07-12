@@ -102,6 +102,55 @@ def test_approve_commits_and_writes_vault(tmp_path: Path) -> None:
     assert result.path.exists()
 
 
+def test_review_state_exposes_the_editable_body() -> None:
+    repo, originals = InMemoryNoteRepository(), InMemoryOriginalStore()
+    pending = _start("a note whose body can be edited", repo, originals)
+    assert pending.state.body == pending.proposed.body  # the proposed body is shown for editing
+
+
+def test_approve_applies_human_edits_to_the_saved_note(tmp_path: Path) -> None:
+    # Inline editing: the human's title/body/tags/type override the proposal before commit; the
+    # note's content-addressed id reflects the EDITED content (it's a new note being created).
+    from grandplan.core.models import NoteType
+    from grandplan.core.vault import MarkdownVaultWriter
+
+    from grandplan.app.review import ReviewEdits
+
+    repo, originals = InMemoryNoteRepository(), InMemoryOriginalStore()
+    vault = MarkdownVaultWriter(tmp_path / "vault")
+    pending = _start("rough capture text", repo, originals)
+    edits = ReviewEdits(
+        title="Polished title", body="cleaned up body", tags=("work", "q3"), note_type="project"
+    )
+    result = approve(pending, repo=repo, vault=vault, edits=edits)
+    note = repo.get_note(result.note.id)
+    assert note is not None
+    assert note.title == "Polished title" and note.body == "cleaned up body"
+    assert note.tags == ("work", "q3") and note.type is NoteType.PROJECT
+    assert result.original.text == "rough capture text"  # the verbatim capture is untouched
+
+
+def test_approve_ignores_blank_title_and_unknown_type(tmp_path: Path) -> None:
+    from grandplan.core.vault import MarkdownVaultWriter
+
+    from grandplan.app.review import ReviewEdits
+
+    repo, originals = InMemoryNoteRepository(), InMemoryOriginalStore()
+    vault = MarkdownVaultWriter(tmp_path / "vault")
+    pending = _start("keep the proposed title please", repo, originals)
+    original_title, original_type = pending.proposed.title, pending.proposed.type
+    result = approve(
+        pending,
+        repo=repo,
+        vault=vault,
+        edits=ReviewEdits(title="   ", note_type="not-a-real-type"),
+    )
+    note = repo.get_note(result.note.id)
+    assert note is not None
+    assert note.title == original_title  # blank title ignored → keep the proposal
+    assert note.type is original_type  # unknown type ignored → keep the proposal
+
+
 def test_discard_writes_nothing() -> None:
     repo, originals = InMemoryNoteRepository(), InMemoryOriginalStore()
     pending = _start("a throwaway thought", repo, originals)

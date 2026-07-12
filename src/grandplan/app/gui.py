@@ -26,6 +26,7 @@ import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from grandplan.adapters.capture import make_windows_capturer, run_hotkey_listener
 from grandplan.adapters.llm_contextual_reconciler import LlmContextualReconciler
@@ -41,11 +42,11 @@ from grandplan.app.coordinator import (
 )
 from grandplan.app.progress import ProgressView, progress_for
 from grandplan.app.queue_view import build_queue_view
-from grandplan.app.review import ReviewState
+from grandplan.app.review import ReviewEdits, ReviewState
 from grandplan.core.edit_detect import EditDetector, HeuristicEditDetector
 from grandplan.core.embed import HashingEmbedder
 from grandplan.core.index_location import migrate_legacy_index
-from grandplan.core.models import Source
+from grandplan.core.models import NoteType, Source
 from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.pipeline import CaptureResult
@@ -275,15 +276,15 @@ def _start_phone_server(  # pragma: no cover - binds a socket; needs the windows
             pending=lambda: pending_to_json(coordinator.pending_reviews()),
         )
 
-    def decide(pending_id: str, approve: bool) -> bool:
+    def decide(pending_id: str, approve: bool, edits: ReviewEdits | None) -> bool:
         return (
-            coordinator.approve_pending(pending_id)
+            coordinator.approve_pending(pending_id, edits)
             if approve
             else coordinator.discard_pending(pending_id)
         )
 
-    def on_decision(path: str, provided: str | None) -> IntakeResult:
-        return handle_mobile_decision(path, provided, token=token, decide=decide)
+    def on_decision(path: str, provided: str | None, body: bytes) -> IntakeResult:
+        return handle_mobile_decision(path, provided, token=token, decide=decide, body=body)
 
     def handler(raw: bytes, content_type: str) -> object:
         try:
@@ -510,11 +511,11 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
                 continue
             _reviewing["busy"] = True
             try:
-                approved = _show_review(review_item.state)
+                approved, edits = _show_review(review_item.state)
             finally:
                 _reviewing["busy"] = False
             if approved:
-                coordinator.approve_pending(review_item.id)
+                coordinator.approve_pending(review_item.id, edits)
             else:
                 coordinator.discard_pending(review_item.id)
             return  # one review at a time (pending_reviews holds at most one)
@@ -732,7 +733,9 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         coordinator.stop()
 
 
-def _show_review(state: ReviewState) -> bool:  # pragma: no cover - Qt dialog
+def _show_review(
+    state: ReviewState,
+) -> tuple[bool, ReviewEdits | None]:  # pragma: no cover - Qt dialog
     from PySide6 import QtWidgets
 
     dialog = QtWidgets.QDialog()
@@ -746,6 +749,14 @@ def _show_review(state: ReviewState) -> bool:  # pragma: no cover - Qt dialog
         label.setWordWrap(True)
         layout.addWidget(label)
 
+    # A status-update / edit capture touches an EXISTING note (no new note), so its fields aren't
+    # editable here; a NEW note is fully editable (title / type / tags / body) before Save.
+    editable = not (state.is_status_update or state.is_edit)
+    title_edit: Any = None  # Qt widgets (Any: PySide6 is untyped in the gate env, like queue_view)
+    type_combo: Any = None
+    tags_edit: Any = None
+    body_edit: Any = None
+
     if state.is_status_update:
         # PR-B: this capture is a progress update — approving marks the matched note, not a new note.
         add_label(
@@ -758,7 +769,26 @@ def _show_review(state: ReviewState) -> bool:  # pragma: no cover - Qt dialog
             f"<b>Edit</b> “{state.edit_target_title}”: <b>{state.edit_summary}</b> "
             "(no new note will be created)."
         )
-    add_label(f"<b>{state.title}</b>  ({state.note_type})")
+    if editable:
+        form = QtWidgets.QFormLayout()
+        title_edit = QtWidgets.QLineEdit(state.title)
+        type_combo = QtWidgets.QComboBox()
+        type_values = [note_type.value for note_type in NoteType]
+        if state.note_type not in type_values:  # unknown → keep it as the current choice
+            type_values = [state.note_type, *type_values]
+        type_combo.addItems(type_values)
+        type_combo.setCurrentText(state.note_type)
+        tags_edit = QtWidgets.QLineEdit(", ".join(state.tags))
+        form.addRow("Title", title_edit)
+        form.addRow("Type", type_combo)
+        form.addRow("Tags", tags_edit)
+        layout.addLayout(form)
+        add_label("Body (editable):")
+        body_edit = QtWidgets.QPlainTextEdit(state.body)
+        body_edit.setMinimumHeight(100)
+        layout.addWidget(body_edit)
+    else:
+        add_label(f"<b>{state.title}</b>  ({state.note_type})")
     if state.is_probable_duplicate:
         add_label("⚠ Looks like a duplicate of an existing note.")
     if state.requires_review:
@@ -797,4 +827,14 @@ def _show_review(state: ReviewState) -> bool:  # pragma: no cover - Qt dialog
         dialog.resize(w, h)
         x, y = _centered_position(w, h, area.x(), area.y(), area.width(), area.height())
         dialog.move(x, y)
-    return bool(dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted)
+    accepted = bool(dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted)
+    if not accepted or not editable:
+        return accepted, None  # discarded, or an update/edit (no new-note fields to edit)
+    tags = tuple(tag.strip() for tag in tags_edit.text().split(",") if tag.strip())
+    edits = ReviewEdits(
+        title=title_edit.text(),
+        body=body_edit.toPlainText(),
+        tags=tags,
+        note_type=type_combo.currentText(),
+    )
+    return True, edits

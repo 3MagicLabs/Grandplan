@@ -674,6 +674,33 @@ def test_remote_approve_commits_a_parked_review(tmp_path: Path) -> None:
         coord.stop()
 
 
+def test_remote_approve_with_edits_commits_the_edited_note(tmp_path: Path) -> None:
+    # Inline editing from a surface: approve_pending carries the human's edits, applied on the worker.
+    from grandplan.app.review import ReviewEdits
+
+    saved = threading.Event()
+
+    def on_status(status: CaptureStatus) -> None:
+        if status.stage is Stage.SAVED:
+            saved.set()
+
+    coord, repo, _ = _make(
+        tmp_path, capturer=SeqCapturer([None]), review=None, on_status=on_status, max_pending=4
+    )
+    coord.start()
+    try:
+        assert coord.submit_text("rough phone capture")
+        pending = _wait_until(coord.pending_reviews)
+        edits = ReviewEdits(title="Edited on phone", tags=("mobile",))
+        assert coord.approve_pending(pending[0].id, edits) is True
+        assert saved.wait(timeout=3)
+        notes = repo.notes()
+        assert len(notes) == 1
+        assert notes[0].title == "Edited on phone" and notes[0].tags == ("mobile",)
+    finally:
+        coord.stop()
+
+
 def test_remote_discard_keeps_raw_but_writes_no_note(tmp_path: Path) -> None:
     discarded = threading.Event()
 

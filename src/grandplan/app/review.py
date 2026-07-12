@@ -8,13 +8,14 @@ No UI/Qt dependency here, so the review logic is fully unit-tested; the PySide6 
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from grandplan.core.edit_detect import EditDetector
 from grandplan.core.models import (
     Note,
     NoteEdit,
     NoteStatus,
+    NoteType,
     Original,
     ProposedNote,
     Source,
@@ -55,6 +56,7 @@ class ReviewState:
     edit_summary: str = ""  # human-readable, e.g. "due → Q3; title → CV"
     # Slice B: status changes this new note implies for EXISTING related notes, applied on approval.
     proposed_updates: tuple[tuple[str, str], ...] = ()  # (existing note title, new status value)
+    body: str = ""  # the organizer's proposed note body — shown + editable before approval
 
 
 @dataclass(frozen=True)
@@ -195,6 +197,7 @@ def start_review(
         edit_target_title=edit.target.title if edit is not None else "",
         edit_summary=edit.summary() if edit is not None else "",
         proposed_updates=proposed_updates,
+        body=proposed.body,
     )
     return PendingReview(
         original=original,
@@ -274,12 +277,47 @@ def _detect_edit(
     return ProposedEdit(target=target, edit=edit, score=score)
 
 
+@dataclass(frozen=True)
+class ReviewEdits:
+    """Human edits to a proposed NEW note, made in the review UI before approval (desktop or phone).
+
+    Every field is optional — None means "keep the organizer's proposal". Applied to `pending.proposed`
+    right before commit, so the saved note (and its content-addressed id) reflect the human's version."""
+
+    title: str | None = None
+    body: str | None = None
+    tags: tuple[str, ...] | None = None
+    note_type: str | None = None  # a NoteType value (e.g. "task"); unknown values are ignored
+
+
+def _apply_edits(proposed: ProposedNote, edits: ReviewEdits) -> ProposedNote:
+    """Return a copy of `proposed` with the human's non-None edits applied (blank title/type ignored)."""
+    result = proposed
+    if edits.title is not None and edits.title.strip():
+        result = replace(result, title=edits.title.strip())
+    if edits.body is not None:
+        result = replace(result, body=edits.body.strip())
+    if edits.tags is not None:
+        result = replace(result, tags=tuple(edits.tags))
+    if edits.note_type is not None:
+        try:
+            note_type = NoteType(edits.note_type)
+        except ValueError:
+            note_type = (
+                None  # an unknown type string → keep the proposed type, don't crash approval
+            )
+        if note_type is not None:
+            result = replace(result, type=note_type)
+    return result
+
+
 def approve(
     pending: PendingReview,
     *,
     repo: NoteRepository,
     vault: VaultWriter,
     link_related: bool = True,
+    edits: ReviewEdits | None = None,
 ) -> CaptureResult | StatusUpdateResult | EditResult:
     """Commit the review: a `status` event (PR-B), an `edit` event (PR-C), else a new note.
 
@@ -305,9 +343,12 @@ def approve(
     proposal = pending.assessment.proposal
     links = proposal.links() if link_related else ()
     status = NoteStatus.NEEDS_REVIEW if proposal.requires_review else NoteStatus.INBOX
+    # Apply the human's review edits (title/body/tags/type) to the proposal before committing — the
+    # relationships/status-changes come from the reconciliation assessment and are unaffected.
+    proposed = pending.proposed if edits is None else _apply_edits(pending.proposed, edits)
     result = commit(
         pending.original,
-        pending.proposed,
+        proposed,
         pending.assessment,
         repo=repo,
         vault=vault,

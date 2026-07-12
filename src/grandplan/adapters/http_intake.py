@@ -194,11 +194,17 @@ def serve_intake(
             self._reply(on_get(self.path, provided))  # type: ignore[operator]
 
         def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-            # Approve/discard a parked review (tiny/no body) — routed before the sized directive/
-            # capture precheck, since these paths carry an id in the URL, not a Content-Length body.
+            # Approve/discard a parked review — routed before the sized directive/capture precheck,
+            # since these paths carry an id in the URL. An approve MAY carry a small JSON body of edits
+            # (title/body/tags/type); read it (capped) so the handler can apply them before saving.
             if on_decision is not None and self.path.rstrip("/").startswith("/api/pending/"):
                 provided = bearer_token(self.headers.get("Authorization", ""))
-                self._reply(on_decision(self.path, provided))  # type: ignore[operator]
+                try:
+                    blen = int(self.headers.get("Content-Length", 0) or 0)
+                except ValueError:
+                    blen = 0
+                body = self.rfile.read(min(blen, MAX_BODY_BYTES)) if blen > 0 else b""
+                self._reply(on_decision(self.path, provided, body))  # type: ignore[operator]
                 return
             try:
                 length = int(self.headers.get("Content-Length", 0) or 0)

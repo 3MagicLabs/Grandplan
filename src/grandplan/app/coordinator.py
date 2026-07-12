@@ -36,6 +36,7 @@ from enum import Enum
 from grandplan.app.review import (
     EditResult,
     PendingReview,
+    ReviewEdits,
     ReviewState,
     StatusUpdateResult,
     approve,
@@ -260,6 +261,9 @@ class _PendingDecision:
         self.snippet = snippet
         self.event = threading.Event()
         self.approved = False
+        self.edits: ReviewEdits | None = (
+            None  # human edits made in the review UI (None = as-proposed)
+        )
 
 
 class CaptureCoordinator:
@@ -486,17 +490,18 @@ class CaptureCoordinator:
 
     # -- review decision (multi-surface: desktop dialog OR phone; first wins) --------------------
 
-    def _await_decision(self, pending: PendingReview) -> bool:
-        """Block until this capture is approved (True) or discarded (False).
+    def _await_decision(self, pending: PendingReview) -> tuple[bool, ReviewEdits | None]:
+        """Block until this capture is approved (True) or discarded (False), with any human edits.
 
         An injected synchronous `review` resolver (tests, or a headless auto-policy) decides inline —
-        unchanged behaviour. Otherwise the worker PARKS the decision so any surface — the desktop
-        review dialog or a phone `/api/pending/<id>/approve|discard` call — can resolve it, whichever
-        acts first. Shutting down mid-wait resolves as discard (the raw capture stays in the inbox).
-        The commit itself still happens on the worker after this returns (ADR-0006 single writer).
+        unchanged behaviour, no edits. Otherwise the worker PARKS the decision so any surface — the
+        desktop review dialog or a phone `/api/pending/<id>/approve|discard` call — can resolve it
+        (with edits), whichever acts first. Shutting down mid-wait resolves as discard (the raw
+        capture stays in the inbox). The commit itself still happens on the worker after this returns
+        (ADR-0006 single writer).
         """
         if self._review is not None:
-            return self._review(pending.state)
+            return self._review(pending.state), None
         with self._items_lock:
             item = self._inflight
             decision = _PendingDecision(
@@ -510,8 +515,8 @@ class CaptureCoordinator:
         try:
             while not self._shutdown.is_set():
                 if decision.event.wait(timeout=_POLL_INTERVAL):
-                    return decision.approved
-            return False  # shutting down → discard, keeping the raw capture in the inbox
+                    return decision.approved, decision.edits
+            return False, None  # shutting down → discard, keeping the raw capture in the inbox
         finally:
             with self._decision_lock:
                 self._decision = None
@@ -532,21 +537,23 @@ class CaptureCoordinator:
                 ),
             )
 
-    def approve_pending(self, pending_id: str) -> bool:
-        """Approve the parked review with this id (from any surface). Returns True if it resolved this
-        call, False if the id doesn't match the current pending review or it was already decided."""
-        return self._resolve(pending_id, approved=True)
+    def approve_pending(self, pending_id: str, edits: ReviewEdits | None = None) -> bool:
+        """Approve the parked review with this id (from any surface), optionally with human edits to
+        the note (title/body/tags/type). Returns True if it resolved this call, False if the id doesn't
+        match the current pending review or it was already decided."""
+        return self._resolve(pending_id, approved=True, edits=edits)
 
     def discard_pending(self, pending_id: str) -> bool:
         """Discard the parked review with this id (from any surface); the raw capture stays in the inbox."""
-        return self._resolve(pending_id, approved=False)
+        return self._resolve(pending_id, approved=False, edits=None)
 
-    def _resolve(self, pending_id: str, *, approved: bool) -> bool:
+    def _resolve(self, pending_id: str, *, approved: bool, edits: ReviewEdits | None) -> bool:
         with self._decision_lock:
             decision = self._decision
             if decision is None or decision.id != pending_id or decision.event.is_set():
                 return False  # nothing pending, wrong id, or another surface already decided
             decision.approved = approved
+            decision.edits = edits
             decision.event.set()  # wake the worker blocked in _await_decision
             return True
 
@@ -697,14 +704,15 @@ class CaptureCoordinator:
                 placer=self._placer,
             )
             self._advance(Stage.AWAITING_REVIEW, pending.state.title)
-            # The worker waits for an approve/discard — resolved by a synchronous resolver (tests /
-            # headless), the desktop dialog, or a phone call (whichever first) via `_await_decision`.
-            if not self._await_decision(pending):
+            # The worker waits for an approve/discard (+ any human edits) — resolved by a synchronous
+            # resolver (tests / headless), the desktop dialog, or a phone call, whichever first.
+            approved, edits = self._await_decision(pending)
+            if not approved:
                 discard(pending)
                 self._advance(Stage.DISCARDED, "discarded — raw capture kept in the inbox")
                 return None
             self._advance(Stage.COMMITTING, _committing_detail(pending))
-            result = approve(pending, repo=self._repo, vault=self._vault)
+            result = approve(pending, repo=self._repo, vault=self._vault, edits=edits)
             self._advance(Stage.SAVED, _saved_detail(result))
             self._run_after_commit(result)
             return result
