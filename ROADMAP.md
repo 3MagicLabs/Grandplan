@@ -87,6 +87,13 @@ Whisper model + mic (`grandplan[voice]`, lazy/optional, on-device — no audio l
 [--once]`) — a dropped text/markdown file becomes an append-only directive (feeds the theme-J loop),
 offline. **Deferred:** GUI wiring (a "hold to speak" hotkey on the tray app — Windows-only, untestable
 under WSL). Remaining surfaces: image/screenshot OCR; web clipper; social/feed ingestion.
+- **Direct compose — type a note into the UI (desktop + mobile).** A first-class "new note" box on
+  both surfaces: a compose window on the tray app and a text area in the phone web app, so you can
+  author a note in grandplan itself instead of only capturing from another app. Routes through the
+  SAME organize → review → commit path (so it gets a title/type/tags/links + the review inbox, and
+  is editable before Save — theme A's inline editing). Partial substrate already exists: the
+  coordinator's `submit_text` (quick-capture) and the phone `/capture` text field; this is the
+  dedicated in-app compose UI on top. Offline; no new port needed.
 
 ### I. Distribution & robustness
 ✅ **`regenerate --keep-history` DONE** (replays the prior status/edit/resource/deletion events onto
