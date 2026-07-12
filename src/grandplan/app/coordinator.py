@@ -237,6 +237,31 @@ class _AutoCapture:
     source: Source | None = None
 
 
+@dataclass(frozen=True)
+class PendingReviewView:
+    """A capture awaiting an approve/discard decision — what a review surface (the desktop dialog or
+    the phone app) needs to show it and act on it. `id` is passed back to `approve_pending` /
+    `discard_pending`; `state` is the same display DTO the desktop review dialog renders."""
+
+    id: str
+    state: ReviewState
+    source: str  # provenance app (e.g. "phone" / "grandplan") → the surface's icon
+    snippet: str
+
+
+class _PendingDecision:
+    """The worker's parked review decision, resolvable from any surface (first wins). Mutable: a
+    surface flips `approved` and sets `event`, which wakes the worker waiting inside `_await_decision`."""
+
+    def __init__(self, *, id: str, state: ReviewState, source: str, snippet: str) -> None:
+        self.id = id
+        self.state = state
+        self.source = source
+        self.snippet = snippet
+        self.event = threading.Event()
+        self.approved = False
+
+
 class CaptureCoordinator:
     """Serializes capture requests through one worker, reporting progress at each stage."""
 
@@ -250,7 +275,7 @@ class CaptureCoordinator:
         repo: NoteRepository,
         originals: OriginalStore,
         vault: VaultWriter,
-        review: ReviewFn,
+        review: ReviewFn | None = None,
         source: Source,
         clock: Clock = _utc_now_iso,
         on_status: StatusFn | None = None,
@@ -297,6 +322,12 @@ class CaptureCoordinator:
         self._inflight: _TrackedItem | None = None
         self._recent: deque[_TrackedItem] = deque(maxlen=_RECENT_CAP)
         self._seq = itertools.count(1)  # monotonic ids (generated under _items_lock)
+        # Shared review decision (mobile parity): when no synchronous `review` resolver is injected,
+        # the worker parks the awaiting-review capture here so ANY surface — the desktop dialog OR a
+        # phone `/api/pending` call — can approve/discard it (first wins). The commit still runs on the
+        # worker (ADR-0006); a surface only sets the decision + wakes the worker.
+        self._decision_lock = threading.Lock()
+        self._decision: _PendingDecision | None = None
 
     # -- public API -----------------------------------------------------------------------------
 
@@ -452,6 +483,72 @@ class CaptureCoordinator:
         self._track_stage(stage, detail)
         self._emit(stage, detail)
 
+    # -- review decision (multi-surface: desktop dialog OR phone; first wins) --------------------
+
+    def _await_decision(self, pending: PendingReview) -> bool:
+        """Block until this capture is approved (True) or discarded (False).
+
+        An injected synchronous `review` resolver (tests, or a headless auto-policy) decides inline —
+        unchanged behaviour. Otherwise the worker PARKS the decision so any surface — the desktop
+        review dialog or a phone `/api/pending/<id>/approve|discard` call — can resolve it, whichever
+        acts first. Shutting down mid-wait resolves as discard (the raw capture stays in the inbox).
+        The commit itself still happens on the worker after this returns (ADR-0006 single writer).
+        """
+        if self._review is not None:
+            return self._review(pending.state)
+        with self._items_lock:
+            item = self._inflight
+            decision = _PendingDecision(
+                id=item.id if item is not None else "",
+                state=pending.state,
+                source=item.source if item is not None else self._source.app,
+                snippet=item.snippet if item is not None else "",
+            )
+        with self._decision_lock:
+            self._decision = decision
+        try:
+            while not self._shutdown.is_set():
+                if decision.event.wait(timeout=_POLL_INTERVAL):
+                    return decision.approved
+            return False  # shutting down → discard, keeping the raw capture in the inbox
+        finally:
+            with self._decision_lock:
+                self._decision = None
+
+    def pending_reviews(self) -> tuple[PendingReviewView, ...]:
+        """The capture(s) currently awaiting an approve/discard decision (0 or 1). Thread-safe; the
+        desktop dialog and the phone app both render this and act via `approve_pending`/`discard_pending`."""
+        with self._decision_lock:
+            decision = self._decision
+            if decision is None:
+                return ()
+            return (
+                PendingReviewView(
+                    id=decision.id,
+                    state=decision.state,
+                    source=decision.source,
+                    snippet=decision.snippet,
+                ),
+            )
+
+    def approve_pending(self, pending_id: str) -> bool:
+        """Approve the parked review with this id (from any surface). Returns True if it resolved this
+        call, False if the id doesn't match the current pending review or it was already decided."""
+        return self._resolve(pending_id, approved=True)
+
+    def discard_pending(self, pending_id: str) -> bool:
+        """Discard the parked review with this id (from any surface); the raw capture stays in the inbox."""
+        return self._resolve(pending_id, approved=False)
+
+    def _resolve(self, pending_id: str, *, approved: bool) -> bool:
+        with self._decision_lock:
+            decision = self._decision
+            if decision is None or decision.id != pending_id or decision.event.is_set():
+                return False  # nothing pending, wrong id, or another surface already decided
+            decision.approved = approved
+            decision.event.set()  # wake the worker blocked in _await_decision
+            return True
+
     def submit_enrichment(self, note_id: str) -> bool:
         """Queue a committed note for the background links/placement pass (#38). Best-effort:
         returns False (and drops silently) when enrichment is off, the note is already queued, or
@@ -534,6 +631,9 @@ class CaptureCoordinator:
     def stop(self) -> None:
         """Signal the worker to stop and wait for the in-flight capture to finish (safe anytime)."""
         self._shutdown.set()
+        with self._decision_lock:  # wake a review parked in _await_decision so the worker can exit
+            if self._decision is not None:
+                self._decision.event.set()  # approved stays False → discard, raw kept in the inbox
         thread = self._thread
         if thread is not None:
             thread.join(timeout=_JOIN_TIMEOUT)
@@ -597,9 +697,10 @@ class CaptureCoordinator:
                 placer=self._placer,
             )
             self._advance(Stage.AWAITING_REVIEW, pending.state.title)
-            # A remote/phone capture commits without the desktop review dialog (you're away); a
-            # desktop hotkey/quick capture waits for your approve/edit decision.
-            if not auto_approve and not self._review(pending.state):
+            # A capture with `auto_approve` commits without a decision; otherwise the worker waits
+            # for an approve/discard — resolved by a synchronous resolver, the desktop dialog, or a
+            # phone call (whichever first) via `_await_decision`.
+            if not auto_approve and not self._await_decision(pending):
                 discard(pending)
                 self._advance(Stage.DISCARDED, "discarded — raw capture kept in the inbox")
                 return None

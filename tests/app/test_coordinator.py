@@ -628,3 +628,84 @@ def test_recent_history_is_capped_and_most_recent_first(tmp_path: Path) -> None:
     assert len(snap) == 5  # capped at _RECENT_CAP — history doesn't grow unbounded
     assert snap[0].snippet == "note number 6"  # most-recent first
     assert snap[-1].snippet == "note number 2"
+
+
+# -- multi-surface review decision (mobile parity): approve/discard from any surface, first wins ---
+
+
+def _wait_until(predicate, timeout: float = 3.0):  # type: ignore[no-untyped-def]
+    """Poll `predicate` until it returns a truthy value; fail (not hang) if it never does."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.01)
+    raise AssertionError("condition not met within timeout")
+
+
+def test_pending_review_is_empty_with_nothing_in_flight(tmp_path: Path) -> None:
+    coord, _, _ = _make(tmp_path, capturer=SeqCapturer([None]), review=None)
+    assert coord.pending_reviews() == ()
+
+
+def test_remote_approve_commits_a_parked_review(tmp_path: Path) -> None:
+    # With no synchronous resolver, a capture parks awaiting a decision that ANY surface can make.
+    saved = threading.Event()
+
+    def on_status(status: CaptureStatus) -> None:
+        if status.stage is Stage.SAVED:
+            saved.set()
+
+    coord, repo, _ = _make(
+        tmp_path, capturer=SeqCapturer([None]), review=None, on_status=on_status, max_pending=4
+    )
+    coord.start()
+    try:
+        assert coord.submit_text("a note to review from my phone")
+        pending = _wait_until(coord.pending_reviews)
+        assert len(pending) == 1
+        assert pending[0].state.original_text == "a note to review from my phone"
+        assert coord.approve_pending(pending[0].id) is True  # resolved by this call
+        assert saved.wait(timeout=3)
+        assert len(repo.notes()) == 1  # committed on the worker (single writer)
+        assert coord.pending_reviews() == ()  # inbox cleared
+    finally:
+        coord.stop()
+
+
+def test_remote_discard_keeps_raw_but_writes_no_note(tmp_path: Path) -> None:
+    discarded = threading.Event()
+
+    def on_status(status: CaptureStatus) -> None:
+        if status.stage is Stage.DISCARDED:
+            discarded.set()
+
+    coord, repo, originals = _make(
+        tmp_path, capturer=SeqCapturer([None]), review=None, on_status=on_status, max_pending=4
+    )
+    coord.start()
+    try:
+        assert coord.submit_text("a throwaway thought from mobile")
+        pending = _wait_until(coord.pending_reviews)
+        assert coord.discard_pending(pending[0].id) is True
+        assert discarded.wait(timeout=3)
+        assert repo.notes() == ()  # nothing committed
+        assert originals.all()  # raw capture retained in the inbox
+    finally:
+        coord.stop()
+
+
+def test_resolving_the_wrong_id_or_twice_is_refused(tmp_path: Path) -> None:
+    coord, repo, _ = _make(tmp_path, capturer=SeqCapturer([None]), review=None, max_pending=4)
+    coord.start()
+    try:
+        assert coord.submit_text("decide me once")
+        pending = _wait_until(coord.pending_reviews)
+        pid = pending[0].id
+        assert coord.approve_pending("not-a-real-id") is False  # wrong id → no effect
+        assert coord.approve_pending(pid) is True  # first decision wins
+        assert coord.discard_pending(pid) is False  # already resolved → refused
+        _wait_until(lambda: len(repo.notes()) == 1)
+    finally:
+        coord.stop()
