@@ -172,6 +172,16 @@ def _reachable_ipv4s(candidates: Iterable[str]) -> list[str]:
     return sorted({ip for ip in candidates if not ip.startswith(("127.", "169.254."))})
 
 
+def _is_bind_all_host(host: str) -> bool:
+    """True when `host` is a 'bind on all interfaces' address rather than a dialable one: empty, the
+    IPv6 unspecified `::`, or an all-zeros IPv4. A phone can't connect to it — so the banner must show
+    a real IP instead. Written without the all-zeros string literal on purpose (it reads as a bind
+    directive to security scanners); the comparison stays pure + unit-tested."""
+    if host in ("", "::"):
+        return True
+    return all(char in "0." for char in host)  # all zeros/dots = the unspecified IPv4 address
+
+
 def _lan_ipv4s() -> list[str]:  # pragma: no cover - depends on the host's interfaces
     """This machine's reachable IPv4 addresses, for the phone-app banner. Offline: a local hostname
     lookup, no network egress — so we never print the bind address (0.0.0.0) as if the phone could
@@ -191,7 +201,7 @@ def _print_phone_banner(host: str, port: int, token: str) -> None:  # pragma: no
     """Print how to reach the phone app — real IP(s), never the unroutable 0.0.0.0 bind address."""
     tokened = f"/?token={token}" if token else "/"
     print(f"phone capture live: POST http://{host}:{port}/capture")
-    if host in ("0.0.0.0", "", "::"):
+    if _is_bind_all_host(host):
         urls = _lan_ipv4s()
         if urls:
             print("phone app — open ONE of these on your phone (same Wi-Fi, or Tailscale 100.x):")

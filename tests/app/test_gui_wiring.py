@@ -168,3 +168,14 @@ def test_reachable_ipv4s_drops_loopback_and_link_local() -> None:
     )
     assert got == ["100.64.0.5", "192.168.1.237"]
     assert _reachable_ipv4s(["127.0.0.1", "169.254.1.1"]) == []  # nothing reachable → empty
+
+
+def test_is_bind_all_host_detects_unroutable_bind_addresses() -> None:
+    # The banner shows real IPs only when bound to "all interfaces" (which a phone can't dial).
+    from grandplan.app.gui import _is_bind_all_host
+
+    assert _is_bind_all_host("0.0.0.0") is True
+    assert _is_bind_all_host("") is True
+    assert _is_bind_all_host("::") is True
+    assert _is_bind_all_host("192.168.1.237") is False  # a real LAN IP → dialable, print as-is
+    assert _is_bind_all_host("100.64.0.5") is False  # Tailscale IP → dialable
