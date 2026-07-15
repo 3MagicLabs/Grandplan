@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from grandplan.cli import main, organize_text
+from grandplan.cli import _chat_repl, main, organize_text
 from grandplan.core.models import Note, NoteType, Original, ProposedNote, Source
 
 
@@ -1182,6 +1182,157 @@ def test_gui_fast_is_default_and_thorough_opts_out(
     assert seen[0]["enrich"] is False  # default: no background LLM work after a save
     assert seen[1]["enrich"] is False
     assert seen[3]["enrich"] is True  # --enrich opts in, and only then
+
+
+def _graph_vault(tmp_path: Path) -> Path:
+    """A vault whose index holds: Alpha --depends_on--> Beta, and Gamma --builds_on--> Alpha."""
+    from grandplan.core.index_location import migrate_legacy_index
+    from grandplan.core.models import Edge, EdgeKind
+    from grandplan.core.note_store import JsonlNoteRepository
+    from grandplan.core.store import JsonlOriginalStore
+
+    vault = tmp_path / "vault"
+    vault.mkdir(
+        parents=True, exist_ok=True
+    )  # the index lives outside the vault; the dir is not implied
+    index_root = migrate_legacy_index(vault)
+    originals = JsonlOriginalStore(index_root / "inbox.jsonl")
+    repo = JsonlNoteRepository(index_root / "index.jsonl")
+    for nid, title in (("a", "Alpha launch post"), ("b", "Beta research"), ("c", "Gamma plan")):
+        original = Original.capture(title, _SOURCE, _CREATED)
+        originals.add(original)
+        repo.add_note(
+            Note(id=nid, original_id=original.id, title=title, body=title, type=NoteType.TASK),
+            (1.0, 0.0),
+        )
+    repo.add_edge(Edge("a", "b", EdgeKind.DEPENDS_ON))
+    repo.add_edge(Edge("c", "a", EdgeKind.BUILDS_ON))
+    return vault
+
+
+def test_graph_by_exact_id_shows_both_link_directions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # An exact id must resolve without any embedding guesswork, and must show what points AT the
+    # note (Gamma) as well as what it points at (Beta) — the whole reason for the neighborhood view.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    vault = _graph_vault(tmp_path)
+    assert main(["graph", "a", "-o", str(vault)]) == 0
+    out = capsys.readouterr().out
+    assert "Alpha launch post" in out
+    assert "Beta research" in out and "depends_on" in out  # outgoing
+    assert "Gamma plan" in out and "builds_on" in out  # incoming
+
+
+def test_graph_by_search_shows_best_match_and_lists_runners_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A wrong pick should cost one re-run with an id, not a rephrase — so the runners-up are listed.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    vault = _graph_vault(tmp_path)
+    assert main(["graph", "launch post", "-o", str(vault)]) == 0
+    out = capsys.readouterr().out
+    assert "other matches" in out
+    assert "[b]" in out or "[c]" in out  # the runners-up carry ids to jump to
+
+
+def test_graph_without_an_index_fails_clearly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    assert main(["graph", "anything", "-o", str(tmp_path / "empty")]) == 1
+    assert "no index" in capsys.readouterr().err
+
+
+def test_graph_open_without_a_rendered_note_says_rerender_instead_of_opening_the_vault_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The index knows the note but no .md exists (stale projections). Silently opening the vault
+    # root would look like success; the actual fix is a rerender, so say that.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    vault = _graph_vault(tmp_path)
+    opened: list[Path] = []
+    monkeypatch.setattr(
+        "grandplan.adapters.obsidian_open.open_in_obsidian", lambda p: opened.append(p) or True
+    )
+    assert main(["graph", "a", "-o", str(vault), "--open"]) == 1
+    assert "rerender" in capsys.readouterr().err
+    assert opened == []  # nothing was handed to Obsidian
+
+
+def test_graph_open_hands_the_note_file_to_obsidian(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    vault = _graph_vault(tmp_path)
+    (vault / "alpha-launch-post.md").write_text("# Alpha launch post", encoding="utf-8")
+    opened: list[Path] = []
+    monkeypatch.setattr(
+        "grandplan.adapters.obsidian_open.open_in_obsidian", lambda p: opened.append(p) or True
+    )
+    assert main(["graph", "a", "-o", str(vault), "--open"]) == 0
+    assert opened == [vault / "alpha-launch-post.md"]  # the NOTE, not the vault root
+
+
+class _FocusSession:
+    """A stand-in ChatSession that records whether a line was routed to the model."""
+
+    def __init__(self) -> None:
+        self.asked: list[str] = []
+
+    def focus(self) -> str:
+        return "FOCUS — what to do next\n\nBottleneck: ship the thing  [t1]"
+
+    def neighborhood(self, note_id: str) -> str | None:
+        return (
+            "Alpha  [a]\n\nConnected notes (1):\n  → relates  Beta  [b]" if note_id == "a" else None
+        )
+
+    def respond(self, question: str, **kwargs: object) -> object:
+        self.asked.append(question)
+        raise AssertionError("this line should never have reached the model")
+
+
+def test_chat_repl_focus_is_a_command_not_a_question(capsys: pytest.CaptureFixture[str]) -> None:
+    # /focus is pure projection (SPEC-ACT §A1): it must print the plan without touching the model,
+    # so it still answers "what do I do next" when Ollama is down.
+    session = _FocusSession()
+    lines = iter(["/focus", "/quit"])
+    assert _chat_repl(session, input_fn=lambda prompt: next(lines)) == 0
+    assert "Bottleneck: ship the thing" in capsys.readouterr().out
+    assert session.asked == []  # never routed to the KB model
+
+
+def test_chat_repl_next_is_an_alias_for_focus(capsys: pytest.CaptureFixture[str]) -> None:
+    session = _FocusSession()
+    lines = iter(["/next", "/quit"])
+    assert _chat_repl(session, input_fn=lambda prompt: next(lines)) == 0
+    assert "Bottleneck: ship the thing" in capsys.readouterr().out
+    assert session.asked == []
+
+
+def test_chat_repl_graph_shows_connections_without_the_model(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session = _FocusSession()
+    lines = iter(["/graph a", "/quit"])
+    assert _chat_repl(session, input_fn=lambda prompt: next(lines)) == 0
+    assert "Connected notes (1)" in capsys.readouterr().out
+    assert session.asked == []
+
+
+def test_chat_repl_graph_reports_an_unknown_id(capsys: pytest.CaptureFixture[str]) -> None:
+    session = _FocusSession()
+    lines = iter(["/graph nope", "/quit"])
+    assert _chat_repl(session, input_fn=lambda prompt: next(lines)) == 0
+    assert "no note with id" in capsys.readouterr().out
+
+
+def test_chat_repl_graph_without_an_id_prints_usage(capsys: pytest.CaptureFixture[str]) -> None:
+    session = _FocusSession()
+    lines = iter(["/graph", "/quit"])
+    assert _chat_repl(session, input_fn=lambda prompt: next(lines)) == 0
+    assert "usage: /graph" in capsys.readouterr().out
 
 
 def test_gui_kb_model_is_configurable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -32,3 +32,13 @@ def test_open_uri_encodes_absolute_path(tmp_path: Path) -> None:
     assert uri.startswith("obsidian://open?path=")
     assert "%2F" in uri or "%5C" in uri  # the absolute path is URL-encoded (no raw separators)
     assert " " not in uri  # spaces encoded
+
+
+def test_open_uri_targets_a_note_file_inside_the_vault(tmp_path: Path) -> None:
+    # `grandplan graph --open` hands Obsidian a note path, not a vault dir, so the user lands on the
+    # note itself and can open its local-graph pane from there.
+    note = tmp_path / "my note.md"
+    note.write_text("# hi", encoding="utf-8")
+    uri = obsidian_open_uri(note)
+    assert uri.startswith("obsidian://open?path=")
+    assert "my%20note.md" in uri  # the file (with its space encoded) is the target

@@ -117,16 +117,20 @@ def test_centered_position_centers_within_area() -> None:
 # enrichment calls for their instant deterministic baselines (~3× faster per capture).
 
 
-def test_capture_components_default_llm_wires_all_three_llm_adapters() -> None:
+def test_capture_components_default_llm_wires_all_the_llm_adapters() -> None:
     from grandplan.adapters.llm_contextual_reconciler import LlmContextualReconciler
+    from grandplan.adapters.llm_entity_extractor import LlmEntityExtractor
     from grandplan.adapters.llm_placer import LlmPlacer
     from grandplan.adapters.ollama_organizer import OllamaOrganizer
     from grandplan.app.gui import _capture_components
 
-    organizer, reconciler, placer = _capture_components(use_llm=True, fast=False, model="m")
+    organizer, reconciler, placer, entities = _capture_components(
+        use_llm=True, fast=False, model="m"
+    )
     assert isinstance(organizer, OllamaOrganizer)
     assert isinstance(reconciler, LlmContextualReconciler)
     assert isinstance(placer, LlmPlacer)
+    assert isinstance(entities, LlmEntityExtractor)
 
 
 def test_capture_components_fast_keeps_llm_organize_but_heuristic_links_and_placement() -> None:
@@ -137,24 +141,42 @@ def test_capture_components_fast_keeps_llm_organize_but_heuristic_links_and_plac
     from grandplan.core.placement import HeuristicPlacer
     from grandplan.core.reconcile import SimilarityReconciler
 
-    organizer, reconciler, placer = _capture_components(use_llm=True, fast=True, model="m")
+    organizer, reconciler, placer, _entities = _capture_components(
+        use_llm=True, fast=True, model="m"
+    )
     assert isinstance(organizer, OllamaOrganizer)
     assert isinstance(reconciler, SimilarityReconciler)
     assert isinstance(placer, HeuristicPlacer)
 
 
+def test_capture_components_always_wire_an_entity_extractor() -> None:
+    # The people/org graph must build on EVERY capture path, including --fast and --no-llm. The
+    # heuristic extractor is pure Python, so it costs no model call — there is no budget reason to
+    # ever leave capture without one, and without one a hotkey/phone capture builds no graph at all.
+    from grandplan.app.gui import _capture_components
+    from grandplan.core.entities import HeuristicEntityExtractor
+
+    for use_llm, fast in ((False, False), (False, True), (True, True)):
+        _o, _r, _p, entities = _capture_components(use_llm=use_llm, fast=fast, model="m")
+        assert isinstance(entities, HeuristicEntityExtractor), (use_llm, fast)
+
+
 def test_capture_components_no_llm_is_fully_deterministic_regardless_of_fast() -> None:
     # --no-llm already makes zero model calls; --fast must not change (or break) that baseline.
     from grandplan.app.gui import _capture_components
+    from grandplan.core.entities import HeuristicEntityExtractor
     from grandplan.core.organize import HeuristicOrganizer
     from grandplan.core.placement import HeuristicPlacer
     from grandplan.core.reconcile import SimilarityReconciler
 
     for fast in (False, True):
-        organizer, reconciler, placer = _capture_components(use_llm=False, fast=fast, model="m")
+        organizer, reconciler, placer, entities = _capture_components(
+            use_llm=False, fast=fast, model="m"
+        )
         assert isinstance(organizer, HeuristicOrganizer)
         assert isinstance(reconciler, SimilarityReconciler)
         assert isinstance(placer, HeuristicPlacer)
+        assert isinstance(entities, HeuristicEntityExtractor)
 
 
 def test_reachable_ipv4s_drops_loopback_and_link_local() -> None:

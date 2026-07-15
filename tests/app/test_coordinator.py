@@ -23,7 +23,8 @@ from grandplan.app.coordinator import (
 from grandplan.app.review import EditResult, ReviewState, StatusUpdateResult
 from grandplan.core.edit_detect import HeuristicEditDetector
 from grandplan.core.embed import HashingEmbedder
-from grandplan.core.models import NoteStatus, Source
+from grandplan.core.entities import HeuristicEntityExtractor
+from grandplan.core.models import EdgeKind, NoteStatus, NoteType, Source
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.pipeline import CaptureResult
 from grandplan.core.reconcile import SimilarityReconciler
@@ -64,6 +65,7 @@ def _make(
     after_commit=None,  # type: ignore[no-untyped-def]
     detector=None,  # type: ignore[no-untyped-def]
     edit_detector=None,  # type: ignore[no-untyped-def]
+    entity_extractor=None,  # type: ignore[no-untyped-def]
     max_pending: int = 1,
 ) -> tuple[CaptureCoordinator, InMemoryNoteRepository, InMemoryOriginalStore]:
     repo = InMemoryNoteRepository()
@@ -84,6 +86,7 @@ def _make(
         after_commit=after_commit,
         detector=detector,
         edit_detector=edit_detector,
+        entity_extractor=entity_extractor,
         max_pending=max_pending,
     )
     return coord, repo, originals
@@ -767,3 +770,94 @@ def test_resolving_the_wrong_id_or_twice_is_refused(tmp_path: Path) -> None:
         _wait_until(lambda: len(repo.notes()) == 1)
     finally:
         coord.stop()
+
+
+# --- entity extraction (the people/org graph) ---------------------------------------------------
+
+
+def _entity_notes(repo: InMemoryNoteRepository) -> list[str]:
+    return sorted(n.title for n in repo.notes() if n.type is NoteType.ENTITY)
+
+
+def test_capture_surfaces_people_and_orgs_as_entity_notes(tmp_path: Path) -> None:
+    # THE gap this closes: `materialize_entities` was wired into `organize`/`regenerate` but never
+    # into the capture coordinator — so every note captured by hotkey or phone built no people graph
+    # at all, and a "social/network vault" could not work by construction.
+    coord, repo, _ = _make(
+        tmp_path,
+        capturer=SeqCapturer(["met Ada Lovelace from Analytical Engines Inc about the launch"]),
+        review=lambda state: True,
+        entity_extractor=HeuristicEntityExtractor(),
+    )
+    assert coord.submit() is True
+    result = coord.process_one(timeout=0)
+
+    assert result is not None
+    entities = _entity_notes(repo)
+    assert "Ada Lovelace" in entities
+    assert "Analytical Engines Inc" in entities
+    # ...and the note is joined to each by an `involves` edge — that is what makes it a graph.
+    involved = {
+        e.target_id
+        for e in repo.edges()
+        if e.source_id == result.note.id and e.kind is EdgeKind.INVOLVES
+    }
+    assert len(involved) == 2
+
+
+def test_capture_without_an_extractor_creates_no_entities(tmp_path: Path) -> None:
+    # Default off at the coordinator seam: the caller decides (the GUI wires one in). Keeps this
+    # opt-in rather than a surprise for an embedder/repo a test or adapter injects.
+    coord, repo, _ = _make(
+        tmp_path,
+        capturer=SeqCapturer(["met Ada Lovelace from Analytical Engines Inc"]),
+        review=lambda state: True,
+        entity_extractor=None,
+    )
+    assert coord.submit() is True
+    assert coord.process_one(timeout=0) is not None
+    assert _entity_notes(repo) == []
+
+
+def test_entity_extraction_failure_never_loses_the_note(tmp_path: Path) -> None:
+    # The note is already committed by the time entities are extracted. A broken extractor must
+    # degrade to "no entities", never to a lost capture.
+    class BoomExtractor:
+        def extract(self, text: str) -> tuple[object, ...]:
+            raise RuntimeError("extractor exploded")
+
+    coord, repo, _ = _make(
+        tmp_path,
+        capturer=SeqCapturer(["met Ada Lovelace"]),
+        review=lambda state: True,
+        entity_extractor=BoomExtractor(),
+    )
+    assert coord.submit() is True
+    result = coord.process_one(timeout=0)
+
+    assert result is not None
+    assert repo.get_note(result.note.id) is not None  # the note survived
+    assert result.path.exists()
+    assert _entity_notes(repo) == []
+
+
+def test_a_status_update_capture_extracts_no_entities(tmp_path: Path) -> None:
+    # A status/edit event creates no new note, so there is nothing to hang `involves` edges off.
+    # Extracting anyway would attach entities to whatever note happened to be matched.
+    coord, repo, _ = _make(
+        tmp_path,
+        capturer=SeqCapturer(["ship the newsletter", "done with the newsletter"]),
+        review=lambda state: True,
+        detector=HeuristicUpdateDetector(),
+        entity_extractor=HeuristicEntityExtractor(),
+    )
+    assert coord.submit() is True
+    first = coord.process_one(timeout=0)
+    assert isinstance(first, CaptureResult)
+    before = len(repo.notes())
+
+    assert coord.submit() is True
+    second = coord.process_one(timeout=0)
+
+    assert isinstance(second, StatusUpdateResult)  # an update, not a new note
+    assert len(repo.notes()) == before  # no note, and no entity notes, were added

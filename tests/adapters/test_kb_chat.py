@@ -7,7 +7,7 @@ transport, same degradation chain, same containment rule for citations as `kb_as
 
 from __future__ import annotations
 
-from grandplan.adapters.kb_chat import ChatSession, build_chat_prompt
+from grandplan.adapters.kb_chat import ChatSession, build_chat_prompt, default_plan_context
 from grandplan.core.models import Note, NoteType
 from grandplan.core.repository import InMemoryNoteRepository
 
@@ -95,6 +95,95 @@ def test_chat_session_show_returns_note_body_or_none() -> None:
     note = session.show("a")
     assert note is not None and "postgres" in note.body
     assert session.show("nope") is None
+
+
+# --- plan context (SPEC-ACT §A1) ----------------------------------------------------------------
+
+
+def test_chat_prompt_puts_plan_context_after_the_notes() -> None:
+    # The block claims the NOTES are authoritative for content — so it has to physically follow them,
+    # or that sentence points at nothing.
+    prompt = build_chat_prompt(
+        "what should I do first?",
+        history=(),
+        notes=[("a", "Use Postgres", "we decided to use postgres")],
+        plan="PLAN CONTEXT — critical path: Do the thing [t1]",
+    )
+    assert "PLAN CONTEXT" in prompt
+    assert prompt.index("NOTES:") < prompt.index("PLAN CONTEXT")
+    assert prompt.index("PLAN CONTEXT") < prompt.index("QUESTION:")
+
+
+def test_chat_prompt_omits_the_plan_section_entirely_when_there_is_no_plan() -> None:
+    prompt = build_chat_prompt("hi", history=(), notes=[("a", "T", "b")], plan="")
+    assert "PLAN CONTEXT" not in prompt
+
+
+def test_chat_session_injects_plan_context_into_every_turn() -> None:
+    # A priority question ("what's the hardest thing?") retrieves by similarity and would otherwise
+    # be answered from whatever six notes matched the wording. The plan block is what makes it real.
+    prompts: list[str] = []
+
+    def chat(model: str, prompt: str) -> str:
+        prompts.append(prompt)
+        return '{"answer": "ok", "sources": []}'
+
+    session = ChatSession(
+        repo=_repo(),
+        embedder=_Embedder(),
+        chat=chat,
+        plan_context=lambda repo: "PLAN CONTEXT — critical path: Ship it [t9]",
+    )
+    session.respond("what's the hardest thing?")
+    assert "Ship it [t9]" in prompts[0]
+
+
+def test_chat_session_plan_context_can_be_disabled() -> None:
+    prompts: list[str] = []
+
+    def chat(model: str, prompt: str) -> str:
+        prompts.append(prompt)
+        return '{"answer": "ok", "sources": []}'
+
+    session = ChatSession(repo=_repo(), embedder=_Embedder(), chat=chat, plan_context=None)
+    session.respond("which db?")
+    assert "PLAN CONTEXT" not in prompts[0]
+
+
+def test_chat_session_survives_a_broken_plan_context() -> None:
+    # The plan block is an enhancement, not a dependency: if projecting the plan raises, the turn
+    # must still answer from retrieval rather than taking the whole conversation down.
+    def chat(model: str, prompt: str) -> str:
+        return '{"answer": "Postgres.", "sources": ["a"]}'
+
+    def boom(repo: object) -> str:
+        raise RuntimeError("planner exploded")
+
+    session = ChatSession(repo=_repo(), embedder=_Embedder(), chat=chat, plan_context=boom)
+    assert session.respond("which db?").text == "Postgres."
+
+
+def test_chat_session_neighborhood_renders_or_none_for_unknown() -> None:
+    session = ChatSession(repo=_repo(), embedder=_Embedder(), chat=lambda m, p: "{}")
+    text = session.neighborhood("a")
+    assert text is not None and "Use Postgres" in text
+    assert session.neighborhood("nope") is None
+
+
+def test_chat_session_focus_works_with_no_model_at_all() -> None:
+    # /focus is pure projection. It must answer "what do I do next" when Ollama is down or the KB
+    # model was never pulled — that is the whole reason it is a command and not a question.
+    def dead(model: str, prompt: str) -> str:
+        raise RuntimeError("ollama down")
+
+    session = ChatSession(repo=_repo(), embedder=_Embedder(), chat=dead)
+    assert "FOCUS" in session.focus()
+
+
+def test_chat_session_defaults_to_a_live_plan_context() -> None:
+    # Default ON: wiring the block at each call site would mean the GUI or the CLI could silently
+    # ship without it, and priority questions would quietly go back to guessing.
+    assert ChatSession(repo=_repo(), embedder=_Embedder()).plan_context is default_plan_context
 
 
 # -- plan drafting (#39 stage 2) -------------------------------------------------------------------

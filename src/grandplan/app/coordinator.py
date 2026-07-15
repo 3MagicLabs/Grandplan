@@ -45,6 +45,7 @@ from grandplan.app.review import (
     start_review,
 )
 from grandplan.core.edit_detect import EditDetector
+from grandplan.core.entities import EntityExtractor, materialize_entities
 from grandplan.core.models import Source
 from grandplan.core.pipeline import CaptureResult
 from grandplan.core.placement import Placer
@@ -289,6 +290,7 @@ class CaptureCoordinator:
         detector: UpdateDetector | None = None,
         edit_detector: EditDetector | None = None,
         placer: Placer | None = None,
+        entity_extractor: EntityExtractor | None = None,
         enrich: Callable[[str], object] | None = None,
         max_pending: int = 16,
     ) -> None:
@@ -314,6 +316,12 @@ class CaptureCoordinator:
         self._detector = detector  # PR-B: detect capture-driven status updates (None = off)
         self._edit_detector = edit_detector  # PR-C: detect capture-driven field edits (None = off)
         self._placer = placer  # PR-G: propose structural edges for a new note (None = off)
+        # ROADMAP 3: surface people/orgs in the capture as `entity` notes + `involves` edges, so the
+        # graph is a people/org graph. Auto-extraction was wired into `organize`/`regenerate` but
+        # never here — so notes captured by hotkey or phone (the primary path) built no people graph
+        # at all. None = off; the GUI wires the heuristic extractor inline (pure Python, so it costs
+        # no model call and keeps --fast's one-call-per-capture contract).
+        self._entity_extractor = entity_extractor
         self._max_pending = max_pending
         self._queue: queue.Queue[object] = queue.Queue(maxsize=max_pending)
         self._shutdown = threading.Event()
@@ -722,6 +730,7 @@ class CaptureCoordinator:
                 return None
             self._advance(Stage.COMMITTING, _committing_detail(pending))
             result = approve(pending, repo=self._repo, vault=self._vault, edits=edits)
+            self._extract_entities(result, text)  # before the re-projection, so entities show in it
             self._advance(Stage.SAVED, _saved_detail(result))
             self._run_after_commit(result)
             return result
@@ -732,6 +741,30 @@ class CaptureCoordinator:
         finally:
             self._end_inflight()  # retire it into history BEFORE IDLE, so the snapshot is current
             self._emit(Stage.IDLE, "ready")
+
+    def _extract_entities(self, result: Committed, text: str) -> None:
+        """Surface the capture's people/orgs as `entity` notes + `involves` edges (ROADMAP 3).
+
+        Only for a **new note**: a status/edit capture appends an event and creates no note, so
+        there is nothing to hang `involves` edges off — extracting anyway would bolt entities onto
+        whichever existing note happened to match. Extraction runs from the verbatim capture text
+        (not the organized body), so nothing the model dropped is lost.
+
+        Best-effort by construction: the note is already committed and on disk by the time this
+        runs, so a broken extractor must degrade to "no entities", never to a lost capture.
+        """
+        if self._entity_extractor is None or not isinstance(result, CaptureResult):
+            return
+        try:
+            materialize_entities(
+                self._repo,
+                self._originals,
+                self._embedder,
+                result.note.id,
+                self._entity_extractor.extract(text),
+            )
+        except Exception:  # noqa: BLE001 - the note is saved; entities are additive
+            logger.exception("entity extraction failed; note saved without entities")
 
     def _run_after_commit(self, result: Committed) -> None:
         """Run the post-commit hook (e.g. plan/graph re-projection) without failing the save."""

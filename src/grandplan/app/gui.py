@@ -30,6 +30,7 @@ from typing import Any
 
 from grandplan.adapters.capture import make_windows_capturer, run_hotkey_listener
 from grandplan.adapters.llm_contextual_reconciler import LlmContextualReconciler
+from grandplan.adapters.llm_entity_extractor import LlmEntityExtractor
 from grandplan.adapters.llm_placer import LlmPlacer
 from grandplan.adapters.ollama_organizer import DEFAULT_MODEL, OllamaOrganizer
 from grandplan.adapters.st_embedder import SentenceTransformerEmbedder
@@ -45,6 +46,7 @@ from grandplan.app.queue_view import build_queue_view
 from grandplan.app.review import ReviewEdits, ReviewState
 from grandplan.core.edit_detect import EditDetector, HeuristicEditDetector
 from grandplan.core.embed import HashingEmbedder
+from grandplan.core.entities import EntityExtractor, HeuristicEntityExtractor
 from grandplan.core.index_location import migrate_legacy_index
 from grandplan.core.models import NoteType, Source
 from grandplan.core.note_store import JsonlNoteRepository
@@ -135,8 +137,8 @@ class _ReviewRequest:
 
 def _capture_components(
     *, use_llm: bool, fast: bool, model: str
-) -> tuple[Organizer, Reconciler, Placer]:
-    """Select the (organizer, reconciler, placer) for the run — the capture path's model-call budget.
+) -> tuple[Organizer, Reconciler, Placer, EntityExtractor]:
+    """Select the (organizer, reconciler, placer, entity-extractor) — the capture's model-call budget.
 
     Measured on the 16 GB no-GPU target, EACH local-LLM call costs ~8-15 s (≈10-17 tok/s on CPU), and
     the default --llm capture makes three of them back to back — organize, contextual reconcile,
@@ -146,25 +148,42 @@ def _capture_components(
     LLM-typed links, and the heuristic part_of placer. ~3× faster per capture; a later background
     pass can re-derive the richer links/placement off the critical path.
 
+    The entity extractor follows the same budget. The **heuristic** one is pure Python — zero model
+    calls — so it runs even in `fast`, where it costs nothing and keeps the one-call-per-capture
+    contract intact. Only `--thorough` pays for `LlmEntityExtractor` (which unions its result with
+    the heuristic and falls back to it on failure, so LLM entities are strictly additive).
+
     Pure selection (no Qt, no IO) so the wiring is hermetically testable — the same gap-in-coverage
     lesson as `_ReviewRequest` (tests/app/test_gui_wiring.py).
     """
     if not use_llm:
         # --no-llm: the deterministic offline baseline already makes zero model calls; `fast` is moot.
-        return HeuristicOrganizer(), SimilarityReconciler(), HeuristicPlacer()
+        return (
+            HeuristicOrganizer(),
+            SimilarityReconciler(),
+            HeuristicPlacer(),
+            HeuristicEntityExtractor(),
+        )
     # PR-F (RC1): the local model is the default and is REQUIRED when selected — a missing/unreachable
     # model raises `OrganizerUnavailable`, which the coordinator surfaces as a FAILED status while the
     # verbatim capture stays in the inbox (organize runs after the original is persisted). No silent
     # keyword garbage. `--no-llm` selects the deterministic baseline deliberately.
     organizer: Organizer = OllamaOrganizer(model=model, require=True)
     if fast:
-        return organizer, SimilarityReconciler(), HeuristicPlacer()
+        # The heuristic extractor stays ON here: it makes no model call, so entities cost nothing on
+        # the critical path — and without it a fast capture would build no people graph at all.
+        return organizer, SimilarityReconciler(), HeuristicPlacer(), HeuristicEntityExtractor()
     # Under --llm, the LLM reconciles a new capture against the WHOLE most-similar neighborhood in
     # one call (sees each related note's content + status) → richer typed links
     # (builds_on/refines/supersedes/contradicts/duplicate); without it, the cosine baseline.
     # PR-G: place each new note into the graph's structure (part_of parent + depends_on prereqs) so
     # the plan/masterplan get real hierarchy and sequence — not just similarity links.
-    return organizer, LlmContextualReconciler(model=model), LlmPlacer(model=model)
+    return (
+        organizer,
+        LlmContextualReconciler(model=model),
+        LlmPlacer(model=model),
+        LlmEntityExtractor(model=model),
+    )
 
 
 def _reachable_ipv4s(candidates: Iterable[str]) -> list[str]:
@@ -339,7 +358,9 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
 ) -> int:
     from PySide6 import QtCore, QtGui, QtWidgets
 
-    organizer, reconciler, placer = _capture_components(use_llm=use_llm, fast=fast, model=model)
+    organizer, reconciler, placer, entity_extractor = _capture_components(
+        use_llm=use_llm, fast=fast, model=model
+    )
     embedder: Embedder = SentenceTransformerEmbedder() if use_embeddings else HashingEmbedder()
     # Update/edit intent detection is ALWAYS the deterministic, cue-based heuristic — never the LLM,
     # even under --llm. The LLM detector hallucinated update-intent on genuinely-new ideas (e.g. a new
@@ -607,6 +628,10 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         detector=detector,
         edit_detector=edit_detector,
         placer=placer,
+        # ROADMAP 3: people/orgs in the capture become `entity` notes + `involves` edges, so the
+        # graph is a people/org graph. Previously only `organize`/`regenerate` did this, so notes
+        # captured by hotkey or phone — the primary path — never built one.
+        entity_extractor=entity_extractor,
         enrich=enrich_fn,
     )
 

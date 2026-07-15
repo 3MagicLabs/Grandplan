@@ -2,7 +2,7 @@
 
 The transport is injected (like every LLM adapter), so prompt assembly, citation validation, the
 KB-model → capture-model fallback chain, and the retrieval-only degradation are all unit-tested
-here; a real Ollama + pulled qwen2.5:14b integration-tests it on the user's machine.
+here; a real Ollama + pulled KB model integration-tests it on the user's machine.
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ def test_ask_returns_grounded_answer_with_source_titles() -> None:
 
 
 def test_ask_falls_back_to_capture_model_when_kb_model_unavailable() -> None:
-    # SPEC-AGENT-KB open question resolved: when qwen2.5:14b isn't pulled, Ask degrades to the
+    # SPEC-AGENT-KB open question resolved: when the KB model isn't pulled, Ask degrades to the
     # capture model rather than refusing (Garden would refuse; Ask is read-only and safe).
     calls: list[str] = []
 

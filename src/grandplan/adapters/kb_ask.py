@@ -4,9 +4,9 @@ The first slice of the knowledge-base agent: embed the question, pull the most-s
 the repository, and have a local model answer **only from those notes**, citing note ids. Zero write
 risk — it drives the same read primitives as `grandplan mcp`, never the write tools.
 
-Two-model strategy (SPEC-AGENT-KB §1): the KB agent gets its own, heavier default model
-(`qwen2.5:14b`) because it runs infrequently — it must never be silently coupled to the
-latency-tuned capture model. Degradation chain when that model isn't available (spike §7 resolved):
+Two-model strategy (SPEC-AGENT-KB §1): the KB agent gets its own default model (`qwen2.5:7b`)
+because it runs infrequently — it must never be silently coupled to the latency-tuned capture
+model. Degradation chain when that model isn't available (spike §7 resolved):
 KB model → capture model → **retrieval-only** (the ranked notes, clearly labeled, no synthesis).
 Ask never fails hard: the vault is still searchable with no model at all.
 
@@ -28,10 +28,13 @@ from grandplan.core.ports import Embedder, NoteRepository
 
 logger = logging.getLogger(__name__)
 
-# The KB agent's own default (SPEC-AGENT-KB): a 14B reasoner is affordable here because Ask is
-# infrequent and interactive-but-patient, unlike the per-capture organize loop. Q4_K_M fits the
-# 16 GB no-GPU target. Pull once: `ollama pull qwen2.5:14b` — or pass --kb-model to use another.
-KB_DEFAULT_MODEL = "qwen2.5:14b"
+# The KB agent's own default (SPEC-AGENT-KB): its own model, never silently coupled to the
+# latency-tuned capture model. 7B (not the 14B this once defaulted to) because the KB model is
+# never resident *alone* — the capture model is already loaded, and on a no-GPU host the pair has
+# to fit in RAM together. A 14B default OOMed real machines, which made `--kb-model qwen2.5:7b`
+# mandatory boilerplate on every run; the default is now the size that actually works, and a
+# roomier machine can still pass `--kb-model qwen2.5:14b`. Pull once: `ollama pull qwen2.5:7b`.
+KB_DEFAULT_MODEL = "qwen2.5:7b"
 _TOP_K = 6
 _BODY_SNIPPET = 700  # chars of each note's body shown to the model — richer than reconcile's 280
 # because grounded answering needs content, while the prompt must still fit DEFAULT_NUM_CTX.

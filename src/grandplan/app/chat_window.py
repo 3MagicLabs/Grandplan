@@ -166,7 +166,8 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     transcript.setOpenExternalLinks(False)
     entry = QtWidgets.QLineEdit()
     entry.setPlaceholderText(
-        "ask about your notes — /plan <topic> drafts a plan, /improve <id> improves a note"
+        "ask about your notes — /focus what to do next, /graph <id> a note's connections, "
+        "/plan <topic> drafts a plan, /improve <id> improves a note"
     )
     send = QtWidgets.QPushButton("Send")
 
@@ -227,6 +228,24 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
         entry.clear()
         log.user(text)  # echo immediately — the message must never sit invisible while "thinking…"
         _refresh_transcript()
+        if text in ("/focus", "/next") or text.startswith("/graph"):
+            # Pure projections: no model, no thread, no "thinking…" — they answer instantly and stay
+            # correct with Ollama down, which is precisely why they are commands and not questions.
+            try:
+                if text.startswith("/graph"):
+                    note_id = text.removeprefix("/graph").strip()
+                    log.vault(
+                        (session.neighborhood(note_id) or f"no note with id {note_id!r}")
+                        if note_id
+                        else "usage: /graph <note-id>"
+                    )
+                else:
+                    log.vault(session.focus())
+            except Exception as exc:  # noqa: BLE001 - never crash the UI thread
+                logger.exception("chat projection failed")  # traceback to the #5 file log
+                log.vault(f"could not project that: {exc}")
+            _refresh_transcript()
+            return
         _busy(True)
         if text.startswith("/improve"):
             target = text.removeprefix("/improve").strip()

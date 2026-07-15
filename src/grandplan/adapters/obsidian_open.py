@@ -48,14 +48,19 @@ def scaffold_graph_view(vault_dir: Path) -> bool:
     return True
 
 
-def obsidian_open_uri(vault_dir: Path) -> str:
-    """The `obsidian://open?path=…` URI that opens (and registers) the vault by absolute path."""
-    return f"obsidian://open?path={quote(str(vault_dir.resolve()), safe='')}"
+def obsidian_open_uri(target: Path) -> str:
+    """The `obsidian://open?path=…` URI for an absolute path.
+
+    `target` may be a **vault directory** (opens/registers the vault) or a **note file inside one**
+    (opens the vault focused on that note — the hand-off `grandplan graph --open` uses to land the
+    user on a note, where Obsidian's own local-graph pane does the depth and layout a terminal can't).
+    """
+    return f"obsidian://open?path={quote(str(target.resolve()), safe='')}"
 
 
-def open_in_obsidian(vault_dir: Path) -> bool:  # pragma: no cover - launches the OS URI handler
-    """Hand the vault's `obsidian://` URI to the OS handler. Best-effort; never raises."""
-    uri = obsidian_open_uri(vault_dir)
+def open_in_obsidian(target: Path) -> bool:  # pragma: no cover - launches the OS URI handler
+    """Hand a vault dir or note file's `obsidian://` URI to the OS handler. Best-effort; never raises."""
+    uri = obsidian_open_uri(target)
     try:
         startfile = getattr(os, "startfile", None)
         if startfile is not None:  # Windows: open via the registered protocol handler

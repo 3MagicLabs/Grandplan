@@ -130,8 +130,11 @@ dispatches pending directives to a local agent.
    people/org graph agents can reason over. Append-only + idempotent; entity ids content-addressed by
    name (dedupe); `entity` nodes excluded from masterplan roots. `LlmEntityExtractor` adapter
    (`adapters/llm_entity_extractor.py`, Ollama-backed, unioned with the heuristic + fallback) and
-   **auto-extraction wired into `organize`/`regenerate`** (LLM default, `--no-llm` → heuristic) — so
-   entities appear automatically, not only via the agent tool.
+   **auto-extraction wired into `organize`/`regenerate` AND the GUI capture path** (`gui`: hotkey,
+   typed, and phone captures) — so entities appear automatically, not only via the agent tool. The
+   capture path was the gap: extraction ran only in `organize`/`regenerate`, so notes captured the
+   primary way built no people graph at all. The heuristic extractor is pure Python, so it runs
+   inline even under `--fast` at zero model-call cost; `--thorough` upgrades to `LlmEntityExtractor`.
 4. **`.ics` calendar export (theme B, local).** First connector; offline; builds on planner/horizons.
 5. ✅ **A second Renderer DONE** (`core/render.py` `Renderer` port + `MarkdownReportRenderer`;
    `grandplan report -o <vault> [--out PATH] [--title T]`). Composes plan + masterplan + timeline +

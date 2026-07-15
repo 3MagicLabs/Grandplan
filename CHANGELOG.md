@@ -6,16 +6,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 ### Added
+- **`/focus` — what to do next, in chat.** The vault already knew its own bottleneck
+  (`core/schedule.critical_path`), what could run in parallel, and how far each goal had come, but
+  only `grandplan report` surfaced it — so asking chat "what's the hardest thing?" retrieved six
+  *semantically similar* notes and guessed. `/focus` (alias `/next`) now renders the real thing in
+  `grandplan chat` and the tray chat window: the bottleneck chain in execution order, what's
+  actionable now, what can run in parallel, and progress per goal. It is **pure projection — no
+  model call**, so it still answers when Ollama is down or the KB model was never pulled.
+  Natural-language priority questions work too: every chat turn now carries a bounded `PLAN CONTEXT`
+  block (capped, with truncation stated) that is authoritative for priority/sequence while the
+  retrieved notes stay authoritative for content.
+- **`grandplan graph <query|id>` — find a note and see its place in the graph.** Resolves an exact
+  note id, or searches semantically and shows the best match's neighborhood with the runners-up
+  listed (so a wrong pick costs one re-run with an id, not a rephrase). Crucially the neighborhood is
+  **bidirectional**: `VaultQuery.get_note` only ever reported *outgoing* edges, so a note could not
+  see what pointed at it — an idea with a plan built on top of it looked like an orphan while
+  actually being a hub. `--open` hands the note to Obsidian, where the local-graph pane does the
+  depth and layout a terminal can't. Also in chat as `/graph <id>`. Read-only, no model call.
 - **Live capture transparency** — the progress popup / tray tooltip now shows *what* is being
   analyzed during the longest stage: `organizing with local AI: “<first line of your capture…>”`
   instead of an opaque spinner. (The review dialog then shows the full resulting note before
   anything is saved, as before.)
-- **`gui --kb-model <name>`** — choose the local model the tray chat window uses (default stays
-  `qwen2.5:14b` with fallback to the capture model). Previously hardcoded: a user who pulled a
-  smaller KB model (e.g. `qwen2.5:7b` — the sensible pick next to a resident capture model)
-  could not make the GUI use it, so every chat turn burned a 404 and fell back.
+- **`gui --kb-model <name>`** — choose the local model the tray chat window uses (with fallback to
+  the capture model). Previously hardcoded: a user who pulled a smaller KB model could not make the
+  GUI use it, so every chat turn burned a 404 and fell back.
+
+### Changed
+- **KB chat default model is now `qwen2.5:7b`** (was `qwen2.5:14b`) for `ask`, `chat`, and the tray
+  chat window. The KB model is never resident alone — the capture model is already loaded — so on a
+  no-GPU host the pair has to fit in RAM together, and the 14B default OOMed real machines. That
+  made `--kb-model qwen2.5:7b` mandatory boilerplate on every run; the default is now the size that
+  actually works. Machines with headroom can still pass `--kb-model qwen2.5:14b`.
 
 ### Fixed
+- **Captured notes now build the people/org graph.** `materialize_entities` — which turns people and
+  organizations named in a capture into `entity` notes joined by `involves` edges — was wired into
+  `organize` and `regenerate` but **never into the capture coordinator**. Every note captured the
+  primary way (hotkey, typed, or phone) therefore produced no entity nodes at all, so a
+  social/network vault could not work by construction. Capture now extracts entities like the other
+  paths do. The extractor follows the same model-call budget as the rest of capture: the heuristic
+  one is pure Python and runs inline even under `--fast` (zero model calls — `--fast`'s
+  one-call-per-capture contract is intact), while `--thorough` upgrades to `LlmEntityExtractor`.
+  Only *new* notes extract — a status/edit capture creates no note to hang `involves` edges off — and
+  a failing extractor degrades to "no entities", never to a lost capture.
 - **GUI chat behaves like chat** — your message now appears in the transcript the instant you hit
   Send (it used to surface only once the model finished answering — a minute+ on CPU), and every
   reply stays visible in order: answers, plan/improve outcomes, apply confirmations, failures, and

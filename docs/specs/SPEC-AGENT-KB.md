@@ -10,7 +10,10 @@
 The **capture loop** (hotkey → organize → review → file) is frequent, interactive, and runs a small
 fast model (`gemma3:4b`, ADR-aligned with the two-model strategy). The **KB agent** is its opposite:
 **infrequent, reasoning-heavy, background**, working over the *whole* knowledge base once it exists. It
-gets its **own model setting** — default **`qwen2.5:14b`** — never reusing the capture `DEFAULT_MODEL`.
+gets its **own model setting** — default **`qwen2.5:7b`** — never reusing the capture `DEFAULT_MODEL`.
+(The default was originally `qwen2.5:14b`; it runs *alongside* the resident capture model, and on a
+no-GPU host the pair must fit in RAM together, so the default is the size that actually works. A
+roomier machine passes `--kb-model qwen2.5:14b`.)
 
 It is **not** a new store or pipeline. It is an **agent (LLM loop) that drives the existing
 agent-operable vault** (SPEC-AGENT-VAULT): the read facade, the append-only write tools, and the
@@ -32,7 +35,7 @@ KB-specialized."
 ## 3. Architecture (reuse, don't rebuild)
 
 ```
-                 ┌─────────────── KB agent (qwen2.5:14b, background) ───────────────┐
+                 ┌─────────────── KB agent (qwen2.5:7b, background) ────────────────┐
    directives ──▶│  loop: retrieve → reason → propose → (review) → append-only write │
    (intake)      └───────┬───────────────────────┬───────────────────────┬──────────┘
                          │ read                    │ write (append-only)   │ directives
@@ -67,17 +70,19 @@ KB-specialized."
 
 ## 5. Constraints (inherited, non-negotiable)
 
-- **Offline** — qwen2.5:14b via local Ollama; zero egress.
+- **Offline** — the KB model via local Ollama; zero egress.
 - **Lossless / append-only** — originals and notes never mutated; only events appended.
 - **Review-first for anything destructive-ish** — merges, supersessions, status flips that leave "now"
   are **proposed**, surfaced to the human (reuse the review controller), applied on approval. Consistent
   with ADR-0011 (never false-merge) and the existing capture review flow.
-- **Modest hardware** — 14 B at Q4_K_M fits 16 GB *because* the KB agent runs **infrequently** (manual
-  "ask", or a scheduled nightly garden), so it can afford the heavier model the capture loop cannot.
+- **Modest hardware** — the KB agent runs **infrequently** (manual "ask", or a scheduled nightly
+  garden), so it can afford a heavier model than the capture loop. Its ceiling is not the model
+  alone but the **pair**: the capture model stays resident, so on a no-GPU host both must fit in RAM
+  together. Hence the 7 B default; 14 B is opt-in on a machine with headroom.
 
 ## 6. Phasing
 
-- **P1 — Ask.** Read-only Q&A agent over `VaultQuery`, own `--kb-model` (default qwen2.5:14b), CLI
+- **P1 — Ask.** Read-only Q&A agent over `VaultQuery`, own `--kb-model` (default qwen2.5:7b), CLI
   entry (`grandplan ask "…"` or an MCP client). No writes. Smallest, safest, immediately useful.
 - **P2 — Garden.** Scheduled scan emitting review-gated proposals (links, status, dedup, contradiction
   flags) through the directive/review path. Measure precision of proposals (extend `eval_retrieval.py`).
@@ -88,6 +93,6 @@ KB-specialized."
 
 - **Review ergonomics for background proposals** — a batched "morning review" queue vs inline prompts.
 - **Scheduling** — on-demand only, or a local scheduler for the nightly garden (must stay offline).
-- **Model availability** — graceful degradation when qwen2.5:14b isn't pulled (fall back to the capture
+- **Model availability** — graceful degradation when the KB model isn't pulled (fall back to the capture
   model for Ask, refuse Garden) — verify current Ollama tags at build time (models go stale fast).
 - **Write coordination** — confirm the directive-queue path (4a) end-to-end vs a shared lock.

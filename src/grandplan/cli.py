@@ -38,7 +38,7 @@ from grandplan.core.attach import attach
 from grandplan.core.calendar import is_scheduled, to_ics
 from grandplan.core.embed import HashingEmbedder
 from grandplan.core.index_location import index_dir, migrate_legacy_index
-from grandplan.core.models import NoteEvent, NoteStatus, Source
+from grandplan.core.models import Note, NoteEvent, NoteStatus, Source
 from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.adapters.llm_entity_extractor import LlmEntityExtractor
@@ -293,6 +293,66 @@ def _run_attach(args: argparse.Namespace) -> int:
     # Re-render so the matched note's .md shows the new resource + history (PR-C/PR-D).
     write_projections(repo, vault_dir, originals=originals, today=datetime.now(timezone.utc).date())
     print(f"attached {result.resource.kind.value} to '{result.note.title}': {result.resource.ref}")
+    return 0
+
+
+def _run_graph(args: argparse.Namespace) -> int:
+    """`grandplan graph <query|id> -o <vault> [--open]`: find a note, show its graph neighborhood.
+
+    Search → pick → position (SPEC-ACT §A2). `query` is tried as an exact note id first, then as a
+    semantic search — the best match's neighborhood is shown and the runners-up listed, so a wrong
+    pick costs one re-run with an id rather than a rephrase. Strictly read-only. `--open` hands the
+    note to Obsidian, where the local-graph pane does the depth and layout a terminal can't.
+    """
+    from grandplan.core.neighborhood import build_neighborhood, render_neighborhood
+
+    vault_dir = Path(args.vault)
+    index_root = migrate_legacy_index(vault_dir)
+    index_path = index_root / "index.jsonl"
+    if not index_path.exists():
+        print(f"no index found for {vault_dir} (capture some notes first)", file=sys.stderr)
+        return 1
+    repo = _open_repo(index_root)
+    others: list[tuple[Note, float]] = []
+    neighborhood = build_neighborhood(repo, args.query)  # an exact id wins — no model, no guessing
+    if neighborhood is None:
+        # The query embedder must match the one the vault was built with, or ranking is nonsense.
+        embedder: Embedder = SentenceTransformerEmbedder() if args.embeddings else HashingEmbedder()
+        hits = repo.most_similar(embedder.embed(args.query), limit=max(args.limit, 1))
+        if not hits:
+            print(f"no notes match {args.query!r}", file=sys.stderr)
+            return 1
+        neighborhood = build_neighborhood(repo, hits[0][0].id)
+        if neighborhood is None:  # pragma: no cover - defensive; most_similar returns known notes
+            print(f"no notes match {args.query!r}", file=sys.stderr)
+            return 1
+        others = list(hits[1:])
+    print(render_neighborhood(neighborhood))
+    if others:
+        print("\nother matches (re-run with an id to jump to one):")
+        for note, score in others:
+            print(f"  {note.title}  [{note.id}]  ({score:.2f})")
+    if args.open:
+        from grandplan.adapters.obsidian_open import open_in_obsidian
+        from grandplan.core.vault import plan_filenames
+
+        stems = plan_filenames(repo.current_notes())
+        stem = stems.get(neighborhood.note.id)
+        target = vault_dir / f"{stem}.md" if stem else vault_dir
+        if not target.exists():
+            # The index knows the note but no .md is on disk — the projections are stale, which is
+            # also why the graph view can look smaller than the note count. Say so; don't silently
+            # open the vault root as if nothing were wrong.
+            print(
+                f"\n{target.name} isn't on disk yet — run `grandplan rerender -o {vault_dir}` to "
+                "re-render the notes, then open again.",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"\nopening {target.name} in Obsidian — use the local graph pane to see it in context"
+        )
+        open_in_obsidian(target)
     return 0
 
 
@@ -1405,16 +1465,19 @@ def _chat_repl(
 ) -> int:
     """The chat loop, transport-free so it is unit-testable: read → respond/command → print.
 
-    Commands: `/show <id>` prints the full note under discussion; `/plan <topic>` drafts an
-    actionable plan from the matching notes; `/improve <id>` drafts an improvement to the ONE
-    note the user names (#36 — never a vault sweep); both apply ONLY after an explicit yes,
-    through the append-only write paths; `/quit` (or EOF/Ctrl-D) ends the session. Everything
+    Commands: `/focus` shows what to do next, projected from the dependency graph; `/graph <id>`
+    shows a note's place in the graph and everything connected to it (both are pure projections —
+    they work with Ollama down); `/show <id>` prints the full note under discussion; `/plan <topic>`
+    drafts an actionable plan from the matching notes; `/improve <id>` drafts an improvement to the
+    ONE note the user names (#36 — never a vault sweep); the latter two apply ONLY after an explicit
+    yes, through the append-only write paths; `/quit` (or EOF/Ctrl-D) ends the session. Everything
     else is a question for the KB agent. Nothing is ever written without the yes.
     """
     input_fn = input_fn or input  # resolved at call time (tests patch builtins.input)
     print(
-        "chat with your vault — /plan <topic> to draft a plan, /improve <id> to improve a note, "
-        "/show <id> to view one, /quit."
+        "chat with your vault — /focus for what to do next, /graph <id> for a note's connections, "
+        "/plan <topic> to draft a plan, /improve <id> to improve a note, /show <id> to view one, "
+        "/quit."
     )
     while True:
         try:
@@ -1426,6 +1489,17 @@ def _chat_repl(
             continue
         if line in ("/quit", "/exit", "/q"):
             return 0
+        if line in ("/focus", "/next"):
+            print(session.focus())  # type: ignore[attr-defined]
+            continue
+        if line.startswith("/graph"):
+            note_id = line.removeprefix("/graph").strip()
+            if not note_id:
+                print("usage: /graph <note-id>")
+                continue
+            text = session.neighborhood(note_id)  # type: ignore[attr-defined]
+            print(text if text is not None else f"no note with id {note_id!r}")
+            continue
         if line.startswith("/show"):
             note_id = line.removeprefix("/show").strip()
             note = session.show(note_id)  # type: ignore[attr-defined]
@@ -1770,6 +1844,26 @@ def main(argv: list[str] | None = None) -> int:
         help="match with sentence-transformer embeddings (use if the vault was built with them)",
     )
 
+    graph_cmd = subparsers.add_parser(
+        "graph",
+        help="Find a note and show its place in the graph — everything connected to it.",
+    )
+    graph_cmd.add_argument("query", help="a note id, or words to search for")
+    graph_cmd.add_argument("-o", "--vault", required=True, help="the vault directory")
+    graph_cmd.add_argument(
+        "--open",
+        action="store_true",
+        help="open the note in Obsidian (then use its local graph pane to see it in context)",
+    )
+    graph_cmd.add_argument(
+        "--limit", type=int, default=5, help="how many search matches to consider (default 5)"
+    )
+    graph_cmd.add_argument(
+        "--embeddings",
+        action="store_true",
+        help="search with sentence-transformer embeddings (use if the vault was built with them)",
+    )
+
     rerender = subparsers.add_parser(
         "rerender", help="Re-render all notes (fix old links, add tags, colour the graph)."
     )
@@ -2109,8 +2203,8 @@ def main(argv: list[str] | None = None) -> int:
         "--kb-model",
         default="",
         help=f"local model for the tray chat window (default {KB_DEFAULT_MODEL}, falling back to "
-        "the capture model when unavailable). Running two big models side by side eats RAM — on "
-        "a RAM-tight machine use a smaller one, e.g. qwen2.5:7b, or the capture model itself",
+        "the capture model when unavailable). It runs alongside the resident capture model, so the "
+        "pair must fit in RAM together — on a roomy machine try a larger one, e.g. qwen2.5:14b",
     )
     gui.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model name (default LLM)")
     gui.add_argument(
@@ -2180,6 +2274,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_chat(args)
     if args.command == "attach":
         return _run_attach(args)
+    if args.command == "graph":
+        return _run_graph(args)
     if args.command == "rerender":
         return _run_rerender(args)
     if args.command == "import":

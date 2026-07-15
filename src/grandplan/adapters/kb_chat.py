@@ -67,13 +67,32 @@ _PLAN_INSTRUCTION = (
 )
 
 
+def default_plan_context(repo: NoteRepository) -> str:
+    """Project the vault's plan into a bounded prompt block (SPEC-ACT §A1); `""` when nothing open.
+
+    The default for every `ChatSession`: retrieval ranks by *similarity*, so without this a priority
+    question ("what's the hardest thing?") is answered from whichever notes happen to share wording
+    with the question — never from the dependency graph that actually knows the answer.
+    """
+    from grandplan.core.focus import plan_context_block
+    from grandplan.core.planner import build_plan
+
+    return plan_context_block(build_plan(repo))
+
+
 def build_chat_prompt(
     question: str,
     *,
     history: Sequence[tuple[str, str]],
     notes: Sequence[tuple[str, str, str]],
+    plan: str = "",
 ) -> str:
-    """Assemble one chat turn: instruction + recent dialogue + fresh retrieval + question (pure)."""
+    """Assemble one chat turn: instruction + recent dialogue + fresh retrieval + plan + question.
+
+    Pure. `plan` (the `PLAN CONTEXT` block) is placed *after* the notes because it declares them
+    authoritative for content while claiming priority/sequence for itself — the ordering is part of
+    the contract, not cosmetic. An empty `plan` omits the section entirely.
+    """
     parts = [_INSTRUCTION]
     if history:
         turns = "\n".join(f"{role}: {text[:_HISTORY_SNIPPET]}" for role, text in history)
@@ -83,6 +102,8 @@ def build_chat_prompt(
         for note_id, title, body in notes
     ]
     parts.append("NOTES:\n" + "\n".join(lines))
+    if plan:
+        parts.append(plan)
     parts.append(f"QUESTION:\n{question}")
     return "\n\n".join(parts)
 
@@ -271,6 +292,9 @@ class ChatSession:
     fallback_model: str = DEFAULT_MODEL
     top_k: int = _TOP_K
     max_turns: int = _MAX_TURNS
+    # Plan grounding (SPEC-ACT §A1), default ON: wiring it per call site would let the GUI or the
+    # CLI ship without it and quietly regress priority questions to guesswork. `None` disables.
+    plan_context: Callable[[NoteRepository], str] | None = default_plan_context
     _history: list[tuple[str, str]] = field(default_factory=list)
 
     @property
@@ -291,6 +315,7 @@ class ChatSession:
             question,
             history=self.history,
             notes=[(n.id, n.title, n.body) for n, _ in hits],
+            plan=self._plan_block(),
         )
         for model in self._models():
             try:
@@ -329,6 +354,27 @@ class ChatSession:
     def show(self, note_id: str) -> Note | None:
         """The full note under discussion (for the caller to display); None when unknown."""
         return self.repo.get_note(note_id)
+
+    def neighborhood(self, note_id: str) -> str | None:
+        """A note's place in the graph — what it points at, and what points at it (SPEC-ACT §A2).
+
+        None when the id is unknown. Pure projection, no model call.
+        """
+        from grandplan.core.neighborhood import build_neighborhood, render_neighborhood
+
+        nb = build_neighborhood(self.repo, note_id)
+        return render_neighborhood(nb) if nb is not None else None
+
+    def focus(self) -> str:
+        """The `/focus` view: bottleneck → now → parallelizable → progress (SPEC-ACT §A1).
+
+        Pure projection over the dependency graph — **no model call**, so the "what do I do next"
+        answer stays exact and available when no local model can be reached at all.
+        """
+        from grandplan.core.focus import render_focus
+        from grandplan.core.planner import build_plan
+
+        return render_focus(build_plan(self.repo))
 
     def draft_improvement(self, note_id: str) -> ImproveDraft | None:
         """Draft (never apply) an improvement to ONE user-named note (#36 — never autonomous).
@@ -404,6 +450,21 @@ class ChatSession:
                 model=model,
             )
         return None
+
+    def _plan_block(self) -> str:
+        """The `PLAN CONTEXT` block for this turn, or `""`. Never raises.
+
+        Plan grounding is an *enhancement* to a turn retrieval can already answer, so a malformed
+        graph (or any planner bug) degrades to an unplanned answer rather than ending the
+        conversation — the same posture as the model-fallback chain.
+        """
+        if self.plan_context is None:
+            return ""
+        try:
+            return self.plan_context(self.repo)
+        except Exception as exc:  # noqa: BLE001 - never let a projection fault kill the turn
+            logger.warning("plan context unavailable this turn: %s", exc)
+            return ""
 
     def _remember(self, question: str, answer: str) -> None:
         self._history.append(("user", question))
