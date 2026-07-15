@@ -58,7 +58,8 @@ def _make(
     tmp_path: Path,
     *,
     capturer: object,
-    review,  # type: ignore[no-untyped-def]
+    review=None,  # type: ignore[no-untyped-def]
+    auto_approve: bool = False,
     on_status=None,  # type: ignore[no-untyped-def]
     after_commit=None,  # type: ignore[no-untyped-def]
     detector=None,  # type: ignore[no-untyped-def]
@@ -76,6 +77,7 @@ def _make(
         originals=originals,
         vault=MarkdownVaultWriter(tmp_path / "vault"),
         review=review,
+        auto_approve=auto_approve,
         source=_SOURCE,
         clock=lambda: "2026-06-16T00:00:00+00:00",
         on_status=on_status,
@@ -216,6 +218,35 @@ def test_approve_commits_writes_vault_and_reports_full_stage_sequence(tmp_path: 
         Stage.SAVED,
         Stage.IDLE,
     ]
+
+
+def test_auto_approve_commits_without_a_review_surface(tmp_path: Path) -> None:
+    """auto_approve=True commits every capture as-proposed: no review resolver is consulted, nothing
+    parks for an approve/discard decision, and the note is written straight to the vault."""
+    reviewed: list[object] = []
+    coord, repo, _ = _make(
+        tmp_path,
+        capturer=SeqCapturer(["TODO call the dentist"]),
+        review=lambda state: reviewed.append(state) or False,  # would DISCARD if ever consulted
+        auto_approve=True,
+    )
+
+    assert coord.submit() is True
+    result = coord.process_one(timeout=0)
+
+    assert result is not None
+    assert repo.get_note(result.note.id) is not None  # saved despite the discard-resolver
+    assert result.path.exists()
+    assert reviewed == []  # the review surface was skipped entirely
+    assert coord.pending_reviews() == ()  # nothing parked awaiting a decision
+
+
+def test_max_pending_configures_queue_capacity(tmp_path: Path) -> None:
+    """--max-pending sizes the queue: capacity() reflects the configured bound (e.g. 100, not 16)."""
+    coord, _, _ = _make(
+        tmp_path, capturer=SeqCapturer([None]), review=lambda state: True, max_pending=100
+    )
+    assert coord.capacity() == 100
 
 
 def test_capture_driven_status_update_applies_event_without_new_note(tmp_path: Path) -> None:

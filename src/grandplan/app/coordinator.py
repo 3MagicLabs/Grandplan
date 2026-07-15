@@ -16,6 +16,7 @@ This class extracts that orchestration into a **Qt-free, fully unit-tested** uni
   callback (the GUI maps it to the tray tooltip/notifications).
 - **Off the UI thread** — all heavy work runs on the worker; the only main-thread step is the
   injected `review(state) -> bool` decision (the GUI marshals it; tests pass a plain function).
+  `auto_approve=True` (opt-in) skips that step entirely — every capture commits as-proposed.
 - **Fault-isolated** — one capture's failure is reported as `FAILED`; the worker keeps serving.
 
 It reuses the tested `app.review` controller — it adds *coordination*, not pipeline logic.
@@ -280,6 +281,7 @@ class CaptureCoordinator:
         originals: OriginalStore,
         vault: VaultWriter,
         review: ReviewFn | None = None,
+        auto_approve: bool = False,
         source: Source,
         clock: Clock = _utc_now_iso,
         on_status: StatusFn | None = None,
@@ -300,6 +302,11 @@ class CaptureCoordinator:
         self._originals = originals
         self._vault = vault
         self._review = review
+        # Auto-approve mode (opt-in, off by default): the worker commits every capture as-proposed,
+        # skipping the review dialog entirely (short-circuits `_await_decision`). Deliberately a
+        # per-run choice — the review gate is the safe default (curation is user-directed only); a
+        # trusted vault (e.g. a dedicated image/network vault) can opt out of the per-capture prompt.
+        self._auto_approve = auto_approve
         self._source = source
         self._clock = clock
         self._on_status = on_status
@@ -500,6 +507,8 @@ class CaptureCoordinator:
         capture stays in the inbox). The commit itself still happens on the worker after this returns
         (ADR-0006 single writer).
         """
+        if self._auto_approve:
+            return True, None  # auto-approve mode: commit as-proposed, no review surface consulted
         if self._review is not None:
             return self._review(pending.state), None
         with self._items_lock:

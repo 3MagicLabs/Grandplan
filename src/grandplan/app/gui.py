@@ -334,6 +334,8 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     serve_host: str = "127.0.0.1",
     serve_port: int = 8765,
     serve_token: str = "",
+    auto_approve: bool = False,
+    max_pending: int = 16,
 ) -> int:
     from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -595,6 +597,10 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         originals=originals,
         vault=vault,
         review=None,  # park each review so it's resolvable from the desktop dialog OR the phone
+        # --auto-approve commits every capture as-proposed (no dialog); off by default so review is
+        # the safe default. --max-pending sizes how many captures may queue before submit is refused.
+        auto_approve=auto_approve,
+        max_pending=max_pending,
         source=Source(app="grandplan", title="capture"),
         on_status=bridge.status_changed.emit,
         after_commit=after_commit,

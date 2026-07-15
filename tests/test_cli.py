@@ -1233,6 +1233,34 @@ def test_gui_serve_params_flow_to_run_app(tmp_path: Path, monkeypatch: pytest.Mo
     assert seen[1]["serve"] is False
 
 
+def test_gui_auto_approve_and_max_pending_flow_to_run_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # --auto-approve + --max-pending must reach run_app so the coordinator commits without a dialog
+    # and sizes its queue; both default to the safe values (review on, 16-deep) when omitted.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    seen: list[dict[str, object]] = []
+    monkeypatch.setattr("grandplan.app.gui.run_app", lambda **kw: seen.append(kw) or 0)
+    assert main(["gui", "-o", str(tmp_path / "v"), "--auto-approve", "--max-pending", "100"]) == 0
+    assert seen[0]["auto_approve"] is True
+    assert seen[0]["max_pending"] == 100
+    # Defaults when the flags are omitted: review stays on, the queue is the standard 16 deep.
+    assert main(["gui", "-o", str(tmp_path / "v")]) == 0
+    assert seen[1]["auto_approve"] is False
+    assert seen[1]["max_pending"] == 16
+
+
+def test_gui_max_pending_rejects_non_positive(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A zero/negative queue bound is nonsense — fail fast with a clear message, not a coordinator
+    # ValueError traceback out of run_app.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("grandplan.app.gui.run_app", lambda **kw: 0)
+    assert main(["gui", "-o", str(tmp_path / "v"), "--max-pending", "0"]) == 1
+    assert "max-pending" in capsys.readouterr().err
+
+
 def test_gui_serve_requires_token_for_non_localhost(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

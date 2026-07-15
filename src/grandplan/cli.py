@@ -1669,6 +1669,9 @@ def _run_gui(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    if getattr(args, "max_pending", 16) < 1:
+        print("error: --max-pending must be >= 1", file=sys.stderr)
+        return 1
     vault_dir = Path(args.vault)
     # Diagnosability (#5): every GUI run gets a rotating file log + sys/threading excepthooks, so
     # a crash (or a dying hotkey thread) leaves a traceback even with no console. --debug ALSO
@@ -1704,6 +1707,8 @@ def _run_gui(args: argparse.Namespace) -> int:
             serve_host=serve_host,
             serve_port=getattr(args, "port", 8765),
             serve_token=serve_token,
+            auto_approve=getattr(args, "auto_approve", False),
+            max_pending=getattr(args, "max_pending", 16),
         )
     except ImportError as exc:
         print(
@@ -2150,6 +2155,19 @@ def main(argv: list[str] | None = None) -> int:
         "--token",
         default="",
         help="shared secret for the phone intake (Bearer; or set GRANDPLAN_TOKEN)",
+    )
+    gui.add_argument(
+        "--auto-approve",
+        action="store_true",
+        help="commit every capture as-proposed, skipping the review dialog (off by default — "
+        "review is the safe default; opt in for a trusted vault)",
+    )
+    gui.add_argument(
+        "--max-pending",
+        type=int,
+        default=16,
+        help="how many captures may queue awaiting processing before a new capture is refused "
+        "(default 16)",
     )
 
     args = parser.parse_args(argv)
