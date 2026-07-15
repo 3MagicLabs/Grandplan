@@ -100,18 +100,59 @@ stops; post-save LLM passes are opt-in). The runner is compatible with both, by 
 If a future change would let the runner pick its own work, that breaks (1) and (2) and needs a new
 decision from the user, not an inference from this spec.
 
-### Contract (sketch — refined when the slice is built)
+### Why the queue exists at all
 
-- `grandplan directive run -o <vault> [--watch] [--max N] [--auto-approve]`
-- For each pending directive: bounded tool-calling loop (local model + `VaultQuery` reads +
-  `VaultWrite` appends), then `mark_done`. Bounded by max steps/directive and `--max` directives/run.
-- A directive whose loop fails is **left pending** (not marked done) and logged — retryable, never
-  silently dropped.
+`POST /directive` (the phone, via `serve_intake`), `grandplan directive add`, and folder-watch all
+append to `directives.jsonl`. Nothing drains it — `pending()` grows forever until an external MCP
+agent pulls it. That is the whole gap.
 
-### Open questions
+### Contract
 
-- **Tool-calling reliability at 7 B.** Ollama supports tool calls with qwen2.5, but a 7 B model's
-  multi-step tool discipline is unproven here. Needs a spike before committing to the loop shape;
-  fallback is a fixed playbook-specific pipeline instead of a free-form agent loop.
-- **Write coordination** — resolve SPEC-AGENT-KB §7's open question (directive queue vs shared lock)
-  before A3 writes alongside a live `CaptureCoordinator`.
+`grandplan directive run -o <vault> [--watch] [--max N] [--interval S] [--no-llm] [--embeddings]`
+
+For each pending directive the runner executes the **structural pipeline** — the same one
+`grandplan organize` runs, over the directive's content:
+
+    capture verbatim original → organize → assess (dedup) → place → commit → record placement
+      → materialize entities
+
+then `mark_done`. No free-form tool-calling loop: the local model does what small models are good at
+(extraction, summarization) and **Python does the control flow**. A 7 B model's multi-step tool
+discipline is unproven, and it isn't needed — the playbooks decompose into exactly the steps the
+pipeline already performs.
+
+### Only playbooks the pipeline honestly fulfils are auto-run
+
+Marking a directive done that was not actually fulfilled is worse than leaving it pending. So the
+runner has an **allowlist**, and everything else stays pending for an MCP agent:
+
+| Playbook | Auto-run? | Why |
+|---|---|---|
+| `capture-and-file` | **yes** | "Summarize into a note, tag it, place it under the right goal" *is* organize + placer, exactly. |
+| `profile-and-connect` | **yes** | Note + entity extraction + placement is its structural core (and the people graph the user is after). Its final "propose a next-step task" step is generative and is **reported as not done**, not silently skipped. |
+| `extract-actions` | no | "Create a task note per action item" needs generation the pipeline has no step for. |
+| ad-hoc `--prompt` | no | Arbitrary instruction; only an agent can interpret it. |
+
+Skipped directives stay pending and the runner says why, pointing at `grandplan mcp --directives`.
+
+### Review posture
+
+`directive run` commits without a per-note dialog — consistent with `grandplan organize`, which has
+never had one. The gate is that the command is **explicitly invoked in the foreground**: the user
+chose to run it, over a queue they explicitly fed. The GUI keeps its review dialog; this is the CLI.
+
+### Edge cases
+
+- A directive whose pipeline raises is **left pending** and logged — retryable, never silently
+  dropped, and one bad directive must not stop the rest of the run.
+- A duplicate of an existing note is skipped (dedup) but the directive **is** marked done: it was
+  fulfilled, the answer was just "you already have this".
+- The original is stamped with the **directive's own `created`**, not a fresh clock (no hidden
+  clock — the same rule the capture path follows).
+- `--watch` polls; `--max` bounds a single pass. Both default to off/one-shot.
+
+### Open question
+
+- **Write coordination** — resolve SPEC-AGENT-KB §7 (directive queue vs shared lock) before running
+  this concurrently with a live `CaptureCoordinator`. Today it is a separate foreground process over
+  the same index; running it while the GUI is capturing is not yet sanctioned.

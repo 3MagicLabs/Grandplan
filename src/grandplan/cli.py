@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -865,6 +866,94 @@ def _run_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_directive_run(
+    args: argparse.Namespace,
+    *,
+    store: JsonlDirectiveStore,
+    vault_dir: Path,
+    index_root: Path,
+) -> int:
+    """`grandplan directive run -o <vault> [--watch] [--max N]`: fulfil pending directives.
+
+    Drains the queue `POST /directive` / `directive add` / folder-watch fill and nothing else
+    drained (SPEC-ACT §A3). Each directive's content goes through the SAME structural pipeline as
+    `grandplan organize` — organize → dedup → place → commit → entities — then is marked done.
+
+    Only playbooks that pipeline honestly fulfils are auto-run; the rest stay pending for an MCP
+    agent. Curation stays user-directed: the pending queue is the entire input, and every directive
+    in it is content the user explicitly sent with an instruction they chose.
+    """
+    from grandplan.core.fulfil import FulfilResult, fulfil_directive, run_pending
+
+    use_llm = not args.no_llm
+    organizer: Organizer = (
+        OllamaOrganizer(model=args.model, require=True) if use_llm else HeuristicOrganizer()
+    )
+    embedder: Embedder = SentenceTransformerEmbedder() if args.embeddings else HashingEmbedder()
+    placer: Placer = LlmPlacer(model=args.model) if use_llm else HeuristicPlacer()
+    entity_extractor = _make_entity_extractor(use_llm, args.model)
+    repo = _open_repo(index_root)
+    originals = JsonlOriginalStore(index_root / "inbox.jsonl")
+    vault = MarkdownVaultWriter(vault_dir)
+
+    def fulfil(directive: Directive) -> FulfilResult:
+        return fulfil_directive(
+            directive,
+            repo=repo,
+            originals=originals,
+            embedder=embedder,
+            organizer=organizer,
+            reconciler=SimilarityReconciler(),
+            placer=placer,
+            entity_extractor=entity_extractor,
+            vault=vault,
+            source=Source(app="grandplan", title="directive"),
+        )
+
+    def one_pass() -> int:
+        results = run_pending(
+            store, fulfil=fulfil, max_directives=args.max if args.max > 0 else None
+        )
+        for result in results:
+            if result.skipped_duplicate:
+                print(f"{result.directive_id}: already in the vault (duplicate) — marked done")
+                continue
+            entities = (
+                f", {len(result.entity_ids)} entit{'y' if len(result.entity_ids) == 1 else 'ies'}"
+            )
+            print(
+                f"{result.directive_id}: note {result.note_id}{entities if result.entity_ids else ''}"
+            )
+            if result.residual:
+                print(f"  note: {result.residual}")
+        if results:
+            # Re-render so the new notes + entities show in Obsidian, once per pass rather than
+            # once per directive (a projection over the whole vault is not cheap).
+            write_projections(repo, vault_dir, originals=originals)
+        return len(results)
+
+    if not args.watch:
+        fulfilled = one_pass()
+        remaining = len(store.pending())
+        if not fulfilled and not remaining:
+            print("no pending directives")
+        elif remaining:
+            print(
+                f"{remaining} directive(s) left pending — they need an agent that can interpret "
+                "their instruction: `grandplan mcp --directives --write`"
+            )
+        return 0
+
+    print(f"watching for directives (every {args.interval}s) — Ctrl-C to stop")
+    try:
+        while True:
+            one_pass()
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        print("\nstopped")
+        return 0
+
+
 def _run_directive(args: argparse.Namespace) -> int:
     """`grandplan directive add|list -o <vault>`: queue / inspect agent intake directives.
 
@@ -875,6 +964,8 @@ def _run_directive(args: argparse.Namespace) -> int:
     vault_dir = Path(args.vault)
     index_root = migrate_legacy_index(vault_dir)
     store = JsonlDirectiveStore(index_root / "directives.jsonl")
+    if args.directive_command == "run":
+        return _run_directive_run(args, store=store, vault_dir=vault_dir, index_root=index_root)
     if args.directive_command == "list":
         pending = store.pending()
         if not pending:
@@ -2066,6 +2157,32 @@ def main(argv: list[str] | None = None) -> int:
     )
     list_directives = directive_sub.add_parser("list", help="List pending directives.")
     list_directives.add_argument("-o", "--vault", required=True, help="the vault directory")
+
+    run_directives = directive_sub.add_parser(
+        "run",
+        help="Fulfil pending directives (organize their content into notes). Opt-in, one-shot.",
+    )
+    run_directives.add_argument("-o", "--vault", required=True, help="the vault directory")
+    run_directives.add_argument(
+        "--max", type=int, default=0, help="stop after N directives (default: drain all pending)"
+    )
+    run_directives.add_argument(
+        "--watch",
+        action="store_true",
+        help="keep polling for new directives instead of exiting once the queue is drained",
+    )
+    run_directives.add_argument(
+        "--interval", type=float, default=10.0, help="seconds between --watch polls (default 10)"
+    )
+    run_directives.add_argument(
+        "--no-llm", action="store_true", help="use the deterministic offline baseline (no model)"
+    )
+    run_directives.add_argument(
+        "--embeddings",
+        action="store_true",
+        help="use sentence-transformer embeddings (use if the vault was built with them)",
+    )
+    run_directives.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model name")
 
     serve_cmd = subparsers.add_parser(
         "serve",

@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 ### Added
+- **`grandplan directive run` — something finally drains the directive queue.** `POST /directive`
+  (your phone, via `--serve`), `grandplan directive add`, and folder-watch all append to
+  `directives.jsonl`, but **nothing ever drained it** — `pending()` grew forever until an external
+  MCP agent pulled it. `run` fulfils each pending directive by putting its content through the same
+  structural pipeline as `grandplan organize` (organize → dedup → place → commit → extract
+  entities), then marks it done. `--max N` bounds a pass, `--watch` polls; one-shot and opt-in by
+  default. There is deliberately **no free-form tool-calling loop**: the local model does extraction
+  and summarization, and Python does the control flow — a 7B model's multi-step tool discipline is
+  unproven and isn't needed, because the playbooks decompose into steps the pipeline already runs.
+  It only auto-runs playbooks it can honestly fulfil (`capture-and-file`, `profile-and-connect`);
+  `extract-actions` and ad-hoc prompts stay pending for an agent, because marking a directive done
+  that wasn't actually fulfilled is worse than leaving it queued. `profile-and-connect`'s closing
+  "propose a next-step task" step is reported as not done rather than silently skipped. A directive
+  whose pipeline fails is left pending and logged — retryable — and one bad directive never stops
+  the pass. Curation stays user-directed: the pending queue is the runner's entire input (it isn't
+  even given a repository, so it cannot scan the vault), and every directive in it is content you
+  explicitly sent with an instruction you chose.
 - **`/focus` — what to do next, in chat.** The vault already knew its own bottleneck
   (`core/schedule.critical_path`), what could run in parallel, and how far each goal had come, but
   only `grandplan report` surfaced it — so asking chat "what's the hardest thing?" retrieved six

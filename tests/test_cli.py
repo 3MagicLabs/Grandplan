@@ -1184,6 +1184,97 @@ def test_gui_fast_is_default_and_thorough_opts_out(
     assert seen[3]["enrich"] is True  # --enrich opts in, and only then
 
 
+def _queue_directive(vault: Path, content: str, playbook: str) -> str:
+    from grandplan.core.directive import Directive, JsonlDirectiveStore
+    from grandplan.core.index_location import migrate_legacy_index
+
+    store = JsonlDirectiveStore(migrate_legacy_index(vault) / "directives.jsonl")
+    directive = Directive.create(content, f"do {playbook}", _CREATED, playbook=playbook)
+    store.add(directive)
+    return directive.id
+
+
+def _pending_ids(vault: Path) -> list[str]:
+    from grandplan.core.directive import JsonlDirectiveStore
+    from grandplan.core.index_location import migrate_legacy_index
+
+    store = JsonlDirectiveStore(migrate_legacy_index(vault) / "directives.jsonl")
+    return [d.id for d in store.pending()]
+
+
+def test_directive_run_fulfils_a_queued_directive_into_a_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The queue POST /directive fills had nothing draining it — pending() grew forever. `run` is
+    # the drain: the content becomes a real, organized note in the vault.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    vault = tmp_path / "vault"
+    vault.mkdir(parents=True)
+    _queue_directive(vault, "write the launch post for the new release", "capture-and-file")
+
+    assert main(["directive", "run", "-o", str(vault), "--no-llm"]) == 0
+
+    assert _pending_ids(vault) == []  # drained + marked done
+    assert list(vault.glob("*.md"))  # a real note landed on disk
+    assert "note " in capsys.readouterr().out
+
+
+def test_directive_run_leaves_playbooks_it_cannot_honestly_fulfil_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # extract-actions needs generation the structural pipeline has no step for. Marking it done
+    # would silently drop the request — so it stays queued, and the user is told what can do it.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    vault = tmp_path / "vault"
+    vault.mkdir(parents=True)
+    did = _queue_directive(vault, "call the bank and email Dana", "extract-actions")
+
+    assert main(["directive", "run", "-o", str(vault), "--no-llm"]) == 0
+
+    assert _pending_ids(vault) == [did]  # untouched
+    assert "mcp --directives" in capsys.readouterr().out  # ...and the user knows what to do
+
+
+def test_directive_run_reports_the_part_of_a_playbook_it_did_not_do(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # profile-and-connect's structural core IS fulfilled, but its closing "propose a next-step task"
+    # step is generative. Saying so beats implying the whole playbook ran.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    vault = tmp_path / "vault"
+    vault.mkdir(parents=True)
+    _queue_directive(vault, "met Ada Lovelace from Analytical Engines Inc", "profile-and-connect")
+
+    assert main(["directive", "run", "-o", str(vault), "--no-llm"]) == 0
+
+    out = capsys.readouterr().out
+    assert _pending_ids(vault) == []
+    assert "entit" in out  # the people/org entities were extracted
+    assert "next-step task" in out  # ...and the residual is named
+
+
+def test_directive_run_on_an_empty_queue_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    vault = tmp_path / "vault"
+    vault.mkdir(parents=True)
+    assert main(["directive", "run", "-o", str(vault), "--no-llm"]) == 0
+    assert "no pending directives" in capsys.readouterr().out
+
+
+def test_directive_run_max_bounds_a_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    vault = tmp_path / "vault"
+    vault.mkdir(parents=True)
+    for i in range(3):
+        _queue_directive(vault, f"a distinct thought about topic {i}", "capture-and-file")
+
+    assert main(["directive", "run", "-o", str(vault), "--no-llm", "--max", "1"]) == 0
+
+    assert len(_pending_ids(vault)) == 2  # only one drained
+
+
 def _graph_vault(tmp_path: Path) -> Path:
     """A vault whose index holds: Alpha --depends_on--> Beta, and Gamma --builds_on--> Alpha."""
     from grandplan.core.index_location import migrate_legacy_index
