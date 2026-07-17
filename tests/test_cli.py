@@ -1438,6 +1438,29 @@ def test_gui_kb_model_is_configurable(tmp_path: Path, monkeypatch: pytest.Monkey
     assert seen[1]["kb_model"] == "qwen2.5:7b"
 
 
+def test_gui_top_k_flows_to_run_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The tray chat hardcoded the ChatSession default (6 notes/turn): `--top-k` existed on the
+    # `chat` CLI and was unreachable from the GUI, so the same vault answered a breadth question
+    # differently depending on which surface you asked from.
+    seen: list[dict[str, object]] = []
+    monkeypatch.setattr("grandplan.app.gui.run_app", lambda **kw: seen.append(kw) or 0)
+    assert main(["gui", "-o", str(tmp_path / "v"), "--top-k", "15"]) == 0
+    assert seen[0]["chat_top_k"] == 15
+    # Default matches `chat`/`ask` — same question, same grounding, whichever surface.
+    assert main(["gui", "-o", str(tmp_path / "v")]) == 0
+    assert seen[1]["chat_top_k"] == 6
+
+
+def test_gui_top_k_rejects_non_positive(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # --top-k 0 grounds every turn in no notes at all: the chat still answers, from the instruction
+    # alone, so it LOOKS like it works while silently no longer consulting the vault. Refuse it.
+    monkeypatch.setattr("grandplan.app.gui.run_app", lambda **kw: 0)
+    assert main(["gui", "-o", str(tmp_path / "v"), "--top-k", "0"]) == 1
+    assert "--top-k must be >= 1" in capsys.readouterr().err
+
+
 def test_main_gui_embeddings_without_dep_fails_fast(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

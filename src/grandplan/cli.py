@@ -1837,6 +1837,11 @@ def _run_gui(args: argparse.Namespace) -> int:
     if getattr(args, "max_pending", 16) < 1:
         print("error: --max-pending must be >= 1", file=sys.stderr)
         return 1
+    if getattr(args, "top_k", 6) < 1:
+        # 0 would ground every turn in NO notes — the model then answers from the instruction alone,
+        # which reads as a working chat that has quietly stopped consulting the vault.
+        print("error: --top-k must be >= 1", file=sys.stderr)
+        return 1
     vault_dir = Path(args.vault)
     # Diagnosability (#5): every GUI run gets a rotating file log + sys/threading excepthooks, so
     # a crash (or a dying hotkey thread) leaves a traceback even with no console. --debug ALSO
@@ -1874,6 +1879,7 @@ def _run_gui(args: argparse.Namespace) -> int:
             serve_token=serve_token,
             auto_approve=getattr(args, "auto_approve", False),
             max_pending=getattr(args, "max_pending", 16),
+            chat_top_k=getattr(args, "top_k", 6),
         )
     except ImportError as exc:
         print(
@@ -2324,6 +2330,15 @@ def main(argv: list[str] | None = None) -> int:
         "pair must fit in RAM together — on a roomy machine try a larger one, e.g. qwen2.5:14b",
     )
     gui.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model name (default LLM)")
+    gui.add_argument(
+        "--top-k",
+        type=int,
+        default=6,
+        help="how many notes ground each tray-chat turn (default 6, same as `chat`). Raise it for "
+        "breadth questions ('what connects everything I saved about X?'); 15-20 is the useful "
+        "ceiling — beyond that the extra notes cost prompt-reading time and start crowding each "
+        "other out of the model's attention",
+    )
     gui.add_argument(
         "--init",
         action="store_true",

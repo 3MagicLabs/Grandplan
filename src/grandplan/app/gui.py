@@ -70,6 +70,13 @@ logger = logging.getLogger(__name__)
 # f13 — a single non-printable key that triggers nothing in the focused app. resolve_hotkey() normalizes.
 _DEFAULT_HOTKEY = "ctrl+shift+g"
 
+# How many notes ground each tray-chat turn. Mirrors the `chat`/`ask` CLI default so the same vault
+# answers the same question the same way whichever surface you ask from — the tray chat previously
+# hardcoded the ChatSession default, so `--top-k` existed on the CLI and was unreachable from the
+# GUI. Raising it costs prefill (each note contributes up to _BODY_SNIPPET chars to the prompt), not
+# RAM: the KV cache is sized by num_ctx regardless of how much of the window a turn fills.
+_CHAT_TOP_K = 6
+
 # Stages worth a tray notification (the rest — incl. DISCARDED and REJECTED_BUSY, which follow a
 # user action they already know about — only update the tooltip, to avoid notification spam).
 _NOTIFY_STAGES = frozenset({Stage.SAVED, Stage.EMPTY, Stage.FAILED, Stage.PROJECTION_FAILED})
@@ -355,6 +362,7 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     serve_token: str = "",
     auto_approve: bool = False,
     max_pending: int = 16,
+    chat_top_k: int = _CHAT_TOP_K,
 ) -> int:
     from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -663,7 +671,11 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         # --kb-model lets the user point chat at the model they actually pulled (e.g. qwen2.5:7b
         # next to a resident capture model); the hardcoded default made every turn 404 first.
         session = ChatSession(
-            repo=repo, embedder=embedder, model=kb_model or KB_DEFAULT_MODEL, fallback_model=model
+            repo=repo,
+            embedder=embedder,
+            model=kb_model or KB_DEFAULT_MODEL,
+            fallback_model=model,
+            top_k=chat_top_k,
         )
 
         def apply_plan(draft: PlanDraft) -> str:
