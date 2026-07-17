@@ -11,8 +11,12 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import quote
+
+from grandplan.core.models import Note
+from grandplan.core.vault import plan_filenames
 
 # A minimal Obsidian workspace with the GRAPH view as the single active leaf, so opening the vault
 # lands on the graph. Written only into a fresh vault (never clobbers an existing workspace); if a
@@ -56,6 +60,22 @@ def obsidian_open_uri(target: Path) -> str:
     user on a note, where Obsidian's own local-graph pane does the depth and layout a terminal can't).
     """
     return f"obsidian://open?path={quote(str(target.resolve()), safe='')}"
+
+
+def note_file(note_id: str, notes: Iterable[Note], vault_dir: Path) -> Path | None:
+    """The rendered `.md` file for a note id, or None when unknown or not on disk.
+
+    The id → stem map is a pure function of the note SET (`plan_filenames`), never of disk state, so
+    this agrees with the `[[wikilink]]`s inside the notes themselves. Returning None for a note the
+    index knows but that has no file is the honest answer, not a fallback to the vault root: it means
+    the projections are stale (`rerender` fixes it), and silently opening something else would hide
+    that. Shared by `grandplan graph --open` and the chat window's clickable sources.
+    """
+    stem = plan_filenames(notes).get(note_id)
+    if stem is None:
+        return None
+    target = vault_dir / f"{stem}.md"
+    return target if target.exists() else None
 
 
 def open_in_obsidian(target: Path) -> bool:  # pragma: no cover - launches the OS URI handler

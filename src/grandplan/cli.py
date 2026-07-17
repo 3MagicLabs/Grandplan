@@ -334,19 +334,18 @@ def _run_graph(args: argparse.Namespace) -> int:
         for note, score in others:
             print(f"  {note.title}  [{note.id}]  ({score:.2f})")
     if args.open:
-        from grandplan.adapters.obsidian_open import open_in_obsidian
-        from grandplan.core.vault import plan_filenames
+        from grandplan.adapters.obsidian_open import note_file, open_in_obsidian
 
-        stems = plan_filenames(repo.current_notes())
-        stem = stems.get(neighborhood.note.id)
-        target = vault_dir / f"{stem}.md" if stem else vault_dir
-        if not target.exists():
+        # Same resolver the chat window's clickable sources use: an id must land on the same file
+        # from either surface, and colliding slugs must disambiguate identically in both.
+        target = note_file(neighborhood.note.id, repo.current_notes(), vault_dir)
+        if target is None:
             # The index knows the note but no .md is on disk — the projections are stale, which is
             # also why the graph view can look smaller than the note count. Say so; don't silently
             # open the vault root as if nothing were wrong.
             print(
-                f"\n{target.name} isn't on disk yet — run `grandplan rerender -o {vault_dir}` to "
-                "re-render the notes, then open again.",
+                f"\n{neighborhood.note.title} isn't on disk yet — run `grandplan rerender -o "
+                f"{vault_dir}` to re-render the notes, then open again.",
                 file=sys.stderr,
             )
             return 1

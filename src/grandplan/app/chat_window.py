@@ -23,6 +23,7 @@ import html
 import logging
 import threading
 from collections.abc import Callable, Mapping, Sequence
+from urllib.parse import quote, unquote
 
 from grandplan.adapters.kb_ask import AskAnswer
 from grandplan.adapters.kb_chat import ChatSession, ImproveDraft, PlanDraft
@@ -33,6 +34,31 @@ logger = logging.getLogger(__name__)
 _SNIPPET = (
     400  # chars of a grounding note's body shown in the pane (full note stays one click away)
 )
+
+# Clickable sources use a PRIVATE scheme, not `obsidian://` or `file://`, so the anchor is inert to
+# anything but our own handler: QTextBrowser must never resolve it as a document to load, and a note
+# title (user data) can never smuggle a real navigable target into the pane. The window turns a click
+# on one of these into an `open_note(id)` callback; the vault path never reaches this module.
+_NOTE_SCHEME = "grandplan-note"
+
+
+def note_href(note_id: str) -> str:
+    """The anchor target for a clickable source (pure). `href_note_id` is its exact inverse."""
+    return f"{_NOTE_SCHEME}:{quote(note_id, safe='')}"
+
+
+def href_note_id(href: str) -> str:
+    """The note id inside a `note_href`, or `""` for any other link (pure).
+
+    Fails closed: a link the window didn't author yields no id, so a click on it does nothing.
+    """
+    prefix = f"{_NOTE_SCHEME}:"
+    return unquote(href[len(prefix) :]) if href.startswith(prefix) else ""
+
+
+def _source_link(note_id: str, title: str) -> str:
+    """One source rendered as a clickable anchor — id and title both escaped (pure)."""
+    return f'<a href="{html.escape(note_href(note_id))}">{html.escape(title)}</a>'
 
 
 class TranscriptLog:
@@ -98,8 +124,11 @@ def grounding_html(answer: AskAnswer, *, notes: Mapping[str, Note]) -> str:
     for note_id, title in answer.sources:
         note = notes.get(note_id)
         snippet = html.escape(note.body[:_SNIPPET]) if note is not None else ""
+        # The title is the click target: the snippet is a 400-char preview, so the way OUT of the
+        # pane and into the real note (and Obsidian's local-graph pane around it) has to be one click
+        # away, not a copied id retyped into another command.
         blocks.append(
-            f"<p><b>{html.escape(title)}</b> <code>[{html.escape(note_id)}]</code>"
+            f"<p><b>{_source_link(note_id, title)}</b> <code>[{html.escape(note_id)}]</code>"
             f"<br/><small>{snippet}</small></p>"
         )
     return "\n".join(blocks)
@@ -108,7 +137,8 @@ def grounding_html(answer: AskAnswer, *, notes: Mapping[str, Note]) -> str:
 def proposal_html(draft: PlanDraft) -> str:
     """The pending-proposal card: title, summary, checklist steps, grounding sources (pure)."""
     steps = "".join(f"<li>{html.escape(step)}</li>" for step in draft.steps)
-    sources = ", ".join(html.escape(title) for _id, title in draft.sources)
+    # Clickable too: deciding whether to Approve means checking what the plan was drawn FROM.
+    sources = ", ".join(_source_link(note_id, title) for note_id, title in draft.sources)
     grounded = f"<p><small>grounded in: {sources}</small></p>" if sources else ""
     return (
         f"<p><b>PLAN: {html.escape(draft.title)}</b><br/>{html.escape(draft.summary)}</p>"
@@ -142,12 +172,17 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     session: ChatSession,
     apply_plan: Callable[[PlanDraft], str],
     apply_improve: Callable[[ImproveDraft], None],
+    open_note: Callable[[str], str] | None = None,
     parent: object = None,
 ) -> object:
     """Build (and return) the chat window; the caller shows it and keeps a reference.
 
     The window drives the injected `session` (read-only) and calls `apply_plan` ONLY from the
     Approve button — the same review-gate contract as the REPL's [y/N] prompt.
+
+    `open_note(id)` is called when a source link is clicked; it returns `""` on success or a message
+    to show the user. Injected rather than imported so this module never learns the vault path, and
+    so a build without it simply renders inert links instead of failing.
     """
     from PySide6 import QtCore, QtWidgets
 
@@ -172,8 +207,14 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     send = QtWidgets.QPushButton("Send")
 
     grounding = QtWidgets.QTextBrowser()
-    grounding.setPlaceholderText("the notes grounding each answer appear here")
+    grounding.setPlaceholderText("click a note's title to open it in Obsidian")
     proposal = QtWidgets.QTextBrowser()
+    for browser in (grounding, proposal):
+        # setOpenLinks(False) is what makes the click OURS: left on, QTextBrowser treats the anchor
+        # as a document to navigate to and blanks the pane. anchorClicked still fires either way, so
+        # without this the note opens AND the pane is destroyed.
+        browser.setOpenLinks(False)
+        browser.setOpenExternalLinks(False)
     approve = QtWidgets.QPushButton("Approve — save to vault")
     discard = QtWidgets.QPushButton("Discard")
     for widget in (proposal, approve, discard):
@@ -342,6 +383,23 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
         _refresh_transcript()
         grounding.setHtml(f"<p><i>action failed: {html.escape(message)}</i></p>")
 
+    def _on_anchor(url: object) -> None:
+        note_id = href_note_id(url.toString())  # type: ignore[attr-defined]
+        if not note_id or open_note is None:
+            return  # a link we didn't author, or a build with no opener wired: do nothing
+        try:
+            problem = open_note(note_id)
+        except Exception as exc:  # noqa: BLE001 - a failed open must never kill the window
+            logger.exception("opening note %s in Obsidian failed", note_id)
+            problem = str(exc)
+        if problem:
+            # Into the transcript, not a dialog: the click failed for a reason worth reading (stale
+            # projections), and the conversation is where the user is already looking.
+            log.vault(problem)
+            _refresh_transcript()
+
+    grounding.anchorClicked.connect(_on_anchor)
+    proposal.anchorClicked.connect(_on_anchor)
     bridge.answered.connect(_on_answered)
     bridge.drafted.connect(_on_drafted)
     bridge.applied.connect(_on_applied)

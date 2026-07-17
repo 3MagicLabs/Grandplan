@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 ### Added
+- **Clickable sources in the tray chat — a source now opens its note in Obsidian.** The grounding
+  pane showed each source's title, id, and a 400-char snippet, and the only way from there into the
+  actual note was to copy the id and retype it into another command. Clicking a source title (in the
+  grounding pane or on a plan proposal's "grounded in" line) now opens that note in Obsidian, where
+  its local-graph pane shows the neighbourhood a terminal can't draw. Links use a private
+  `grandplan-note:` scheme and the window resolves them itself: a link it didn't author yields no id
+  and does nothing. A note the index knows but that has no `.md` on disk says so and names
+  `rerender`, rather than opening the vault root as if nothing were wrong. `graph --open` and the
+  chat now share one resolver (`obsidian_open.note_file`), so an id lands on the same file from
+  either surface — including when two notes slugify to the same stem.
+- **`gui --top-k N` — the tray chat can ground a turn in more than six notes.** It built its
+  `ChatSession` without a `top_k`, so it silently took the library default while `--top-k` existed on
+  `chat`/`ask` and was unreachable from the GUI: the same vault answered the same breadth question
+  differently depending on the surface. Defaults to 6 to match `chat`; 15–20 is the useful ceiling
+  (the cost is prompt-reading time before the first token, not RAM — the KV cache is sized by
+  `num_ctx` regardless). `--top-k 0` is refused: it grounds every turn in no notes at all, so the
+  chat looks like it works while it has quietly stopped consulting the vault.
 - **`grandplan directive run` — something finally drains the directive queue.** `POST /directive`
   (your phone, via `--serve`), `grandplan directive add`, and folder-watch all append to
   `directives.jsonl`, but **nothing ever drained it** — `pending()` grew forever until an external

@@ -10,7 +10,13 @@ from __future__ import annotations
 
 from grandplan.adapters.kb_ask import AskAnswer
 from grandplan.adapters.kb_chat import PlanDraft
-from grandplan.app.chat_window import grounding_html, proposal_html, transcript_html
+from grandplan.app.chat_window import (
+    grounding_html,
+    href_note_id,
+    note_href,
+    proposal_html,
+    transcript_html,
+)
 from grandplan.core.models import Note, NoteType
 
 
@@ -38,6 +44,36 @@ def test_grounding_html_shows_each_source_with_snippet_and_escapes() -> None:
     assert "T&lt;i&gt;tle" in html and "<i>tle" not in html
     assert "body &amp; &lt;b&gt;text&lt;/b&gt;" in html  # snippet shown, escaped
     assert "[a]" in html  # the id is visible for /show-style reference
+
+
+def test_note_href_round_trips_through_href_note_id() -> None:
+    for note_id in ("abc123", "id with spaces", "id/with:punctuation&more"):
+        assert href_note_id(note_href(note_id)) == note_id
+
+
+def test_href_note_id_ignores_links_we_did_not_author() -> None:
+    # Fails closed: only our own scheme yields an id, so a click on anything else does nothing
+    # rather than being handed to the opener as a note id.
+    for foreign in ("https://example.com", "file:///etc/passwd", "obsidian://open?path=x", ""):
+        assert href_note_id(foreign) == ""
+
+
+def test_grounding_html_links_each_source_to_its_note() -> None:
+    # The way out of the 400-char snippet and into the real note has to be one click, not a copied
+    # id retyped elsewhere — that is the whole point of the pane.
+    answer = AskAnswer(text="grounded", sources=(("a", "Title"),), model="m")
+    html = grounding_html(answer, notes={"a": _note("a", "Title", "body")})
+    assert f'href="{note_href("a")}"' in html
+
+
+def test_source_link_escapes_a_title_that_looks_like_markup() -> None:
+    # A note title is user data and sits INSIDE an anchor now — it must never break out of it.
+    answer = AskAnswer(
+        text="x", sources=(('"><img src=x onerror=1>', '"><img src=x onerror=1>'),), model="m"
+    )
+    html = grounding_html(answer, notes={})
+    assert "<img" not in html
+    assert "&lt;img" in html
 
 
 def test_grounding_html_degrades_for_retrieval_only_and_empty() -> None:

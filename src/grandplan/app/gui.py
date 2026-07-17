@@ -691,8 +691,25 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
         def apply_improve(draft: ImproveDraft) -> None:
             apply_improvement_draft(draft, repo=repo, vault_dir=vault_dir, originals=originals)
 
+        def open_note(note_id: str) -> str:
+            """Open a clicked source in Obsidian; returns "" or why it couldn't. Never raises."""
+            from grandplan.adapters.obsidian_open import note_file, open_in_obsidian
+
+            target = note_file(note_id, repo.current_notes(), vault_dir)
+            if target is None:
+                return (
+                    f"[{note_id}] has no rendered file in {vault_dir.name} — the projections are "
+                    f"stale. `grandplan rerender -o {vault_dir}` writes it, then the link works."
+                )
+            if not open_in_obsidian(target):
+                return f"couldn't hand {target.name} to Obsidian — is it installed?"
+            return ""
+
         window = open_chat_window(
-            session=session, apply_plan=apply_plan, apply_improve=apply_improve
+            session=session,
+            apply_plan=apply_plan,
+            apply_improve=apply_improve,
+            open_note=open_note,
         )
         chat_windows.append(window)
         window.show()  # type: ignore[attr-defined]
