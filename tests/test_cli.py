@@ -1451,6 +1451,39 @@ def test_gui_top_k_flows_to_run_app(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert seen[1]["chat_top_k"] == 6
 
 
+def test_gui_read_only_flows_to_run_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict[str, object]] = []
+    monkeypatch.setattr("grandplan.app.gui.run_app", lambda **kw: seen.append(kw) or 0)
+    assert main(["gui", "-o", str(tmp_path / "v"), "--read-only"]) == 0
+    assert seen[0]["read_only"] is True
+    # Writing is the default: the safety mode is opt-in, never inferred.
+    assert main(["gui", "-o", str(tmp_path / "v")]) == 0
+    assert seen[1]["read_only"] is False
+
+
+@pytest.mark.parametrize("flag", ["--serve", "--auto-approve", "--enrich", "--init"])
+def test_gui_read_only_refuses_write_flags(
+    flag: str, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # SPEC-READONLY §3.3: --read-only next to a write-only flag is a contradiction in intent. Refuse
+    # and name the conflict — silently winning either way would be a mode the user cannot trust.
+    monkeypatch.setenv("GRANDPLAN_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("grandplan.app.gui.run_app", lambda **kw: 0)
+    assert main(["gui", "-o", str(tmp_path / "v"), "--read-only", flag]) == 1
+    err = capsys.readouterr().err
+    assert "--read-only conflicts with" in err
+    assert flag in err
+
+
+def test_gui_read_only_allows_hotkey_combo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # NOT a conflict (SPEC-READONLY §5): the combo is inert because no listener is registered.
+    # Refusing would punish someone for leaving the flag in the shortcut they always launch with.
+    seen: list[dict[str, object]] = []
+    monkeypatch.setattr("grandplan.app.gui.run_app", lambda **kw: seen.append(kw) or 0)
+    assert main(["gui", "-o", str(tmp_path / "v"), "--read-only", "--hotkey-combo", "f13"]) == 0
+    assert seen[0]["read_only"] is True
+
+
 def test_gui_top_k_rejects_non_positive(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

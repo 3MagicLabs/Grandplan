@@ -134,20 +134,30 @@ def grounding_html(answer: AskAnswer, *, notes: Mapping[str, Note]) -> str:
     return "\n".join(blocks)
 
 
-def proposal_html(draft: PlanDraft) -> str:
+_READ_ONLY_FOOTER = (
+    "<p><i>read-only: this is a preview and cannot be saved. Restart without --read-only "
+    "to keep it.</i></p>"
+)
+
+
+def proposal_html(draft: PlanDraft, *, read_only: bool = False) -> str:
     """The pending-proposal card: title, summary, checklist steps, grounding sources (pure)."""
     steps = "".join(f"<li>{html.escape(step)}</li>" for step in draft.steps)
     # Clickable too: deciding whether to Approve means checking what the plan was drawn FROM.
     sources = ", ".join(_source_link(note_id, title) for note_id, title in draft.sources)
     grounded = f"<p><small>grounded in: {sources}</small></p>" if sources else ""
+    # The footer must match the buttons: promising "nothing is written until you approve" beside a
+    # card with no Approve button describes a gate the user cannot see or reach.
+    footer = (
+        _READ_ONLY_FOOTER if read_only else "<p><i>nothing is written until you approve.</i></p>"
+    )
     return (
         f"<p><b>PLAN: {html.escape(draft.title)}</b><br/>{html.escape(draft.summary)}</p>"
-        f"<ul>{steps}</ul>{grounded}"
-        "<p><i>nothing is written until you approve.</i></p>"
+        f"<ul>{steps}</ul>{grounded}{footer}"
     )
 
 
-def improvement_html(draft: ImproveDraft) -> str:
+def improvement_html(draft: ImproveDraft, *, read_only: bool = False) -> str:
     """The pending-improvement card: rationale + before/after per changed field, escaped (pure)."""
     parts = [
         f"<p><b>IMPROVE [{html.escape(draft.note_id)}]</b><br/>{html.escape(draft.rationale)}</p>"
@@ -162,7 +172,10 @@ def improvement_html(draft: ImproveDraft) -> str:
     if draft.new_body is not None:
         parts.append(f"<p>new body:</p><p><small>{html.escape(draft.new_body)}</small></p>")
     parts.append(
-        "<p><i>applies as ONE replayable edit; your verbatim original is preserved either way.</i></p>"
+        _READ_ONLY_FOOTER
+        if read_only
+        else "<p><i>applies as ONE replayable edit; your verbatim original is preserved "
+        "either way.</i></p>"
     )
     return "\n".join(parts)
 
@@ -173,6 +186,7 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     apply_plan: Callable[[PlanDraft], str],
     apply_improve: Callable[[ImproveDraft], None],
     open_note: Callable[[str], str] | None = None,
+    read_only: bool = False,
     parent: object = None,
 ) -> object:
     """Build (and return) the chat window; the caller shows it and keeps a reference.
@@ -183,6 +197,10 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     `open_note(id)` is called when a source link is clicked; it returns `""` on success or a message
     to show the user. Injected rather than imported so this module never learns the vault path, and
     so a build without it simply renders inert links instead of failing.
+
+    `read_only` hides Approve (SPEC-READONLY §4). Drafting stays on — `draft_plan`/`draft_improvement`
+    only read — so you can still see what the vault *would* propose; there is simply no way to save
+    it. This is ergonomics: the ports are already sealed, so Approve could not write even if shown.
     """
     from PySide6 import QtCore, QtWidgets
 
@@ -193,7 +211,11 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
         failed = QtCore.Signal(str)
 
     window = QtWidgets.QDialog(parent)  # type: ignore[arg-type]
-    window.setWindowTitle("grandplan — chat with your vault")
+    window.setWindowTitle(
+        "grandplan — chat with your vault (read-only)"
+        if read_only
+        else "grandplan — chat with your vault"
+    )
     window.resize(980, 560)
     bridge = _Bridge(window)
 
@@ -255,12 +277,13 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
 
     def _show_proposal(draft: PlanDraft | ImproveDraft | None) -> None:
         pending["draft"] = draft
-        for widget in (proposal, approve, discard):
+        for widget in (proposal, discard):
             widget.setVisible(draft is not None)
+        approve.setVisible(draft is not None and not read_only)  # sealed anyway; don't offer it
         if isinstance(draft, PlanDraft):
-            proposal.setHtml(proposal_html(draft))
+            proposal.setHtml(proposal_html(draft, read_only=read_only))
         elif isinstance(draft, ImproveDraft):
-            proposal.setHtml(improvement_html(draft))
+            proposal.setHtml(improvement_html(draft, read_only=read_only))
 
     def _submit() -> None:
         text = entry.text().strip()

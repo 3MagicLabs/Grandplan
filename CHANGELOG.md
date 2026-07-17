@@ -6,6 +6,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 ### Added
+- **`gui --read-only` — browse a vault that cannot be modified.** The tray app exists to write:
+  it holds a live writer, a registered global hotkey, and optionally an HTTP intake. But the thing
+  you do with a *full* vault is mostly read it — chat, follow links, look at the graph — and an
+  append-only log means a stray hotkey press or a mis-clicked Approve is a permanent event, not an
+  undo. `--read-only` seals every vault write path for the process's lifetime. Chat, `/focus`,
+  `/graph`, and clickable sources are untouched; drafts still preview (drafting only reads) with no
+  way to save one. The seal is **structural** (`core/readonly.py`), not cosmetic: the repository and
+  vault writer are swapped for proxies that raise `VaultIsReadOnly` on every mutator and delegate
+  every reader, so a write path added later fails loudly instead of quietly eroding the guarantee.
+  The hotkey listener is simply never registered — a hotkey that captures, runs the model, and *then*
+  raises is worse than one that does nothing. `--read-only` refuses to coexist with `--serve`,
+  `--auto-approve`, `--enrich`, or `--init` rather than silently picking a winner. Design in
+  `docs/specs/SPEC-READONLY.md`.
 - **Clickable sources in the tray chat — a source now opens its note in Obsidian.** The grounding
   pane showed each source's title, id, and a 400-char snippet, and the only way from there into the
   actual note was to copy the id and retype it into another command. Clicking a source title (in the

@@ -97,6 +97,36 @@ def test_proposal_html_lists_steps_and_sources() -> None:
     assert "Src &amp; note" in html
 
 
+def test_proposal_footer_matches_the_buttons_in_read_only() -> None:
+    # SPEC-READONLY §4: under --read-only there is no Approve button, so promising "nothing is
+    # written until you approve" would describe a gate the user can neither see nor reach.
+    draft = PlanDraft(title="T", summary="s", steps=("one",), sources=(), model="m")
+    normal = proposal_html(draft)
+    sealed = proposal_html(draft, read_only=True)
+    assert "until you approve" in normal
+    assert "until you approve" not in sealed
+    assert "cannot be saved" in sealed
+    assert "one" in sealed  # the draft itself still renders — previewing is the point
+
+
+def test_improvement_footer_matches_the_buttons_in_read_only() -> None:
+    from grandplan.adapters.kb_chat import ImproveDraft
+    from grandplan.app.chat_window import improvement_html
+
+    draft = ImproveDraft(
+        note_id="n1",
+        new_title="Better",
+        new_body=None,
+        new_tags=None,
+        rationale="why",
+        model="m",
+        current_title="Old",
+        current_body="b",
+    )
+    assert "cannot be saved" in improvement_html(draft, read_only=True)
+    assert "replayable edit" in improvement_html(draft)
+
+
 def test_improvement_html_shows_before_after_and_escapes() -> None:
     from grandplan.adapters.kb_chat import ImproveDraft
     from grandplan.app.chat_window import improvement_html

@@ -53,7 +53,8 @@ from grandplan.core.note_store import JsonlNoteRepository
 from grandplan.core.organize import HeuristicOrganizer
 from grandplan.core.pipeline import CaptureResult
 from grandplan.core.placement import HeuristicPlacer, Placer
-from grandplan.core.ports import Embedder, Organizer
+from grandplan.core.ports import Embedder, NoteRepository, Organizer, VaultWriter
+from grandplan.core.readonly import seal
 from grandplan.core.project import write_projections
 from grandplan.core.reconcile import Reconciler, SimilarityReconciler
 from grandplan.core.store import JsonlOriginalStore
@@ -363,6 +364,7 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     auto_approve: bool = False,
     max_pending: int = 16,
     chat_top_k: int = _CHAT_TOP_K,
+    read_only: bool = False,
 ) -> int:
     from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -388,9 +390,16 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     # beside the JSONL truth is a rebuildable cache — the JSONL event log stays the only store.
     from grandplan.adapters.vec_index import maybe_indexed
 
-    repo = maybe_indexed(JsonlNoteRepository(index_root / "index.jsonl"), index_root / "vec.db")
+    repo: NoteRepository = maybe_indexed(
+        JsonlNoteRepository(index_root / "index.jsonl"), index_root / "vec.db"
+    )
     originals = JsonlOriginalStore(index_root / "inbox.jsonl")
-    vault = MarkdownVaultWriter(vault_dir)
+    vault: VaultWriter = MarkdownVaultWriter(vault_dir)
+    if read_only:
+        # SPEC-READONLY §3.1: the promise is made HERE, by swapping the ports — not by the hotkey
+        # skip and hidden buttons below, which are ergonomics. Anything that tries to write from now
+        # on raises VaultIsReadOnly wherever it is, including code that doesn't exist yet.
+        repo, vault = seal(repo, vault)
 
     app = QtWidgets.QApplication.instance()
     if not isinstance(app, QtWidgets.QApplication):
@@ -710,6 +719,7 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
             apply_plan=apply_plan,
             apply_improve=apply_improve,
             open_note=open_note,
+            read_only=read_only,
         )
         chat_windows.append(window)
         window.show()  # type: ignore[attr-defined]
@@ -748,12 +758,16 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
     bridge.hotkey_dead.connect(_on_hotkey_dead)
 
     coordinator.start()
-    threading.Thread(
-        target=run_hotkey_listener,
-        args=(hotkey, lambda: coordinator.submit()),
-        kwargs={"on_dead": bridge.hotkey_dead.emit},
-        daemon=True,
-    ).start()
+    if not read_only:
+        # Under --read-only the listener is never registered: the ports would refuse the write
+        # anyway, but a hotkey that fires, captures your selection, runs the model and THEN raises
+        # is a worse answer than a hotkey that does nothing (SPEC-READONLY §4).
+        threading.Thread(
+            target=run_hotkey_listener,
+            args=(hotkey, lambda: coordinator.submit()),
+            kwargs={"on_dead": bridge.hotkey_dead.emit},
+            daemon=True,
+        ).start()
 
     # Unified mode (`gui --serve`): host the phone server IN this process and route every remote
     # capture through the SAME coordinator worker as the hotkey/tray — one writer, so phone and

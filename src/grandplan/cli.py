@@ -1818,11 +1818,30 @@ def _missing_gui_dependency(args: argparse.Namespace) -> str | None:
     return None
 
 
+_READ_ONLY_CONFLICTS: tuple[tuple[str, str], ...] = (
+    ("serve", "--serve hosts the phone intake, whose whole purpose is writing captures"),
+    ("auto_approve", "--auto-approve commits every capture without review"),
+    ("enrich", "--enrich writes LLM links and placement after each save"),
+    ("init", "--init scaffolds a vault, which means writing to it"),
+)
+
+
 def _run_gui(args: argparse.Namespace) -> int:
     missing = _missing_gui_dependency(args)
     if missing:
         print(missing, file=sys.stderr)
         return 1
+    if getattr(args, "read_only", False):
+        # SPEC-READONLY §3.3: a write-only flag next to --read-only is a contradiction in what the
+        # user asked for, not something to quietly resolve in either direction.
+        for flag, why in _READ_ONLY_CONFLICTS:
+            if getattr(args, flag, False):
+                print(
+                    f"error: --read-only conflicts with --{flag.replace('_', '-')}: {why}. "
+                    "Drop one.",
+                    file=sys.stderr,
+                )
+                return 1
     serve = bool(getattr(args, "serve", False))
     serve_token = _resolve_token(getattr(args, "token", "")) if serve else ""
     serve_host = getattr(args, "host", "127.0.0.1")
@@ -1879,6 +1898,7 @@ def _run_gui(args: argparse.Namespace) -> int:
             auto_approve=getattr(args, "auto_approve", False),
             max_pending=getattr(args, "max_pending", 16),
             chat_top_k=getattr(args, "top_k", 6),
+            read_only=getattr(args, "read_only", False),
         )
     except ImportError as exc:
         print(
@@ -2386,6 +2406,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="commit every capture as-proposed, skipping the review dialog (off by default — "
         "review is the safe default; opt in for a trusted vault)",
+    )
+    gui.add_argument(
+        "--read-only",
+        action="store_true",
+        help="open the vault sealed: no hotkey capture, no writes, nothing saved. Chat, /focus, "
+        "/graph and clickable sources all work normally, and drafts still preview — there is just "
+        "no way to save one. Use it to browse or diagnose a vault you don't want to risk touching",
     )
     gui.add_argument(
         "--max-pending",
