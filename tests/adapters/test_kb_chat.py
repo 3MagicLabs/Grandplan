@@ -431,6 +431,74 @@ def test_instruction_allows_general_knowledge_but_grounds_user_facts() -> None:
     assert "invented" in prompt  # and never present a fabricated specific as a note fact
 
 
+def _many_note_repo(count: int) -> InMemoryNoteRepository:
+    """A repo of `count` identically-embedded notes (ids sort b00, b01, … for a stable tie-break)."""
+    repo = InMemoryNoteRepository()
+    for i in range(count):
+        note = Note(
+            id=f"b{i:02d}",
+            original_id=f"o{i}",
+            title=f"b{i:02d}",
+            body=f"body {i}",
+            type=NoteType.IDEA,
+        )
+        repo.add_note(note, (1.0, 0.0))
+    return repo
+
+
+def _grounded_ids(prompt: str) -> list[str]:
+    return [
+        line.split("id=")[1].split(" ")[0]
+        for line in prompt.splitlines()
+        if line.startswith("- id=")
+    ]
+
+
+def test_scoped_mode_considers_all_filtered_notes_not_just_top_k() -> None:
+    # "tell me about all of these": a scope of 8 notes must send all 8 to the model even though
+    # top_k is 2 — the filter is the user's explicit "these are the notes", not a 6-note default.
+    repo = _many_note_repo(8)
+    prompts: list[str] = []
+
+    def chat(model: str, prompt: str) -> str:
+        prompts.append(prompt)
+        return '{"answer": "ok", "sources": []}'
+
+    session = ChatSession(
+        repo=repo,
+        embedder=_FixedEmbedder((1.0, 0.0)),
+        chat=chat,
+        plan_context=None,
+        top_k=2,
+        scope_ids=frozenset(f"b{i:02d}" for i in range(8)),
+    )
+    session.respond("tell me about all of these")
+    assert len(_grounded_ids(prompts[0])) == 8  # all of them, not top_k=2
+
+
+def test_scoped_mode_caps_a_very_large_filter() -> None:
+    # A 30-note filter must not blow the context window: cap at _SCOPE_CAP, top-ranked win.
+    from grandplan.adapters.kb_chat import _SCOPE_CAP
+
+    repo = _many_note_repo(30)
+    prompts: list[str] = []
+
+    def chat(model: str, prompt: str) -> str:
+        prompts.append(prompt)
+        return '{"answer": "ok", "sources": []}'
+
+    session = ChatSession(
+        repo=repo,
+        embedder=_FixedEmbedder((1.0, 0.0)),
+        chat=chat,
+        plan_context=None,
+        top_k=2,
+        scope_ids=frozenset(f"b{i:02d}" for i in range(30)),
+    )
+    session.respond("q")
+    assert len(_grounded_ids(prompts[0])) == _SCOPE_CAP
+
+
 def test_scoped_chat_suppresses_the_whole_vault_plan_block() -> None:
     # Regression (the "handbook" leak): a scoped turn injected the whole-vault PLAN CONTEXT block
     # (critical path / actionable now / progress), which names notes OUTSIDE the scope — so the model

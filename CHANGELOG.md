@@ -12,8 +12,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   in Obsidian (`#career`, `path:Career/`, keywords) and click **"Scope to graph filter"** (or type
   `/scope`): chat reads Obsidian's own `search` field back out of `.obsidian/graph.json` and
   restricts every turn — answers *and* `/plan` drafting — to exactly the notes that filter selects.
-  No note outside the set is retrieved, cited, or grounded on; a chip states the sandbox and `/scope
-  off` clears it. Precision comes from your filter, relevance ordering from the embeddings *within*
+  No note outside the set is retrieved, cited, or grounded on (the whole-vault plan block is
+  suppressed under a scope too, so it can't name notes outside the filter); a chip states the sandbox
+  and `/scope off` clears it. A scoped turn considers up to 20 of the filtered notes (not just the
+  default six), so "tell me about all of these" works without tuning `--top-k`. Precision comes from your filter, relevance ordering from the embeddings *within*
   it. By default a synced scope is **pinned** (it holds until you re-sync); a **"follow graph live"**
   checkbox (or `/scope live`) instead re-reads the filter at the start of every turn, so changing it
   in Obsidian re-scopes your very next question — opt-in, since a scope that shifts between turns can

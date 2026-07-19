@@ -47,9 +47,12 @@ that faults keeps the last resolved scope rather than ending the turn.
 3. **Scope controls retrieval, not the model.** A generative LLM keeps its pretrained knowledge; the
    filter bounds only which *notes* enter the prompt. Fabricating specifics *into* the vault is
    prevented at the write boundary (review gate, verbatim originals), not here.
-4. **No new floor.** In scoped mode the human filter is the relevance gate, so scoped ranking drops
-   the `_MIN_SCORE` floor (threshold `0.0`, negatives excluded) — every note the user vouched for is
-   a candidate, capped only by `top_k`.
+4. **No new floor; a wider cap.** In scoped mode the human filter is the relevance gate, so scoped
+   ranking drops the `_MIN_SCORE` floor (threshold `0.0`, negatives excluded) — every note the user
+   vouched for is a candidate. The per-turn cap is also raised from `top_k` to `_SCOPE_CAP` (20), so
+   "tell me about all of these" considers the whole filter rather than the default six; a larger
+   `--top-k` still wins, a filter above the cap falls back to the top-ranked, and num_ctx has room (a
+   700-char snippet ×20 ≈ 3.5k tokens).
 5. **Fast path untouched.** Empty `scope_ids` keeps today's `repo.most_similar` call (vec index and
    all). Scoping is additive; the unscoped path does not change.
 6. **Dimension-safe.** Scoped scoring skips any note whose stored embedding dimension differs from

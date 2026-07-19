@@ -38,9 +38,12 @@ logger = logging.getLogger(__name__)
 _MAX_TURNS = 6  # exchanges kept in the prompt; num_ctx is finite and old turns fade in relevance
 _BODY_SNIPPET = 700
 _HISTORY_SNIPPET = 500  # a carried turn is context, not grounding — cap it harder than notes
-_SCOPE_MIN_SCORE = (
-    0.0  # scoped mode: the human filter is the relevance gate, so no similarity floor
-)
+# Scoped mode: the human filter is the relevance gate, so no similarity floor.
+_SCOPE_MIN_SCORE = 0.0
+# Scoped mode considers up to this many of the filtered notes, so "tell me about all of these" works
+# without tuning top_k; a larger --top-k still wins, and a bigger filter falls back to the top-ranked.
+# num_ctx has room — a 700-char snippet ×20 is ~3.5k tokens inside the 8k window.
+_SCOPE_CAP = 20
 
 _INSTRUCTION = (
     "You are discussing the user's personal notes with them. The notes below are the source of "
@@ -375,7 +378,9 @@ class ChatSession:
         Then: empty `scope_ids` keeps the fast path (`repo.most_similar`, vec index and all) — scoping
         is additive and the unscoped conversation is unchanged. A set scope ranks only the chosen
         notes and drops the similarity floor: the human filter is the relevance gate now
-        (SPEC-SCOPE §3), so every note the user vouched for is a candidate, capped only by `top_k`.
+        (SPEC-SCOPE §3), so every note the user vouched for is a candidate. The cap is raised to
+        `_SCOPE_CAP` (or a larger `top_k`) so "tell me about all of these" considers the whole filter,
+        not just the default six.
         """
         if self.scope_provider is not None:
             try:
@@ -399,7 +404,10 @@ class ChatSession:
             if score >= _SCOPE_MIN_SCORE:
                 scored.append((note, score))
         scored.sort(key=lambda item: (-item[1], item[0].id))
-        return tuple(scored[: self.top_k])
+        # Consider the whole filter (up to the cap), not just top_k — but never fabricate slots the
+        # scope doesn't have, and let an explicitly larger --top-k win.
+        limit = min(len(self.scope_ids), max(self.top_k, _SCOPE_CAP))
+        return tuple(scored[:limit])
 
     def show(self, note_id: str) -> Note | None:
         """The full note under discussion (for the caller to display); None when unknown."""
