@@ -54,6 +54,12 @@ that faults keeps the last resolved scope rather than ending the turn.
    all). Scoping is additive; the unscoped path does not change.
 6. **Dimension-safe.** Scoped scoring skips any note whose stored embedding dimension differs from
    the query's, rather than zipping mismatched vectors and comparing noise.
+7. **The plan block is out of scope.** Chat normally injects a `PLAN CONTEXT` block (critical path /
+   actionable now / progress) into every turn — but that is a *whole-vault* projection naming notes
+   across the graph, so under a scope it is **suppressed**. Leaving it in leaked out-of-scope notes
+   into the answer (the "handbook" regression: a scoped turn summarized the global plan, not the
+   filtered notes). A scoped conversation is about the chosen notes; the global plan is what
+   unscoped chat and `/focus` are for.
 
 ## 4. Supported filter grammar (subset of Obsidian graph search)
 

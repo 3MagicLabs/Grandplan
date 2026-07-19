@@ -505,8 +505,13 @@ class ChatSession:
         Plan grounding is an *enhancement* to a turn retrieval can already answer, so a malformed
         graph (or any planner bug) degrades to an unplanned answer rather than ending the
         conversation — the same posture as the model-fallback chain.
+
+        Suppressed entirely under a scope (SPEC-SCOPE §3): the plan block is a *whole-vault* priority
+        projection that names notes across the graph, so injecting it into a scoped turn leaks notes
+        outside the sandbox — the exact thing the scope promises it won't. A scoped conversation is
+        about the chosen notes, not the global plan.
         """
-        if self.plan_context is None:
+        if self.scope_ids or self.plan_context is None:
             return ""
         try:
             return self.plan_context(self.repo)

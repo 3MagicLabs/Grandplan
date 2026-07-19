@@ -431,6 +431,28 @@ def test_instruction_allows_general_knowledge_but_grounds_user_facts() -> None:
     assert "invented" in prompt  # and never present a fabricated specific as a note fact
 
 
+def test_scoped_chat_suppresses_the_whole_vault_plan_block() -> None:
+    # Regression (the "handbook" leak): a scoped turn injected the whole-vault PLAN CONTEXT block
+    # (critical path / actionable now / progress), which names notes OUTSIDE the scope — so the model
+    # answered about the global plan, not the filtered notes. Under a scope, that block must be gone.
+    prompts: list[str] = []
+
+    def chat(model: str, prompt: str) -> str:
+        prompts.append(prompt)
+        return '{"answer": "ok", "sources": []}'
+
+    session = ChatSession(
+        repo=_scope_repo(),
+        embedder=_FixedEmbedder((1.0, 0.0)),
+        chat=chat,
+        plan_context=lambda repo: "PLAN CONTEXT — critical path: Ship it [t9]",
+        scope_ids=frozenset({"n1"}),
+    )
+    session.respond("tell me about these notes")
+    assert "PLAN CONTEXT" not in prompts[0]  # the whole-vault plan is out of scope by definition
+    assert "id=n1" in prompts[0]  # the scoped note is what grounds the answer
+
+
 def test_live_scope_provider_refreshes_scope_each_turn() -> None:
     # Live-follow: the scope is re-read from the provider before every turn, so a graph filter the
     # user changes mid-conversation re-scopes the very next question — no manual re-sync.
