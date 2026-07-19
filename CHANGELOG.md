@@ -14,8 +14,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   restricts every turn — answers *and* `/plan` drafting — to exactly the notes that filter selects.
   No note outside the set is retrieved, cited, or grounded on; a chip states the sandbox and `/scope
   off` clears it. Precision comes from your filter, relevance ordering from the embeddings *within*
-  it. Empty or all-negation filters (grandplan's own default) mean no scope, so nothing regresses
-  when it's unused, and the unscoped fast path (vec index) is untouched. The supported operator
+  it. By default a synced scope is **pinned** (it holds until you re-sync); a **"follow graph live"**
+  checkbox (or `/scope live`) instead re-reads the filter at the start of every turn, so changing it
+  in Obsidian re-scopes your very next question — opt-in, since a scope that shifts between turns can
+  silently govern the chat. Empty or all-negation filters (grandplan's own default) mean no scope, so
+  nothing regresses when it's unused, and the unscoped fast path (vec index) is untouched. The supported operator
   subset (`#tag`/`tag:`, `type/`, `status/`, `path:`/`file:`, `-negation`, `OR`, quoted phrases) is
   honored exactly; anything it can't mirror (`line:`, `/regex/`, `[property]`, …) is **reported**,
   never silently dropped, and matching fails open with a warning rather than emptying the

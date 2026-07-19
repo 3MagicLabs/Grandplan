@@ -1571,7 +1571,8 @@ def _chat_repl(
     input_fn = input_fn or input  # resolved at call time (tests patch builtins.input)
     print(
         "chat with your vault — /focus for what to do next, /graph <id> for a note's connections, "
-        "/scope to talk only about what your Obsidian graph filter shows (/scope off to clear), "
+        "/scope to talk only about what your Obsidian graph filter shows (/scope live to keep "
+        "following it, /scope off to clear), "
         "/plan <topic> to draft a plan, /improve <id> to improve a note, /show <id> to view one, "
         "/quit."
     )
@@ -1592,12 +1593,22 @@ def _chat_repl(
             arg = line.removeprefix("/scope").strip().lower()
             if arg in ("off", "clear", "none"):
                 session.scope_ids = frozenset()  # type: ignore[attr-defined]
+                session.scope_provider = None  # type: ignore[attr-defined]  # stop following too
                 print("scope cleared — chatting over the whole vault.")
                 continue
             if sync_scope is None:
                 print("(scope needs a vault on disk — not available here)")
                 continue
-            result = sync_scope()
+            reader = sync_scope  # non-None here; a stable handle for the live provider closure
+            if arg == "live":
+                session.scope_provider = lambda: reader().ids  # type: ignore[attr-defined]
+                result = reader()
+                session.scope_ids = result.ids  # type: ignore[attr-defined]  # immediate feedback
+                print("live scope on — every turn follows your graph filter (/scope off to stop).")
+                print(result.summary())
+                continue
+            result = reader()
+            session.scope_provider = None  # type: ignore[attr-defined]  # a manual sync pins
             session.scope_ids = result.ids  # type: ignore[attr-defined]
             print(result.summary())
             continue

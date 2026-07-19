@@ -260,12 +260,19 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     scope_button.setToolTip(
         "chat only about the notes your Obsidian graph filter shows — click after filtering the graph"
     )
+    live_check = QtWidgets.QCheckBox("follow graph live")
+    live_check.setEnabled(sync_scope is not None)
+    live_check.setToolTip(
+        "keep the scope in sync with the graph filter — every turn re-reads it, so changing the "
+        "filter in Obsidian re-scopes your very next question"
+    )
     scope_clear = QtWidgets.QPushButton("Clear")
     scope_clear.setEnabled(False)
     scope_chip = QtWidgets.QLabel(_WHOLE_VAULT)
     scope_chip.setWordWrap(True)
     scope_row = QtWidgets.QHBoxLayout()
     scope_row.addWidget(scope_button)
+    scope_row.addWidget(live_check)
     scope_row.addWidget(scope_clear)
     scope_row.addWidget(scope_chip, 1)
 
@@ -313,14 +320,58 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
         elif isinstance(draft, ImproveDraft):
             proposal.setHtml(improvement_html(draft, read_only=read_only))
 
+    def _sync_chip_from_session() -> None:
+        """After a live-follow turn, restate the sandbox — the provider refreshed it on the worker."""
+        if session.scope_provider is None:
+            return  # pinned: the chip was already set at sync time
+        ids = session.scope_ids
+        scope_chip.setText(f"live scope: {len(ids)} notes" if ids else "live scope: whole vault")
+
+    def _live_refresh(*, announce: bool) -> None:
+        """Read the filter now and apply it — for the moment live-follow is switched on."""
+        if sync_scope is None:
+            return
+        try:
+            result = sync_scope()
+        except Exception as exc:  # noqa: BLE001 - a broken graph config must not crash the UI
+            logger.exception("scope sync failed")  # traceback to the #5 file log
+            log.vault(f"could not read the graph filter: {exc}")
+            _refresh_transcript()
+            return
+        session.scope_ids = result.ids
+        scope_chip.setText(
+            f"live scope: {result.count} notes" if result.ids else "live scope: whole vault"
+        )
+        if announce:
+            log.vault("live scope on — every turn follows your graph filter. " + result.summary())
+            _refresh_transcript()
+
+    def _set_live(on: bool) -> None:
+        """Toggle live-follow: install/remove the per-turn provider and adjust the manual controls."""
+        if on and sync_scope is not None:
+            reader = sync_scope  # non-None handle so the closure has no optional to unwrap
+            session.scope_provider = lambda: reader().ids
+            scope_button.setEnabled(False)  # manual pinning is meaningless while following
+            scope_clear.setEnabled(False)
+            _live_refresh(announce=True)
+        else:
+            session.scope_provider = None  # freeze on whatever the last turn resolved
+            scope_button.setEnabled(sync_scope is not None)
+            scope_clear.setEnabled(bool(session.scope_ids))
+
     def _do_scope(arg: str) -> None:
-        """Sync (or clear) the retrieval scope from the Obsidian graph filter (SPEC-SCOPE).
+        """Sync / follow / clear the retrieval scope from the Obsidian graph filter (SPEC-SCOPE).
 
         Instant — a file read, no model — so it runs on the UI thread like /focus. The chip states
         the sandbox; the full summary (filter text, any ignored operators) goes to the transcript.
         """
+        if arg == "live":
+            live_check.setChecked(True)  # fires _set_live(True)
+            return
         if arg in ("off", "clear", "none"):
+            live_check.setChecked(False)  # stop following (fires _set_live(False) if it was on)
             session.scope_ids = frozenset()
+            session.scope_provider = None
             scope_chip.setText(_WHOLE_VAULT)
             scope_clear.setEnabled(False)
             log.vault("scope cleared — chatting over the whole vault.")
@@ -330,6 +381,7 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
             log.vault("(scope needs a vault on disk — not available here)")
             _refresh_transcript()
             return
+        live_check.setChecked(False)  # a manual sync pins → stop following
         try:
             result = sync_scope()
         except Exception as exc:  # noqa: BLE001 - a broken graph config must not crash the UI
@@ -337,6 +389,7 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
             log.vault(f"could not read the graph filter: {exc}")
             _refresh_transcript()
             return
+        session.scope_provider = None
         session.scope_ids = result.ids
         scope_chip.setText(f"scope: {result.count} notes" if result.ids else _WHOLE_VAULT)
         scope_clear.setEnabled(bool(result.ids))
@@ -416,9 +469,11 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
             if (note := session.show(note_id)) is not None
         }
         grounding.setHtml(grounding_html(answer, notes=shown))
+        _sync_chip_from_session()  # live-follow may have re-scoped this turn — restate the sandbox
 
     def _on_drafted(draft: PlanDraft | ImproveDraft | None) -> None:
         _busy(False)
+        _sync_chip_from_session()  # a /plan turn retrieves too — keep the live chip current
         if draft is None:
             log.vault(
                 "nothing to propose — no matching notes / unknown note id, no local model "
@@ -494,4 +549,5 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     discard.clicked.connect(lambda: _show_proposal(None))
     scope_button.clicked.connect(lambda: _do_scope(""))
     scope_clear.clicked.connect(lambda: _do_scope("off"))
+    live_check.toggled.connect(_set_live)
     return window

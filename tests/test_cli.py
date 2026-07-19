@@ -1438,12 +1438,30 @@ def test_chat_repl_scope_syncs_from_the_graph_filter(capsys: pytest.CaptureFixtu
     out = capsys.readouterr().out
     assert "scoped to 2 of 5 notes" in out
     assert session.scope_ids == frozenset({"a", "b"})  # type: ignore[attr-defined]
+    assert session.scope_provider is None  # type: ignore[attr-defined] - a manual sync pins
+    assert session.asked == []
+
+
+def test_chat_repl_scope_live_follows_the_graph_each_turn(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # /scope live installs a provider the session re-reads every turn (SPEC-SCOPE live-follow).
+    from grandplan.app.scope_sync import ScopeResult
+
+    session = _FocusSession()
+    scoped = ScopeResult(ids=frozenset({"a"}), raw="#career", total=3, narrowed=True)
+    lines = iter(["/scope live", "/quit"])
+    assert _chat_repl(session, sync_scope=lambda: scoped, input_fn=lambda prompt: next(lines)) == 0
+    assert "live scope on" in capsys.readouterr().out
+    assert session.scope_provider is not None  # type: ignore[attr-defined]
+    assert session.scope_provider() == frozenset({"a"})  # type: ignore[attr-defined,misc]
     assert session.asked == []
 
 
 def test_chat_repl_scope_off_clears_the_scope(capsys: pytest.CaptureFixture[str]) -> None:
     session = _FocusSession()
     session.scope_ids = frozenset({"x"})  # type: ignore[attr-defined] - a scope is active
+    session.scope_provider = lambda: frozenset({"x"})  # type: ignore[attr-defined] - and following
 
     def _must_not_sync() -> object:
         raise AssertionError("/scope off must not read the graph filter")
@@ -1452,6 +1470,7 @@ def test_chat_repl_scope_off_clears_the_scope(capsys: pytest.CaptureFixture[str]
     assert _chat_repl(session, sync_scope=_must_not_sync, input_fn=lambda prompt: next(lines)) == 0
     assert "scope cleared" in capsys.readouterr().out
     assert session.scope_ids == frozenset()  # type: ignore[attr-defined]
+    assert session.scope_provider is None  # type: ignore[attr-defined] - stopped following too
 
 
 def test_chat_repl_scope_without_a_vault_says_so(capsys: pytest.CaptureFixture[str]) -> None:

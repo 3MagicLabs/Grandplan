@@ -27,6 +27,14 @@ grounding — for chat answers *and* for `/plan` drafting. An empty or narrowing
 **no scope** (chat behaves exactly as today, over the whole vault) — a strict superset of current
 behavior, so nothing regresses when the feature is unused.
 
+**Pinned vs. live-follow.** By default a synced scope is *pinned* — it holds until an explicit
+re-sync or clear, so the sandbox only ever changes by a deliberate, visible act. **Live-follow**
+(the "follow graph live" checkbox / `/scope live`) instead re-reads the graph filter at the **start
+of every turn**, so the scope tracks the filter as the user changes it in Obsidian. It is opt-in
+because a scope that shifts between turns without an in-chat action can silently govern the
+conversation; pinned is the safe default. A manual sync pins (turns following off); a live refresh
+that faults keeps the last resolved scope rather than ending the turn.
+
 ## 3. Constraints
 
 1. **Re-apply the filter, don't photograph the screen.** Obsidian persists only the filter *query*
@@ -70,7 +78,9 @@ grandplan's own default `-path:"Plan.md" …`) means **no scope** — the whole 
   `.obsidian/graph.json`).
 - `app/scope_sync.py` — `ScopeResult` + `resolve_graph_scope(vault_dir, repo)`: read → select →
   human-readable summary + warnings.
-- `adapters/kb_chat.py` — `ChatSession.scope_ids`; scoped ranking in `respond`/`draft_plan`;
+- `adapters/kb_chat.py` — `ChatSession.scope_ids` (pinned) + `ChatSession.scope_provider` (live-follow:
+  an injected `() -> frozenset[str]` refreshed each turn; the session does no IO itself); scoped
+  ranking in `respond`/`draft_plan`;
   `_INSTRUCTION` loosened to grounded-and-smart (facts about the user still come **only** from the
   notes; general knowledge welcome for reasoning/advice; no invented specifics presented as note
   facts).

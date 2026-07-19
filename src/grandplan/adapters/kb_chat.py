@@ -305,6 +305,11 @@ class ChatSession:
     # Retrieval scope (SPEC-SCOPE), default OFF: empty = the whole vault (today's fast path). A set of
     # ids — synced from the Obsidian graph filter — restricts every turn to exactly those notes.
     scope_ids: frozenset[str] = frozenset()
+    # Live-follow (SPEC-SCOPE): when set, the scope is refreshed from this provider at the START of
+    # every turn, so chat tracks the graph filter as it changes. None = pinned (the default):
+    # `scope_ids` holds until an explicit re-sync. The provider does the IO; the session never reads
+    # disk itself, so this file stays free of a filesystem dependency.
+    scope_provider: Callable[[], frozenset[str]] | None = None
     _history: list[tuple[str, str]] = field(default_factory=list)
 
     @property
@@ -362,11 +367,21 @@ class ChatSession:
     def _retrieve(self, text: str) -> tuple[tuple[Note, float], ...]:
         """Rank grounding for `text`: the whole vault by default, or within the active scope.
 
-        Empty `scope_ids` keeps the fast path (`repo.most_similar`, vec index and all) — scoping is
-        additive and the unscoped conversation is unchanged. A set scope ranks only the chosen notes
-        and drops the similarity floor: the human filter is the relevance gate now (SPEC-SCOPE §3), so
-        every note the user vouched for is a candidate, capped only by `top_k`.
+        Live-follow first: if a `scope_provider` is set, the scope is re-read from the graph filter
+        before this turn, so the conversation tracks the filter as the user changes it. A refresh
+        that faults keeps the current scope rather than ending the turn (the same posture as the
+        plan-context block).
+
+        Then: empty `scope_ids` keeps the fast path (`repo.most_similar`, vec index and all) — scoping
+        is additive and the unscoped conversation is unchanged. A set scope ranks only the chosen
+        notes and drops the similarity floor: the human filter is the relevance gate now
+        (SPEC-SCOPE §3), so every note the user vouched for is a candidate, capped only by `top_k`.
         """
+        if self.scope_provider is not None:
+            try:
+                self.scope_ids = self.scope_provider()
+            except Exception as exc:  # noqa: BLE001 - a filter-read fault must not kill the turn
+                logger.warning("live scope refresh failed; keeping the current scope: %s", exc)
         query = self.embedder.embed(text)
         if not self.scope_ids:
             return self.repo.most_similar(query, limit=self.top_k, threshold=_MIN_SCORE)

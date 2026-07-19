@@ -429,3 +429,51 @@ def test_instruction_allows_general_knowledge_but_grounds_user_facts() -> None:
     assert "general knowledge" in prompt  # loosened: the model may reason and advise
     assert "ONLY" in prompt  # but any specific fact about the user comes only from the notes
     assert "invented" in prompt  # and never present a fabricated specific as a note fact
+
+
+def test_live_scope_provider_refreshes_scope_each_turn() -> None:
+    # Live-follow: the scope is re-read from the provider before every turn, so a graph filter the
+    # user changes mid-conversation re-scopes the very next question — no manual re-sync.
+    prompts: list[str] = []
+
+    def chat(model: str, prompt: str) -> str:
+        prompts.append(prompt)
+        return '{"answer": "ok", "sources": []}'
+
+    filters = iter([frozenset({"n1"}), frozenset({"n2"})])
+    session = ChatSession(
+        repo=_scope_repo(),
+        embedder=_FixedEmbedder((1.0, 0.0)),
+        chat=chat,
+        plan_context=None,
+        scope_provider=lambda: next(filters),
+    )
+    session.respond("q1")
+    assert "id=n1" in prompts[0] and "id=n2" not in prompts[0]
+    session.respond("q2")
+    assert "id=n2" in prompts[1] and "id=n1" not in prompts[1]  # followed the changed filter
+
+
+def test_live_scope_provider_failure_keeps_the_current_scope() -> None:
+    # A provider that faults mid-conversation (graph.json vanished, say) must not end the turn: the
+    # last resolved scope holds and the answer still comes back.
+    prompts: list[str] = []
+
+    def chat(model: str, prompt: str) -> str:
+        prompts.append(prompt)
+        return '{"answer": "ok", "sources": []}'
+
+    def boom() -> frozenset[str]:
+        raise RuntimeError("graph.json vanished")
+
+    session = ChatSession(
+        repo=_scope_repo(),
+        embedder=_FixedEmbedder((1.0, 0.0)),
+        chat=chat,
+        plan_context=None,
+        scope_ids=frozenset({"n1"}),
+        scope_provider=boom,
+    )
+    answer = session.respond("q")  # must not raise
+    assert answer.text == "ok"
+    assert "id=n1" in prompts[0]  # kept the scope resolved before the fault
