@@ -26,7 +26,7 @@ import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from grandplan.adapters.capture import make_windows_capturer, run_hotkey_listener
 from grandplan.adapters.llm_contextual_reconciler import LlmContextualReconciler
@@ -60,6 +60,9 @@ from grandplan.core.reconcile import Reconciler, SimilarityReconciler
 from grandplan.core.store import JsonlOriginalStore
 from grandplan.core.update_detect import HeuristicUpdateDetector, UpdateDetector
 from grandplan.core.vault import MarkdownVaultWriter
+
+if TYPE_CHECKING:
+    from grandplan.app.scope_sync import ScopeResult
 
 logger = logging.getLogger(__name__)
 
@@ -714,11 +717,19 @@ def run_app(  # pragma: no cover - Qt GUI; needs Windows + grandplan[windows,gui
                 return f"couldn't hand {target.name} to Obsidian — is it installed?"
             return ""
 
+        def sync_scope() -> ScopeResult:
+            """Mirror the Obsidian graph filter into chat retrieval (SPEC-SCOPE). A read; safe in
+            --read-only too."""
+            from grandplan.app.scope_sync import resolve_graph_scope
+
+            return resolve_graph_scope(vault_dir, repo)
+
         window = open_chat_window(
             session=session,
             apply_plan=apply_plan,
             apply_improve=apply_improve,
             open_note=open_note,
+            sync_scope=sync_scope,
             read_only=read_only,
         )
         chat_windows.append(window)

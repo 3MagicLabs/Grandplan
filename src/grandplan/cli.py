@@ -25,6 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from grandplan.adapters.ollama_organizer import (
     DEFAULT_MODEL,
@@ -61,6 +62,9 @@ from grandplan.core.report import RunReport, build_run_report, render_report
 from grandplan.core.repository import InMemoryNoteRepository
 from grandplan.core.store import InMemoryOriginalStore, JsonlOriginalStore, OriginalStore
 from grandplan.core.vault import MarkdownVaultWriter
+
+if TYPE_CHECKING:
+    from grandplan.app.scope_sync import ScopeResult
 
 _PARAGRAPH = re.compile(r"\n\s*\n")
 
@@ -1551,6 +1555,7 @@ def _chat_repl(
     *,
     apply_plan: Callable[[object], str] | None = None,
     apply_improve: Callable[[object], None] | None = None,
+    sync_scope: Callable[[], ScopeResult] | None = None,
     input_fn: Callable[[str], str] | None = None,
 ) -> int:
     """The chat loop, transport-free so it is unit-testable: read → respond/command → print.
@@ -1566,6 +1571,7 @@ def _chat_repl(
     input_fn = input_fn or input  # resolved at call time (tests patch builtins.input)
     print(
         "chat with your vault — /focus for what to do next, /graph <id> for a note's connections, "
+        "/scope to talk only about what your Obsidian graph filter shows (/scope off to clear), "
         "/plan <topic> to draft a plan, /improve <id> to improve a note, /show <id> to view one, "
         "/quit."
     )
@@ -1581,6 +1587,19 @@ def _chat_repl(
             return 0
         if line in ("/focus", "/next"):
             print(session.focus())  # type: ignore[attr-defined]
+            continue
+        if line.startswith("/scope"):
+            arg = line.removeprefix("/scope").strip().lower()
+            if arg in ("off", "clear", "none"):
+                session.scope_ids = frozenset()  # type: ignore[attr-defined]
+                print("scope cleared — chatting over the whole vault.")
+                continue
+            if sync_scope is None:
+                print("(scope needs a vault on disk — not available here)")
+                continue
+            result = sync_scope()
+            session.scope_ids = result.ids  # type: ignore[attr-defined]
+            print(result.summary())
             continue
         if line.startswith("/graph"):
             note_id = line.removeprefix("/graph").strip()
@@ -1760,7 +1779,14 @@ def _run_chat(args: argparse.Namespace) -> int:
             raise TypeError(f"apply_improve expected an ImproveDraft, got {type(draft).__name__}")
         apply_improvement_draft(draft, repo=repo, vault_dir=vault_dir, originals=originals)
 
-    return _chat_repl(session, apply_plan=apply_plan, apply_improve=apply_improve)
+    def sync_scope() -> ScopeResult:
+        from grandplan.app.scope_sync import resolve_graph_scope
+
+        return resolve_graph_scope(vault_dir, repo)
+
+    return _chat_repl(
+        session, apply_plan=apply_plan, apply_improve=apply_improve, sync_scope=sync_scope
+    )
 
 
 def _run_mcp(args: argparse.Namespace) -> int:

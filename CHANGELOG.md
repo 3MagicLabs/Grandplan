@@ -6,6 +6,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 ### Added
+- **Chat scoped to your Obsidian graph filter — talk to only the notes you filtered to.** Chat
+  ranked the *whole vault* by similarity and fed the model the top ~6, so an off-topic note could
+  outrank a real one and a relevant note past #6 never reached the model. Now you filter the graph
+  in Obsidian (`#career`, `path:Career/`, keywords) and click **"Scope to graph filter"** (or type
+  `/scope`): chat reads Obsidian's own `search` field back out of `.obsidian/graph.json` and
+  restricts every turn — answers *and* `/plan` drafting — to exactly the notes that filter selects.
+  No note outside the set is retrieved, cited, or grounded on; a chip states the sandbox and `/scope
+  off` clears it. Precision comes from your filter, relevance ordering from the embeddings *within*
+  it. Empty or all-negation filters (grandplan's own default) mean no scope, so nothing regresses
+  when it's unused, and the unscoped fast path (vec index) is untouched. The supported operator
+  subset (`#tag`/`tag:`, `type/`, `status/`, `path:`/`file:`, `-negation`, `OR`, quoted phrases) is
+  honored exactly; anything it can't mirror (`line:`, `/regex/`, `[property]`, …) is **reported**,
+  never silently dropped, and matching fails open with a warning rather than emptying the
+  conversation. In the same change the chat prompt was loosened from "use ONLY the notes, no outside
+  knowledge" to grounded-and-smart: facts about *you* still come only from your notes, but the model
+  may use its general knowledge to explain, connect, and advise — fabricating specifics *into* the
+  vault stays blocked at the write boundary, not in conversation. Design in
+  `docs/specs/SPEC-SCOPE.md`.
 - **`gui --read-only` — browse a vault that cannot be modified.** The tray app exists to write:
   it holds a live writer, a registered global hotkey, and optionally an HTTP intake. But the thing
   you do with a *full* vault is mostly read it — chat, follow links, look at the graph — and an

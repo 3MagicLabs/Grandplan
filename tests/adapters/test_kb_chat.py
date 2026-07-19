@@ -303,3 +303,129 @@ def test_render_plan_markdown_is_a_checklist() -> None:
     assert body.startswith("S.")
     assert "## Next steps" in body
     assert "- [ ] one" in body and "- [ ] two" in body
+
+
+# --- scoped retrieval (SPEC-SCOPE) ---------------------------------------------------------------
+
+
+class _FixedEmbedder:
+    """Embeds every question to the same vector — the note embeddings do the discriminating."""
+
+    def __init__(self, vector: tuple[float, ...]) -> None:
+        self._vector = vector
+
+    def embed(self, text: str) -> tuple[float, ...]:
+        return self._vector
+
+
+def _scope_repo() -> InMemoryNoteRepository:
+    repo = InMemoryNoteRepository()
+    for note_id, vector in (("n1", (1.0, 0.0)), ("n2", (0.0, 1.0)), ("n3", (0.5, 0.5))):
+        note = Note(
+            id=note_id,
+            original_id=f"o-{note_id}",
+            title=note_id,
+            body=f"body {note_id}",
+            type=NoteType.IDEA,
+        )
+        repo.add_note(note, vector)
+    return repo
+
+
+def test_scope_restricts_retrieval_to_the_chosen_notes() -> None:
+    prompts: list[str] = []
+
+    def chat(model: str, prompt: str) -> str:
+        prompts.append(prompt)
+        return '{"answer": "ok", "sources": []}'
+
+    session = ChatSession(
+        repo=_scope_repo(),
+        embedder=_FixedEmbedder((1.0, 0.0)),
+        chat=chat,
+        plan_context=None,  # isolate retrieval — no plan block adding other ids
+        scope_ids=frozenset({"n1"}),
+    )
+    session.respond("anything")
+    assert "id=n1" in prompts[0]  # the scoped note grounds the turn
+    assert (
+        "id=n2" not in prompts[0] and "id=n3" not in prompts[0]
+    )  # out-of-scope notes cannot enter
+
+
+def test_empty_scope_uses_the_whole_vault() -> None:
+    prompts: list[str] = []
+
+    def chat(model: str, prompt: str) -> str:
+        prompts.append(prompt)
+        return '{"answer": "ok", "sources": []}'
+
+    # No scope set (the default): a note the graph filter would have hidden is still reachable.
+    session = ChatSession(
+        repo=_scope_repo(), embedder=_FixedEmbedder((0.0, 1.0)), chat=chat, plan_context=None
+    )
+    session.respond("anything")
+    assert "id=n2" in prompts[0]  # ranked best by similarity, whole-vault path
+
+
+def test_scoped_mode_drops_the_similarity_floor() -> None:
+    # A scoped note only weakly related to the question (score below _MIN_SCORE) still grounds the
+    # turn: the human filter is the relevance gate now (SPEC-SCOPE §3), not the embedding floor.
+    repo = InMemoryNoteRepository()
+    note = Note(id="weak", original_id="o", title="Weak", body="b", type=NoteType.IDEA)
+    repo.add_note(note, (0.1, 0.0))  # dot with (0.3,0) query = 0.03 < _MIN_SCORE (0.05)
+    prompts: list[str] = []
+
+    def chat(model: str, prompt: str) -> str:
+        prompts.append(prompt)
+        return '{"answer": "ok", "sources": []}'
+
+    scoped = ChatSession(
+        repo=repo,
+        embedder=_FixedEmbedder((0.3, 0.0)),
+        chat=chat,
+        plan_context=None,
+        scope_ids=frozenset({"weak"}),
+    )
+    scoped.respond("q")
+    assert "id=weak" in prompts[0]  # kept — scoped threshold is 0.0
+
+    prompts.clear()
+    unscoped = ChatSession(
+        repo=repo, embedder=_FixedEmbedder((0.3, 0.0)), chat=chat, plan_context=None
+    )
+    unscoped.respond("q")
+    assert "id=weak" not in prompts[0]  # dropped — whole-vault path keeps the 0.05 floor
+
+
+def test_scoped_ranking_skips_a_dimension_mismatched_embedding() -> None:
+    # A note stored with a different embedder (wrong dim) must be skipped, never zipped against the
+    # query and compared as noise (SPEC-SCOPE §3, the _dot strict=False hazard).
+    repo = InMemoryNoteRepository()
+    ok = Note(id="ok", original_id="o1", title="Ok", body="b", type=NoteType.IDEA)
+    mismatched = Note(id="bad", original_id="o2", title="Bad", body="b", type=NoteType.IDEA)
+    repo.add_note(ok, (1.0, 0.0))
+    repo.add_note(mismatched, (1.0, 0.0, 0.0, 0.0))  # 4-dim vs the 2-dim query
+    prompts: list[str] = []
+
+    def chat(model: str, prompt: str) -> str:
+        prompts.append(prompt)
+        return '{"answer": "ok", "sources": []}'
+
+    session = ChatSession(
+        repo=repo,
+        embedder=_FixedEmbedder((1.0, 0.0)),
+        chat=chat,
+        plan_context=None,
+        scope_ids=frozenset({"ok", "bad"}),
+    )
+    session.respond("q")
+    assert "id=ok" in prompts[0]
+    assert "id=bad" not in prompts[0]  # skipped, not silently mis-scored
+
+
+def test_instruction_allows_general_knowledge_but_grounds_user_facts() -> None:
+    prompt = build_chat_prompt("q", history=(), notes=[("a", "t", "b")])
+    assert "general knowledge" in prompt  # loosened: the model may reason and advise
+    assert "ONLY" in prompt  # but any specific fact about the user comes only from the notes
+    assert "invented" in prompt  # and never present a fabricated specific as a note fact

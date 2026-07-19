@@ -38,11 +38,18 @@ logger = logging.getLogger(__name__)
 _MAX_TURNS = 6  # exchanges kept in the prompt; num_ctx is finite and old turns fade in relevance
 _BODY_SNIPPET = 700
 _HISTORY_SNIPPET = 500  # a carried turn is context, not grounding — cap it harder than notes
+_SCOPE_MIN_SCORE = (
+    0.0  # scoped mode: the human filter is the relevance gate, so no similarity floor
+)
 
 _INSTRUCTION = (
-    "You are discussing the user's personal notes with them. Use ONLY the notes below as facts — "
-    "do not add outside knowledge; if the notes do not contain the answer, say so. The conversation "
-    "so far is context for what the user means, not a source of facts. "
+    "You are discussing the user's personal notes with them. The notes below are the source of "
+    "truth about the user's own life, projects, and plans: draw any specific fact about the user "
+    "ONLY from these notes, and cite the ones you use. You MAY use your general knowledge freely to "
+    "explain concepts, connect ideas, weigh options, and give useful advice — but never present an "
+    "invented specific (a name, number, date, or commitment) as if it came from the notes. If the "
+    "notes do not cover something the user is asking about their own work, say so plainly. The "
+    "conversation so far is context for what the user means, not a source of facts. "
     'Return ONLY a JSON object with keys: "answer" (a direct, conversational reply in plain text) '
     'and "sources" (array of the ids of the notes you actually used).'
 )
@@ -295,6 +302,9 @@ class ChatSession:
     # Plan grounding (SPEC-ACT §A1), default ON: wiring it per call site would let the GUI or the
     # CLI ship without it and quietly regress priority questions to guesswork. `None` disables.
     plan_context: Callable[[NoteRepository], str] | None = default_plan_context
+    # Retrieval scope (SPEC-SCOPE), default OFF: empty = the whole vault (today's fast path). A set of
+    # ids — synced from the Obsidian graph filter — restricts every turn to exactly those notes.
+    scope_ids: frozenset[str] = frozenset()
     _history: list[tuple[str, str]] = field(default_factory=list)
 
     @property
@@ -307,9 +317,7 @@ class ChatSession:
         """One chat turn. With `on_answer_delta`, the answer streams as it is generated —
         the callback receives printable answer-text pieces (JSON syntax already filtered out by
         `AnswerStreamFilter`), and the returned AskAnswer is identical to the non-streaming path."""
-        hits = self.repo.most_similar(
-            self.embedder.embed(question), limit=self.top_k, threshold=_MIN_SCORE
-        )
+        hits = self._retrieve(question)
         titles = {note.id: note.title for note, _score in hits}
         prompt = build_chat_prompt(
             question,
@@ -350,6 +358,33 @@ class ChatSession:
 
             return kb_ask._ollama_chat_stream(model, prompt, _raw_delta)
         return kb_ask._ollama_chat(model, prompt)
+
+    def _retrieve(self, text: str) -> tuple[tuple[Note, float], ...]:
+        """Rank grounding for `text`: the whole vault by default, or within the active scope.
+
+        Empty `scope_ids` keeps the fast path (`repo.most_similar`, vec index and all) — scoping is
+        additive and the unscoped conversation is unchanged. A set scope ranks only the chosen notes
+        and drops the similarity floor: the human filter is the relevance gate now (SPEC-SCOPE §3), so
+        every note the user vouched for is a candidate, capped only by `top_k`.
+        """
+        query = self.embedder.embed(text)
+        if not self.scope_ids:
+            return self.repo.most_similar(query, limit=self.top_k, threshold=_MIN_SCORE)
+        return self._rank_within_scope(query)
+
+    def _rank_within_scope(self, query: tuple[float, ...]) -> tuple[tuple[Note, float], ...]:
+        """Score only the scoped notes; skip any whose embedding can't be compared (SPEC-SCOPE §3)."""
+        scored: list[tuple[Note, float]] = []
+        for note_id in self.scope_ids:
+            note = self.repo.current_note(note_id)
+            embedding = self.repo.embedding_of(note_id)
+            if note is None or embedding is None or len(embedding) != len(query):
+                continue  # gone, unembedded, or a different embedder — never zip mismatched dims
+            score = float(sum(x * y for x, y in zip(query, embedding, strict=True)))
+            if score >= _SCOPE_MIN_SCORE:
+                scored.append((note, score))
+        scored.sort(key=lambda item: (-item[1], item[0].id))
+        return tuple(scored[: self.top_k])
 
     def show(self, note_id: str) -> Note | None:
         """The full note under discussion (for the caller to display); None when unknown."""
@@ -423,9 +458,7 @@ class ChatSession:
         the caller surfaces the degradation. Drafting is read-only; applying an approved draft is
         the caller's job (review gate, #39). Not recorded as dialogue: a command, not a turn.
         """
-        hits = self.repo.most_similar(
-            self.embedder.embed(topic), limit=self.top_k, threshold=_MIN_SCORE
-        )
+        hits = self._retrieve(topic)
         if not hits:
             return None
         titles = {note.id: note.title for note, _score in hits}

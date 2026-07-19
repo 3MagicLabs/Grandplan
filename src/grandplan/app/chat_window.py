@@ -23,13 +23,19 @@ import html
 import logging
 import threading
 from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING
 from urllib.parse import quote, unquote
 
 from grandplan.adapters.kb_ask import AskAnswer
 from grandplan.adapters.kb_chat import ChatSession, ImproveDraft, PlanDraft
 from grandplan.core.models import Note
 
+if TYPE_CHECKING:
+    from grandplan.app.scope_sync import ScopeResult
+
 logger = logging.getLogger(__name__)
+
+_WHOLE_VAULT = "scope: whole vault"  # the chip's resting text — no graph filter applied
 
 _SNIPPET = (
     400  # chars of a grounding note's body shown in the pane (full note stays one click away)
@@ -186,6 +192,7 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     apply_plan: Callable[[PlanDraft], str],
     apply_improve: Callable[[ImproveDraft], None],
     open_note: Callable[[str], str] | None = None,
+    sync_scope: Callable[[], ScopeResult] | None = None,
     read_only: bool = False,
     parent: object = None,
 ) -> object:
@@ -197,6 +204,10 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     `open_note(id)` is called when a source link is clicked; it returns `""` on success or a message
     to show the user. Injected rather than imported so this module never learns the vault path, and
     so a build without it simply renders inert links instead of failing.
+
+    `sync_scope()` reads the current Obsidian graph filter and returns a `ScopeResult` (SPEC-SCOPE);
+    the window applies its ids to the session and shows the summary in the scope chip. Injected for
+    the same reason — a build without it just disables the scope button.
 
     `read_only` hides Approve (SPEC-READONLY §4). Drafting stays on — `draft_plan`/`draft_improvement`
     only read — so you can still see what the vault *would* propose; there is simply no way to save
@@ -223,8 +234,8 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     transcript.setOpenExternalLinks(False)
     entry = QtWidgets.QLineEdit()
     entry.setPlaceholderText(
-        "ask about your notes — /focus what to do next, /graph <id> a note's connections, "
-        "/plan <topic> drafts a plan, /improve <id> improves a note"
+        "ask about your notes — /scope mirror the graph filter, /focus what to do next, "
+        "/graph <id> a note's connections, /plan <topic> drafts a plan, /improve <id> improves a note"
     )
     send = QtWidgets.QPushButton("Send")
 
@@ -242,7 +253,24 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     for widget in (proposal, approve, discard):
         widget.setVisible(False)
 
+    # Scope row: one click mirrors the Obsidian graph filter into chat retrieval (SPEC-SCOPE). The
+    # chip states the current sandbox so the user always knows which notes chat can and cannot reach.
+    scope_button = QtWidgets.QPushButton("Scope to graph filter")
+    scope_button.setEnabled(sync_scope is not None)
+    scope_button.setToolTip(
+        "chat only about the notes your Obsidian graph filter shows — click after filtering the graph"
+    )
+    scope_clear = QtWidgets.QPushButton("Clear")
+    scope_clear.setEnabled(False)
+    scope_chip = QtWidgets.QLabel(_WHOLE_VAULT)
+    scope_chip.setWordWrap(True)
+    scope_row = QtWidgets.QHBoxLayout()
+    scope_row.addWidget(scope_button)
+    scope_row.addWidget(scope_clear)
+    scope_row.addWidget(scope_chip, 1)
+
     left = QtWidgets.QVBoxLayout()
+    left.addLayout(scope_row)
     left.addWidget(transcript, 1)
     row = QtWidgets.QHBoxLayout()
     row.addWidget(entry, 1)
@@ -285,6 +313,36 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
         elif isinstance(draft, ImproveDraft):
             proposal.setHtml(improvement_html(draft, read_only=read_only))
 
+    def _do_scope(arg: str) -> None:
+        """Sync (or clear) the retrieval scope from the Obsidian graph filter (SPEC-SCOPE).
+
+        Instant — a file read, no model — so it runs on the UI thread like /focus. The chip states
+        the sandbox; the full summary (filter text, any ignored operators) goes to the transcript.
+        """
+        if arg in ("off", "clear", "none"):
+            session.scope_ids = frozenset()
+            scope_chip.setText(_WHOLE_VAULT)
+            scope_clear.setEnabled(False)
+            log.vault("scope cleared — chatting over the whole vault.")
+            _refresh_transcript()
+            return
+        if sync_scope is None:
+            log.vault("(scope needs a vault on disk — not available here)")
+            _refresh_transcript()
+            return
+        try:
+            result = sync_scope()
+        except Exception as exc:  # noqa: BLE001 - a broken graph config must not crash the UI
+            logger.exception("scope sync failed")  # traceback to the #5 file log
+            log.vault(f"could not read the graph filter: {exc}")
+            _refresh_transcript()
+            return
+        session.scope_ids = result.ids
+        scope_chip.setText(f"scope: {result.count} notes" if result.ids else _WHOLE_VAULT)
+        scope_clear.setEnabled(bool(result.ids))
+        log.vault(result.summary())
+        _refresh_transcript()
+
     def _submit() -> None:
         text = entry.text().strip()
         if not text:
@@ -292,6 +350,9 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
         entry.clear()
         log.user(text)  # echo immediately — the message must never sit invisible while "thinking…"
         _refresh_transcript()
+        if text.startswith("/scope"):
+            _do_scope(text.removeprefix("/scope").strip().lower())
+            return
         if text in ("/focus", "/next") or text.startswith("/graph"):
             # Pure projections: no model, no thread, no "thinking…" — they answer instantly and stay
             # correct with Ollama down, which is precisely why they are commands and not questions.
@@ -431,4 +492,6 @@ def open_chat_window(  # pragma: no cover - Qt shell; needs Windows + grandplan[
     entry.returnPressed.connect(_submit)
     approve.clicked.connect(_on_approve)
     discard.clicked.connect(lambda: _show_proposal(None))
+    scope_button.clicked.connect(lambda: _do_scope(""))
+    scope_clear.clicked.connect(lambda: _do_scope("off"))
     return window

@@ -1426,6 +1426,42 @@ def test_chat_repl_graph_without_an_id_prints_usage(capsys: pytest.CaptureFixtur
     assert "usage: /graph" in capsys.readouterr().out
 
 
+def test_chat_repl_scope_syncs_from_the_graph_filter(capsys: pytest.CaptureFixture[str]) -> None:
+    # /scope reads the Obsidian graph filter and restricts retrieval to it (SPEC-SCOPE) — a file
+    # read, never a model call, so like /focus it must not route to the KB model.
+    from grandplan.app.scope_sync import ScopeResult
+
+    session = _FocusSession()
+    scoped = ScopeResult(ids=frozenset({"a", "b"}), raw="#career", total=5, narrowed=True)
+    lines = iter(["/scope", "/quit"])
+    assert _chat_repl(session, sync_scope=lambda: scoped, input_fn=lambda prompt: next(lines)) == 0
+    out = capsys.readouterr().out
+    assert "scoped to 2 of 5 notes" in out
+    assert session.scope_ids == frozenset({"a", "b"})  # type: ignore[attr-defined]
+    assert session.asked == []
+
+
+def test_chat_repl_scope_off_clears_the_scope(capsys: pytest.CaptureFixture[str]) -> None:
+    session = _FocusSession()
+    session.scope_ids = frozenset({"x"})  # type: ignore[attr-defined] - a scope is active
+
+    def _must_not_sync() -> object:
+        raise AssertionError("/scope off must not read the graph filter")
+
+    lines = iter(["/scope off", "/quit"])
+    assert _chat_repl(session, sync_scope=_must_not_sync, input_fn=lambda prompt: next(lines)) == 0
+    assert "scope cleared" in capsys.readouterr().out
+    assert session.scope_ids == frozenset()  # type: ignore[attr-defined]
+
+
+def test_chat_repl_scope_without_a_vault_says_so(capsys: pytest.CaptureFixture[str]) -> None:
+    # No sync_scope wired (e.g. the transport-free test path): /scope must explain, not crash.
+    session = _FocusSession()
+    lines = iter(["/scope", "/quit"])
+    assert _chat_repl(session, input_fn=lambda prompt: next(lines)) == 0
+    assert "scope needs a vault" in capsys.readouterr().out
+
+
 def test_gui_kb_model_is_configurable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The tray chat used to hardcode the KB default (qwen2.5:14b): a user who pulled a smaller
     # KB model (e.g. qwen2.5:7b — the sane choice next to a resident capture model) could not
