@@ -10,7 +10,7 @@ what is and isn't in scope.
 **Please do not open a public issue for security vulnerabilities.**
 
 Report privately via GitHub's
-[**Report a vulnerability**](https://github.com/3MagicLabs/Grandplan/security/advisories/new)
+[**Report a vulnerability**](https://github.com/Elmdin/Grandplan/security/advisories/new)
 (repo **Security → Advisories → Report a vulnerability**). If private reporting is unavailable, email
 the maintainer at **imaansoltan@gmail.com** with a description and, ideally, a minimal reproduction.
 

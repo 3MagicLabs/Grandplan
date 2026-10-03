@@ -14,7 +14,7 @@ CI mirrors this gate on every push/PR (`.github/workflows/ci.yml`).
 ## Setup
 
 ```bash
-git clone https://github.com/3MagicLabs/Grandplan && cd Grandplan
+git clone https://github.com/Elmdin/Grandplan && cd Grandplan
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[llm,embeddings,mcp]"   # core + optional extras; add ,windows,gui on Windows
 pytest -q                                 # sanity-check the suite (Linux/WSL2)

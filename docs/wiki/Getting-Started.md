@@ -3,7 +3,7 @@
 ## Run the offline core (Linux / WSL2 / macOS / Windows)
 
 ```bash
-git clone https://github.com/3MagicLabs/Grandplan && cd Grandplan
+git clone https://github.com/Elmdin/Grandplan && cd Grandplan
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[llm,embeddings,mcp]"
 grandplan organize notes.txt -o my-vault    # messy text file -> Obsidian-style vault

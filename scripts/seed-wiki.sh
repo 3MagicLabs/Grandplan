@@ -3,14 +3,14 @@
 #
 # ONE-TIME PREREQUISITE: GitHub does not expose an API to create the *first* wiki page, and the
 # .wiki.git repo does not exist until one page exists. So once, in the browser:
-#     https://github.com/3MagicLabs/Grandplan/wiki  ->  "Create the first page"  ->  save anything.
+#     https://github.com/Elmdin/Grandplan/wiki  ->  "Create the first page"  ->  save anything.
 # That initializes the wiki repo. After that, this script pushes every page in docs/wiki/ and can be
 # re-run any time to keep the wiki in sync with the repo.
 #
-# Usage:  scripts/seed-wiki.sh [owner/repo]   (default: 3MagicLabs/Grandplan)
+# Usage:  scripts/seed-wiki.sh [owner/repo]   (default: Elmdin/Grandplan)
 set -euo pipefail
 
-REPO="${1:-3MagicLabs/Grandplan}"
+REPO="${1:-Elmdin/Grandplan}"
 SRC="$(cd "$(dirname "$0")/../docs/wiki" && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
