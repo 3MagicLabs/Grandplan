@@ -1,6 +1,6 @@
 # Publish checklist — going public
 
-Steps to run **when making `3MagicLabs/Grandplan` public**. These are GitHub features that are free
+Steps to run **when making `Elmdin/Grandplan` public**. These are GitHub features that are free
 only on public repos (or paid GitHub Advanced Security on private), so they can't be enabled while the
 repo is private — they were deferred here from the v0.1 public-readiness work. Flip visibility first,
 then enable the rest.
@@ -10,14 +10,14 @@ then enable the rest.
 
 ## 1. Make the repo public
 Settings → General → Danger Zone → Change visibility → **Public**
-(or `gh repo edit 3MagicLabs/Grandplan --visibility public --accept-visibility-change-consequences`).
+(or `gh repo edit Elmdin/Grandplan --visibility public --accept-visibility-change-consequences`).
 
 ## 2. Branch protection on `main` (free once public) — issue #20
 Require a PR + 1 code-owner review (CODEOWNERS already routes to the maintainer) + the `gate` CI check;
 block force-push/deletion; admins may bypass so the maintainer can still merge.
 
 ```bash
-gh api -X PUT repos/3MagicLabs/Grandplan/branches/main/protection --input - <<'JSON'
+gh api -X PUT repos/Elmdin/Grandplan/branches/main/protection --input - <<'JSON'
 {
   "required_status_checks": { "strict": true, "contexts": ["gate"] },
   "enforce_admins": false,
@@ -33,7 +33,7 @@ JSON
 
 ## 3. Secret scanning + push protection (free on public) — issue #23
 ```bash
-gh api -X PATCH repos/3MagicLabs/Grandplan --input - <<'JSON'
+gh api -X PATCH repos/Elmdin/Grandplan --input - <<'JSON'
 { "security_and_analysis": { "secret_scanning": { "status": "enabled" }, "secret_scanning_push_protection": { "status": "enabled" } } }
 JSON
 ```
@@ -44,7 +44,7 @@ Don't add the workflow while private — it errors without Advanced Security.
 
 ## 5. Private vulnerability reporting (makes the SECURITY.md advisory link live)
 ```bash
-gh api -X PUT repos/3MagicLabs/Grandplan/private-vulnerability-reporting
+gh api -X PUT repos/Elmdin/Grandplan/private-vulnerability-reporting
 ```
 
 ## Already enabled while private (no action needed)
